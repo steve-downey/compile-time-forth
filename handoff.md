@@ -72,3 +72,46 @@ a fact just because a later step changed something adjacent.
 - `make compile`, `make test`, `make lint` are green on both toolchains;
   `smoke.sh gcc-16` and `smoke.sh clang-21` both end `SMOKE OK`.
 - No divergence from `docs/forth-plan.md` — no DIV filed for this step.
+
+## Step F2 — Vendor Beman Execution
+
+- `vendor/execution` is a real git submodule (`.gitmodules` added), URL
+  `https://github.com/bemanproject/execution.git`, pinned at commit
+  `cd3211e8f2fdeaa4237de3803513438cac20aa2b` (`main`, "Fix spawn and
+  spawn_future (#296)").
+- Integrated purely by `add_subdirectory(vendor/execution)` from the
+  top-level `CMakeLists.txt`, before the `compile-time-forth.forth` target is
+  linked against `beman::execution` (`PUBLIC`); no `FetchContent`, no vcpkg,
+  no `find_package`, no install-time discovery. `.update-submodules` /
+  `.gitmodules` Makefile plumbing (already present) picks the new submodule
+  up automatically via `git submodule update --init --recursive`.
+- `BEMAN_USE_MODULES` is forced `OFF` (`set(... CACHE BOOL ... FORCE)`) before
+  the `add_subdirectory`. Without this, this CMake/Ninja/GCC-16 combination
+  auto-enables `CMAKE_CXX_SCAN_FOR_MODULES`, which makes the vendored
+  `beman.execution` target build as C++ modules (`.cppm`) instead of the
+  plain headers; that in turn makes any translation unit that includes both
+  `<beman/execution26/execution.hpp>` and Catch2 headers (i.e.
+  `sender/vocab.test.cpp`) fail to parse Catch2's own headers with unrelated
+  syntax errors. Forcing header mode makes the vendored tree behave exactly
+  like the reference repo's usage (traditional includes, no `import`).
+- New component `src/smd/forth/sender/vocab.hpp` (+ `vocab.test.cpp`)
+  aliases `beman::execution26::{just,then,let_value,when_all,sync_wait}`
+  into `smd::forth::sender`, mirroring
+  `~/src/compile-time-scheme/main/src/smd/smdscheme/sender/sender_v.hpp`
+  (fresh minimal header, no `task` alias since Beman Task is not vendored
+  yet). Test proves
+  `sync_wait(then(just(20), [](int x){ return x + 22; }))` yields 42 under
+  `gnu++26` — confirms the vendored tree digests on both toolchains.
+- Wired via a new `src/smd/forth/sender/CMakeLists.txt` (added to the same
+  `forth_forth_headers` file set as the rest of `compile-time-forth.forth`),
+  descended into from `src/smd/forth/CMakeLists.txt` with `add_subdirectory(sender)`
+  placed after the existing Catch2 discovery block so the new `sender_test`
+  executable can rely on `Catch2::Catch2WithMain` already being resolved.
+- Verified green on both toolchains: `make compile`, `make test`, `make lint`;
+  `smoke.sh gcc-16` and `smoke.sh clang-21` both end `SMOKE OK`. 3/3 tests
+  pass on each toolchain (the pre-existing `forth` test plus the two new
+  `SenderVocabTest` cases).
+- No DIV filed: forcing header-mode (`BEMAN_USE_MODULES OFF`) is an
+  implementation necessity to match the plan's stated integration (plain
+  `add_subdirectory`, traditional headers), not a deviation from
+  `docs/forth-plan.md` or Forth-2012 semantics.

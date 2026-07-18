@@ -94,3 +94,13 @@ Dependencies: F1 (satisfied by this merge). Runs in parallel with F2.
 
 None outstanding from F1. `docs/forth-plan.md` is committed and tracked as of
 the F0 merge; it should stay that way.
+
+## F2 complete
+
+Step F2 (vendor Beman Execution) is done in worktree `wt-f2` / branch
+`step/f2`. See `handoff.md` section "Step F2 — Vendor Beman Execution" for
+the full facts (submodule URL + pinned commit, `BEMAN_USE_MODULES OFF` note,
+`sender/vocab.hpp` details). `make compile`, `make test`, `make lint`, and
+`smoke.sh` are green on gcc-16 and clang-21. Not merged by this worker — the
+orchestrator merges. F3 (parallel, separate worktree) is unaffected; its
+section above is unchanged by this note.

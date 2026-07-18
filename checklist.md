@@ -4,7 +4,7 @@
 
 - [x] Step F0: governance install
 - [x] Step F1: C++26 baseline
-- [ ] Step F2: vendor Beman Execution
+- [x] Step F2: vendor Beman Execution
 - [ ] Step F3: import foundation
 - [ ] Step F4: import parser combinators
 - [ ] Step F5: Forth lexical layer

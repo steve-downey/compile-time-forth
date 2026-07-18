@@ -27,6 +27,13 @@ option(
 
 set(CMAKE_VERIFY_INTERFACE_HEADER_SETS ON)
 
+# Vendor Beman Execution (git submodule at vendor/execution); no
+# FetchContent, no vcpkg, no install-time discovery. Header-mode only: this
+# project consumes it through the traditional <beman/execution26/...>
+# headers, not C++ modules.
+set(BEMAN_USE_MODULES OFF CACHE BOOL "Disable modules" FORCE)
+add_subdirectory(vendor/execution)
+
 # Create the library target and named header set for beman.optional
 add_library(compile-time-forth.forth STATIC "")
 
@@ -34,6 +41,8 @@ target_sources(
     compile-time-forth.forth
     PUBLIC FILE_SET forth_forth_headers TYPE HEADERS BASE_DIRS src
 )
+
+target_link_libraries(compile-time-forth.forth PUBLIC beman::execution)
 
 if(FORTH_ENABLE_TESTING)
     find_package(Catch2 3 QUIET)
