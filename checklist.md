@@ -8,7 +8,7 @@
 - [x] Step F3: import foundation
 - [ ] Step F4: import parser combinators
 - [ ] Step F5: Forth lexical layer
-- [ ] Step F6: syntax tree
+- [x] Step F6: syntax tree
 - [ ] Step F7: grammar
 - [ ] Step F8: machine substrate
 - [ ] Step F9: dictionary

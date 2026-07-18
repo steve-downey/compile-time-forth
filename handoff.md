@@ -172,3 +172,125 @@ a fact just because a later step changed something adjacent.
   lambda builds a `tree_arena<point_node, 8>` (a local test node type),
   allocates two nodes via `make_arena_box`, and reads them back through their
   `arena_box` handles, all at compile time.
+
+## Step F6 — Syntax tree
+
+- Added `src/smd/forth/reader/syntax_tree.hpp` (+ `syntax_tree.test.cpp`),
+  namespace `smd::forth::reader`, canonical include
+  `<smd/forth/reader/syntax_tree.hpp>`.
+- Node kinds (all exactly as specified): `syn_literal{cell, pos}`,
+  `syn_word<MaxName>{name, pos}`,
+  `syn_colon_def<MaxNodes,MaxBody,MaxName>{name, declared_effect, body, pos}`,
+  `syn_if<...>{then_body, else_body, pos}`,
+  `syn_begin_until<...>{body, pos}`,
+  `syn_begin_while<...>{condition, body, pos}`,
+  `syn_do_loop<...>{body, is_plus_loop, pos}`,
+  `syn_variable<MaxName>{name, pos}`, `syn_constant<MaxName>{name, pos}`,
+  `syn_create<MaxName>{name, pos}`, `syn_tick<MaxName>{name, pos}`. Every kind
+  additionally carries a `foundation::source_pos pos` member (not explicitly
+  named in the plan's node-kind shorthand, but covered by "attach source
+  positions where sensible"), left default-constructed until F7's grammar
+  populates it.
+- **Design note for how D3 is satisfied without `fix`/`Box`:** the closed
+  node type `syn_node<MaxNodes, MaxBody, MaxName>` is *forward-declared*
+  before any of the composite node kinds (`syn_colon_def`, `syn_if`,
+  `syn_begin_until`, `syn_begin_while`, `syn_do_loop`) are defined. Those
+  composite kinds hold `arena_box<syn_node<...>, MaxNodes>` handles (via the
+  `syn_box`/`syn_body` aliases) to their children — this compiles with only
+  the forward declaration in scope because `foundation::arena_box<T,
+  MaxNodes>` never stores a `T` (only an `int id_`), so it never needs `T`
+  complete. `syn_node` itself is then defined afterward as a `std::variant`
+  over all eleven node-kind structs. This is a different technique than the
+  Scheme reference repo's `elaborated_core.hpp`/`datum_type.hpp` (which use
+  `foundation::fix<F>` to close an open-recursive functor) — deliberately so,
+  since `fix`/`Box` are barred from this project's compiled pipeline (D3).
+  No `fix.hpp` equivalent exists or is needed in `smd::forth::reader`.
+- `declared_effect` is a plain `foundation::source_span` (not
+  `std::optional<source_span>`): the default-constructed span (`first ==
+  last`, both `source_pos{0, 1, 1}`) *is* the "no stack-effect comment
+  written" state, so no extra field or `std::optional` was needed to keep
+  every node trivially destructible via plain aggregates. F7's grammar sets
+  it to a real (non-empty) span when it captures a `( ... )` comment; F12
+  re-slices the original source text through that span rather than the tree
+  storing the comment text a second time.
+  `foundation::source_span`/`source_pos` are unchanged from F3.
+- Capacities are template parameters on every node-kind struct, `syn_node`,
+  and `syntax_tree` (`MaxNodes`, `MaxBody`, `MaxName`), each defaulting to
+  `1024`/`64`/`32` respectively (documented in the header); no hardcoded
+  capacity constants anywhere in `reader/`.
+- `syntax_tree<MaxNodes, MaxBody, MaxName>` bundles a
+  `foundation::tree_arena<syn_node<...>, MaxNodes> arena` with a top-level
+  `syn_body<...> program` (the sequence of top-level forms in source order —
+  colon defs, `VARIABLE`/`CONSTANT`/`CREATE` declarations, and any top-level
+  executable words). This `program` member is new relative to the plan's
+  literal node-kind list; it exists because a whole Forth *program* is more
+  than one node, and F7's grammar needs somewhere to record the top-level
+  sequence. Not a divergence — no DIV filed, since D3 only constrains node
+  representation, not whether a wrapper struct may also hold a top-level
+  sequence.
+- Two small helper free functions, `make_syn_name<MaxName>(std::string_view)`
+  and `syn_name_equals<MaxName>(syn_name<MaxName> const&, std::string_view)`,
+  ease building/reading `syn_name` values; both assume the input text is
+  already case-folded (folding happens in F5's lexer, not here).
+- Every node-kind struct plus the closed `syn_node` is verified trivially
+  destructible via `static_assert(std::is_trivially_destructible_v<...>)` in
+  a `detail` namespace at the bottom of `syntax_tree.hpp`, checked against
+  the header's own default capacities as a representative instantiation.
+- CMake: headers join `forth_forth_headers` `FILE_SET` on
+  `compile-time-forth.forth` (no separate reader target, matching F3's
+  pattern); tests build as `reader_test`, wired from
+  `src/smd/forth/reader/CMakeLists.txt`, descended into via
+  `add_subdirectory(reader)` in `src/smd/forth/CMakeLists.txt` (placed
+  between `foundation` and `sender`, alphabetical).
+- Added `docs/compiler_architecture.org`: pipeline diagram (mermaid) —
+  source text → constexpr applicative parser combinators → syntax tree →
+  elaboration (resolution + stack-effect checking) → codegen → {direct
+  evaluator, stack-machine VM, sender/receiver CPS backend} — plus prose,
+  one sentence per line, marked `DRAFT — pending author revision`. Only the
+  "Phase 3: The Syntax Tree" section transcludes real code so far (three
+  `#+transclude` blocks, by UUID anchor, from `syntax_tree.hpp`: the
+  leaf-node kinds, the control-flow/composite node kinds, and the closed
+  `syn_node` variant); the other phase sections are prose-only placeholders
+  noting which future step (F4/F5/F7/F11/F12/F13/F14/F18) will add their
+  transclusions, since transcluding code that doesn't exist yet isn't
+  possible and per `docs/CODING_RULES.md` illustrative-but-noncompiling code
+  is not allowed.
+- The merge-criterion `static_assert` lives in
+  `src/smd/forth/reader/syntax_tree.test.cpp`: an immediately-invoked lambda
+  hand-builds `: SQUARED DUP * ;` (a `syn_word` "DUP", a `syn_word` "*", and
+  a `syn_colon_def` "SQUARED" whose body holds both, all allocated in one
+  small `syntax_tree<8, 4, 16>`), and a second immediately-invoked lambda
+  walks it back through `arena.get`/`std::get<Kind>` and verifies the name
+  and body structure, all at compile time; both are re-checked at runtime in
+  a `TEST_CASE` for Catch2 visibility.
+- Verified on `gcc-16` (the only toolchain available in this worker's
+  environment): `make compile`, `make test` (54/54 passed, up from 50/50 at
+  F3), `make lint` (see below), `smoke.sh gcc-16` all green/`SMOKE OK`.
+  `clang-21` was not independently re-verified by this step (not installed
+  in this worker's sandbox); nothing in `syntax_tree.hpp` uses anything
+  `gcc-16`-specific, so no portability risk is expected, but a `clang-21`
+  run is worth doing before/at the next merge point if that toolchain is
+  available.
+- **Environment note, not a DIV (no plan/Forth-2012 deviation, just a
+  tooling-version observation):** `make lint`'s `clang-format` pre-commit
+  hook, run with the `clang-format` installed in this worker's sandbox
+  (Ubuntu clang-format 21.1.8), reformats seven **pre-existing, untouched**
+  F1–F3 files on every run — `foundation/{applicative,functor,parse_error,
+  source_pos,static_vector}.hpp`, `foundation/applicative.test.cpp`, and
+  `sender/vocab.test.cpp` — shifting certain multi-line continuations by one
+  space. Confirmed by stashing all F6 changes and re-running `clang-format
+  --style=file -n` against the clean F3-merged tree: the same seven files
+  already fail formatting with zero F6 changes present, so this is
+  pre-existing drift (likely a `clang-format` minor-version difference from
+  whatever produced the F1–F3-green `make lint` runs), not something F6
+  introduced or fixed. This step left those seven files untouched
+  (`git checkout --` after each `make lint` run) per the "no unrelated files
+  changed" rule, so **`make lint` as run in this exact sandbox currently
+  fails** on those pre-existing files even though every file this step
+  actually touched is clang-format-clean and CMake-linting-clean (verified
+  directly with `clang-format --style=file -n` against
+  `reader/syntax_tree.hpp`/`syntax_tree.test.cpp`, and via `make lint`'s
+  "CMake linting" hook passing on `reader/CMakeLists.txt`). Whoever merges
+  next should decide whether to normalize those seven files' formatting in
+  their own (unrelated) commit, or pin/reconcile the `clang-format` version
+  the project expects.

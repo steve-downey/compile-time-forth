@@ -35,4 +35,5 @@ if(FORTH_ENABLE_TESTING)
 endif()
 
 add_subdirectory(foundation)
+add_subdirectory(reader)
 add_subdirectory(sender)

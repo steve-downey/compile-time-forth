@@ -1,0 +1,79 @@
+#+OPTIONS: broken-links:nil c:nil creator:nil d:(not "LOGBOOK") date:t e:t
+#+OPTIONS: ':nil *:t -:t ::t <:t H:4 \n:nil ^:nil arch:headline author:t
+#+TITLE: Compiler Architecture: Compile-Time Forth in C++26
+#+SUBTITLE: Techniques and Explanations for C++ Developers
+#+AUTHOR: Agent
+#+LANGUAGE: en
+#+STARTUP: showall
+
+DRAFT — pending author revision.
+
+* Introduction
+
+This document describes the compiler architecture of =smd::forth=, a compile-time and runtime-capable Forth compiler in C++26.
+Like its sibling document for the Scheme proof of concept (=~/src/compile-time-scheme/main/docs/compiler_architecture.org=), it exists to translate compiler jargon into terms familiar to working C++ developers.
+Every code sample below is transcluded from the real source tree by a UUID anchor, never hand-copied prose that might drift from what actually compiles.
+This document is filled in incrementally, one pipeline phase at a time, as each phase's implementation step lands (=docs/forth-plan.md=).
+As of this revision only the syntax-tree phase (step F6) exists; later sections describe phases that are planned but not yet implemented, and carry no transclusion until their step lands.
+
+* Pipeline overview
+
+The compiler is a single staged pipeline, run entirely in =constexpr= evaluation, that can then be re-run at ordinary runtime against fresh input.
+Each stage consumes the previous stage's output and produces a new, more refined representation; no stage mutates another stage's data in place.
+
+#+begin_src mermaid
+flowchart LR
+    A[Source text] --> B[Constexpr applicative parser combinators]
+    B --> C[Syntax tree]
+    C --> D["Elaboration (resolution + stack-effect checking)"]
+    D --> E[Codegen]
+    E --> F[Direct evaluator]
+    E --> G[Stack-machine VM]
+    E --> H["Sender/receiver CPS backend"]
+#+end_src
+
+The three codegen targets on the right are three different ways of running the same elaborated core: an immediate tree-walking evaluator, a compiled instruction array executed by a small stack machine, and a Beman Execution sender graph for structured-concurrency integration.
+All three read the same elaborated core; none of them re-parses source text or re-derives stack effects.
+
+* Phase 1: Source Text and the Lexical Layer
+
+Forth source is plain text: whitespace-delimited words, numeric literals, and =( ... )= stack-effect comments.
+Unlike the Scheme front end, there is no reader/eval loop and no =IMMEDIATE=; the entire program is parsed structurally, once, before anything executes (=docs/forth-plan.md= D5).
+The lexical layer (step F5) folds every word to uppercase at scan time, so nothing downstream of it ever needs to re-fold case.
+This section will transclude the lexer's scanning primitives once step F5 lands.
+
+* Phase 2: Applicative Parser Combinators
+
+Recursive descent, hand-rolled as a tree of =if=/=else=/=while=, is error-prone and hard to compose.
+Instead the front end is built from parser combinators: small composable objects that snap together into a grammar the way Lego bricks snap together into a model.
+Because C++26 =constexpr= evaluation cannot easily juggle capturing lambdas converted to function pointers, parsers are represented as ordinary callable objects (functors with =operator()=), registered against the project's =functor=/=applicative=/=alternative= typeclasses (imported in step F3, exercised for real the first time in step F4).
+This section will transclude the combinator vocabulary once step F4 lands, and the Forth grammar built from it once step F7 lands.
+
+* Phase 3: The Syntax Tree
+
+The syntax tree is the parser's output: a direct, structural record of what the source text says, before anything has been resolved against the dictionary or checked for stack-effect soundness.
+Every tree in this compiler — the syntax tree, the elaborated core, and the compiled instruction program — is a flat arena of trivially destructible nodes addressed by integer =arena_box= handles (=docs/forth-plan.md= D3); there is no heap-backed =fix=/=Box= recursion anywhere in the compiled pipeline.
+The syntax tree's closed node type, =syn_node=, is a =std::variant= over every syntax form Forth needs: literals, bare words, colon definitions, the three control-flow shapes (=IF=, =BEGIN ... UNTIL=, =BEGIN ... WHILE ... REPEAT=, =DO ... LOOP=), and the four declaration forms (=VARIABLE=, =CONSTANT=, =CREATE=, =' NAME= tick).
+=syn_node= is forward-declared before it is defined, which is what lets its own composite alternatives (a colon definition's body, an =IF='s two branches, and so on) hold handles to sibling nodes of the very type being defined — an =arena_box<T, MaxNodes>= handle only ever stores an integer, so it never needs =T= to be complete, and the recursion closes without reaching for =fix= at all.
+
+#+transclude: [[file:../src/smd/forth/reader/syntax_tree.hpp::e74ee0de-460c-41da-aeb4-23235b52df77]] :lines 2- :src cpp :end "e74ee0de-460c-41da-aeb4-23235b52df77 end"
+
+The three control-flow node kinds each carry one or two bodies — sequences of child-node handles — and the colon-definition node additionally carries the raw span of a stack-effect comment for step F12 to re-slice out of the original source text later, rather than duplicating that text into the tree now.
+
+#+transclude: [[file:../src/smd/forth/reader/syntax_tree.hpp::e701a3a8-aeff-4b78-9dd5-df3b16fcb6b8]] :lines 2- :src cpp :end "e701a3a8-aeff-4b78-9dd5-df3b16fcb6b8 end"
+
+The closed node type itself ties every kind above into a single variant that a =foundation::tree_arena= can store flat, with every capacity (arena size, body length, name length) left as a template parameter rather than a hardcoded constant.
+
+#+transclude: [[file:../src/smd/forth/reader/syntax_tree.hpp::0c3a46c6-f7a0-4c65-9798-bf6c73ae5967]] :lines 2- :src cpp :end "0c3a46c6-f7a0-4c65-9798-bf6c73ae5967 end"
+
+* Phase 4: Elaboration (Resolution and Stack-Effect Checking)
+
+Elaboration is compiler jargon for "figuring out what the code actually means."
+Where the syntax tree only records what the text says structurally, the elaborated core additionally resolves every word reference against the dictionary and checks that every definition's stack effect is sound before anything is allowed to run.
+This section will transclude the elaborated core's node type once step F11 lands, and the stack-effect checker once step F12 lands.
+
+* Phase 5: Codegen and the Three Backends
+
+Codegen turns the elaborated core into a compiled instruction program: another flat, trivially destructible =tree_arena=, this time of machine instructions rather than syntax forms.
+That same instruction program is then interpretable three ways: directly by a tree-walking evaluator, by a small classic stack machine (two fixed-capacity stacks, an arena data space, and an output buffer), and by a Beman Execution sender graph in which Forth's one-shot, dynamic-extent control words (=EXIT=, =LEAVE=, =CATCH=/=THROW=) map directly onto the sender/receiver completion discipline.
+This section will transclude the direct evaluator once step F13 lands, the stack machine once step F14 lands, and the sender backend once step F18 lands.
