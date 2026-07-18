@@ -172,3 +172,106 @@ a fact just because a later step changed something adjacent.
   lambda builds a `tree_arena<point_node, 8>` (a local test node type),
   allocates two nodes via `make_arena_box`, and reads them back through their
   `arena_box` handles, all at compile time.
+
+## Step F4 — Import parser combinators
+
+- Imported from `~/src/compile-time-scheme/main/src/smd/smdscheme/parser/`
+  into `src/smd/forth/parser/`, renamespaced `smd::smdscheme::parser` ->
+  `smd::forth::parser`: `cursor.hpp`, `parser.hpp`, `alt.hpp`,
+  `parser_ops.hpp`, plus their `.test.cpp` files. `test_neg_parser_concept.cpp`
+  was **not** imported — this project has no negative-compile-test harness
+  yet (F3 didn't bring one in either; none of `foundation`'s
+  `test_neg_*.cpp` files were imported), and F4's merge criteria don't call
+  for one; F21 (error-quality and negative-compile pass) is where that
+  infrastructure and pattern arrive.
+- Scheme char predicates left behind per the plan: `cursor.hpp` dropped
+  `is_initial_symbol_char`, `is_symbol_char`, and `is_delimiter` (all
+  s-expression/symbol-token-specific). Kept: the `cursor` class itself,
+  `is_space` (generic ASCII whitespace, not Scheme-specific), and
+  `skip_intertoken_space` (generic algorithm built on `is_space`, used by
+  `alt.hpp`'s `lexeme`). Forth's own word/number/comment predicates arrive
+  in F5's `forth_chars.hpp`.
+- `parser.hpp` and `alt.hpp` ported unchanged apart from renamespacing and
+  include-path updates: `parser_like`, `parse_state<T>`, `parse_result<T>`,
+  `parser<F>` (+ deduction guide), `pure`, `satisfy`, `char_p`, `map`,
+  `lift2`, `sequence_left`, `sequence_right`, `operator|` (from
+  `parser.hpp`); `alt`, `many<Capacity>`, `some<Capacity>`, `optional`,
+  `lexeme` (from `alt.hpp`). No hardcoded capacities were found to
+  parameterize — `many`/`some`'s `Capacity` was already an NTTP with no
+  default upstream, and stays that way (call sites specify it explicitly,
+  same as upstream).
+- `parser_ops.hpp` is the one file with a real behavior change beyond
+  renamespacing: **DIV-0003**
+  (`docs/divergences/DIV-0003-parser-foundation-typeclass.md`). The Scheme
+  reference's `parser_ops.hpp` reimplemented its own local
+  `ParserApplicative`/`ParserAlternative` CRTP layers and its own local
+  `parser_typeclass<T>` lookup variable, never actually plugging into
+  `smd::smdscheme::foundation`'s functor/applicative/alternative machinery
+  even though that machinery already existed alongside it. This project's
+  `parser_ops` instead derives directly from
+  `smd::forth::foundation::functor<parser_functor_impl>`,
+  `foundation::applicative<parser_applicative_impl>`, and
+  `foundation::alternative<parser_alternative_impl>`, and registers
+  `parser<F>` against foundation's own `functor_typeclass`,
+  `applicative_typeclass`, and `alternative_typeclass` variable templates
+  (by reopening `namespace smd::forth::foundation` inside `parser_ops.hpp`).
+  `foundation::fmap`/`foundation::invoke`/`foundation::alt` (the free CPOs)
+  now dispatch to `parser<F>` exactly as they would to any other
+  registered type — `parser<F>` is the first production, exported type to
+  register against `foundation`'s CRTP bases (F3's own tests for those
+  three headers only used small test-local instance types). The global
+  default instance is `smd::forth::parser::parser_v` (a `parser_ops`), same
+  name as upstream.
+- Consequence of deriving from `foundation::alternative<Impl>`: it requires
+  both `alt` and `empty` (an identity element for `alt`), where the Scheme
+  reference's local parser typeclass provided only `alt`. `empty<T>()` is
+  added as a parser of value type `T` that always fails without consuming;
+  because `parser<F>` is a family of types (parameterized by the wrapped
+  callable) rather than one concrete container type,
+  `foundation::empty_fn`'s zero-argument calling convention
+  (`tc_type{}.empty()`) cannot deduce `T`, so the generic free function
+  `foundation::empty<T>()` does not work for `parser<F>` — call
+  `parser_v.empty<T>()` directly instead (documented on
+  `parser_alternative_impl::empty`'s doc comment and exercised by
+  `parser_ops.test.cpp`'s `AlternativeEmptyIsIdentity` test). Full details
+  and consequences are in DIV-0003.
+- The typeclass object's `discard_first`/`discard_second` (inherited from
+  `foundation::applicative<Impl>`) cover the same ground as the Scheme
+  reference's `parser_v.sequence_left`/`sequence_right` (`discard_first`
+  keeps the second argument's value, `discard_second` keeps the first's);
+  `parser_ops` does not re-add `sequence_left`/`sequence_right` names to
+  avoid two names for the same typeclass-level operation. The free
+  functions `sequence_left`/`sequence_right` in `parser.hpp` (Layer 0, not
+  the typeclass object) are untouched and still exist under their original
+  names.
+- `parser_ops` also carries `many<Capacity>`/`some<Capacity>`/`optional`/
+  `lexeme` as direct member-template wrappers over the `alt.hpp` free
+  functions (foundation has no counterpart for these; they are
+  parser-specific repetition/whitespace combinators, not
+  functor/applicative/alternative primitives).
+- Merge-criterion `static_assert` (immediately-invoked-lambda pattern)
+  lives in `src/smd/forth/parser/parser_ops.test.cpp`: builds a digit
+  parser via `satisfy` over a local `is_digit` predicate, folds one-or-more
+  digits (`some<8>`) into an `int` with `map`, and parses `"42"` — composed
+  entirely from the generic primitives in this test, not the Scheme atom
+  parser. `parser_ops.test.cpp` also has functor-law tests (identity,
+  composition) and exercises `foundation::fmap`/`invoke`/`alt` dispatching
+  to `parser<F>` directly, per house style's "law-focused tests before
+  performance tests" rule.
+- CMake: headers fold into the existing `forth_forth_headers` `FILE_SET` on
+  `compile-time-forth.forth` (no separate `compile-time-forth.parser`
+  target — same pattern as `foundation`); tests build as `parser_test`,
+  wired from `src/smd/forth/parser/CMakeLists.txt`, descended into via
+  `add_subdirectory(parser)` in `src/smd/forth/CMakeLists.txt`.
+- Verified on both `gcc-16` and `clang-21`: `make compile`, `make test`
+  (89/89 passed), `make lint` all green for the `parser/` addition itself.
+  Note: `make lint` (`pre-commit run -a`) currently fails on a pre-existing
+  `clang-format` drift in F2/F3 files (`foundation/{applicative,functor,
+  parse_error,source_pos,static_vector}.hpp`, `applicative.test.cpp`,
+  `sender/vocab.test.cpp`) that reproduces on the clean F3-merged baseline
+  *before* any F4 change (verified by stashing all F4 edits and re-running
+  `make lint`) — this is unrelated to F4 and out of its scope to fix
+  (touching those files would violate "no unrelated files changed"); no
+  file under `src/smd/forth/parser/` is ever reformatted by the same
+  `clang-format` run. `smoke.sh gcc-16` and `smoke.sh clang-21` both end
+  `SMOKE OK`.

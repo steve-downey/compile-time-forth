@@ -174,3 +174,91 @@ compiled unit, which nothing here has needed so far since everything in
 Dependencies satisfied by this merge: F3 -> {F4, F6, F8} per the plan's
 parallelism summary. F4, F6, and F8 can each start once F3 is merged to
 main; they are mutually parallel (separate worktrees), same as F2/F3 were.
+
+## F4 complete — what F5/F7 need to know about the parser combinator API
+
+Step F4 (import parser combinators) is done in worktree `wt-f4` / branch
+`step/f4`. `src/smd/forth/parser/` (namespace `smd::forth::parser`,
+canonical includes `<smd/forth/parser/*.hpp>`) is imported from
+`~/src/compile-time-scheme/main/src/smd/smdscheme/parser/`. All 89
+imported/authored tests pass on `gcc-16` and `clang-21`; `make compile`,
+`make test`, both `smoke.sh` runs are green. See `handoff.md`'s "Step F4 —
+Import parser combinators" section for the full import inventory, what was
+left behind (Scheme char predicates, `test_neg_parser_concept.cpp`), and
+DIV-0003 (the parser typeclass-object now derives from
+`smd::forth::foundation`'s functor/applicative/alternative CRTP bases and
+registers against foundation's own typeclass variables, rather than
+reimplementing a separate local typeclass mechanism the way the Scheme
+reference did).
+
+**`make lint` note for whoever merges this**: `pre-commit run -a` currently
+fails with a `clang-format` drift on a handful of F2/F3 files
+(`foundation/{applicative,functor,parse_error,source_pos,static_vector}.hpp`,
+`foundation/applicative.test.cpp`, `sender/vocab.test.cpp`) — reproduces on
+the clean F3-merged baseline with none of F4's changes present (verified by
+stashing this step's diff and re-running `make lint`), so it predates F4
+and is out of this step's scope to fix (fixing it would mean reformatting
+files this step never touched). No file under `src/smd/forth/parser/` is
+ever touched by that same `clang-format` run. Whoever picks up formatting
+hygiene next (or the orchestrator, at merge time) should decide whether to
+take a dedicated small step to re-run `clang-format` repo-wide and commit
+the result, or pin down why the resolved `clang-format` version drifted
+from whatever produced the currently-committed formatting.
+
+The API surface later steps build on:
+
+- **Layer 0 (free functions, this is what F5/F7 will mostly use, per D6 —
+  "the combinator library is the production parser"):**
+  - `cursor` (`src/smd/forth/parser/cursor.hpp`): immutable input view +
+    `foundation::source_pos`; `empty()`, `peek()`, `bump()`, `position()`,
+    `remaining()`. Plus `is_space(char)` and
+    `skip_intertoken_space(cursor) -> cursor` (generic ASCII whitespace
+    only — no Forth-specific predicates here; those are F5's job in
+    `forth_chars.hpp`, and go in `src/smd/forth/reader/`, not
+    `src/smd/forth/parser/`).
+  - `parser.hpp`: `parser_like` concept, `parse_state<T>{value, rest}`,
+    `parse_result<T> = foundation::result<parse_state<T>>`, `parser<F>`
+    (callable wrapper + CTAD deduction guide), `pure(value)`,
+    `satisfy(pred, expected) `, `char_p(char)`, `map(pa, f)`,
+    `lift2(pa, pb, f)`, `sequence_left(pa, pb)`, `sequence_right(pa, pb)`,
+    `operator|` (ordered choice — succeeds with `pa` unless `pa` fails
+    *without consuming*, in which case tries `pb`; if `pa` consumed input
+    before failing, the error propagates without trying `pb` — this is the
+    backtracking-prevention rule F7's grammar must respect when composing
+    productions).
+  - `alt.hpp`: `alt(pa, pb)` (thin `operator|` alias),
+    `many<Capacity>(p)` / `some<Capacity>(p)` (collect into
+    `foundation::static_vector<V, Capacity>`; `many` always succeeds,
+    `some` requires >=1 match), `optional(p)` (wraps in `std::optional`,
+    always succeeds), `lexeme(p)` (strips surrounding
+    `skip_intertoken_space`). `Capacity` has no default anywhere in this
+    file (matches upstream); always specify it at each real call site —
+    same convention as `arena_box`/`tree_arena`'s `MaxNodes` from F3.
+- **Layer 1/2 (typeclass-object, `parser_v`):** `parser_ops` (in
+  `parser_ops.hpp`) derives from
+  `smd::forth::foundation::{functor,applicative,alternative}<Impl>`, and
+  `parser<F>` is registered against foundation's own
+  `functor_typeclass`/`applicative_typeclass`/`alternative_typeclass`
+  (DIV-0003). `smd::forth::parser::parser_v` is the global instance;
+  `foundation::fmap`/`foundation::invoke`/`foundation::alt` all dispatch to
+  any `parser<F>` through the normal CPO path, same as any other
+  registered type. `parser_v.empty<T>()` (explicit template argument)
+  builds an always-failing parser of value type `T` — `foundation::empty<T>()`
+  does **not** work for `parser<F>` (see DIV-0003 for why: `parser<F>` is a
+  type family, not one container type, and `empty_fn`'s zero-argument
+  calling convention has nothing to deduce `T` from). This layer exists
+  mainly to prove the typeclass laws hold for a real production type and
+  to let generic (non-parser-specific) code written against
+  `foundation::fmap`/`invoke`/`alt` also work over parsers; F5/F7 are not
+  expected to need it for ordinary grammar-writing — reach for the Layer 0
+  free functions first, matching D6.
+- `src/smd/forth/parser/parser_ops.test.cpp` has the F4 merge-criterion
+  `static_assert`: an integer parser built from `satisfy` (digit
+  predicate) + `some<8>` + `map`, parsing `"42"`, entirely from primitives
+  — this is the shape F5's number recognition and F7's literal-parsing
+  grammar production should follow (a digit-class predicate composed with
+  `satisfy`/`some`/`map`, not a hand-rolled scanning loop).
+
+Dependencies satisfied by this merge: F4 -> F5 per the plan's parallelism
+summary (Track A: F4 -> F5 -> F7, F6 joins F7). F5 (Forth lexical layer,
+`src/smd/forth/reader/forth_chars.hpp`) can start once this merges to main.
