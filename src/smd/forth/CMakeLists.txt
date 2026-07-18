@@ -36,4 +36,5 @@ endif()
 
 add_subdirectory(foundation)
 add_subdirectory(parser)
+add_subdirectory(reader)
 add_subdirectory(sender)
