@@ -10,7 +10,7 @@
 - [ ] Step F5: Forth lexical layer
 - [ ] Step F6: syntax tree
 - [ ] Step F7: grammar
-- [ ] Step F8: machine substrate
+- [x] Step F8: machine substrate
 - [ ] Step F9: dictionary
 - [ ] Step F10: data space
 - [ ] Step F11: elaborated core and resolution
