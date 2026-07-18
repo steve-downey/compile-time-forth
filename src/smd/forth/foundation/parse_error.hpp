@@ -19,7 +19,7 @@ struct parse_error {
     char const *message{}; ///< Static description of what was expected.
 
     friend constexpr auto operator==(foundation::parse_error const &lhs,
-                                      foundation::parse_error const &rhs)
+                                     foundation::parse_error const &rhs)
         -> bool {
         if (!(lhs.where == rhs.where)) {
             return false;

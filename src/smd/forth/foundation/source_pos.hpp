@@ -14,7 +14,7 @@ struct source_pos {
     int column{1}; ///< 1-based column number.
 
     friend constexpr auto operator==(foundation::source_pos,
-                                      foundation::source_pos) -> bool = default;
+                                     foundation::source_pos) -> bool = default;
 };
 
 } // namespace smd::forth::foundation

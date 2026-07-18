@@ -6,10 +6,7 @@ target_sources(
     PUBLIC
         FILE_SET forth_forth_headers
             TYPE HEADERS
-            FILES
-                cell.hpp
-                forth_state.hpp
-                stacks.hpp
+            FILES cell.hpp forth_state.hpp stacks.hpp
 )
 
 if(FORTH_ENABLE_TESTING)
@@ -17,10 +14,7 @@ if(FORTH_ENABLE_TESTING)
 
     target_sources(
         machine_test
-        PRIVATE
-            cell.test.cpp
-            forth_state.test.cpp
-            stacks.test.cpp
+        PRIVATE cell.test.cpp forth_state.test.cpp stacks.test.cpp
     )
 
     target_link_libraries(machine_test compile-time-forth.forth)

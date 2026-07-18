@@ -34,51 +34,51 @@ struct terminating_partial {
     template <class NextArg>
     constexpr auto operator()(NextArg &&next_arg) {
         return invoke_or_extend(std::forward<NextArg>(next_arg),
-                                 std::index_sequence_for<BoundArgs...>{});
+                                std::index_sequence_for<BoundArgs...>{});
     }
 
     /// Const overload for use in const applicative contexts.
     template <class NextArg>
     constexpr auto operator()(NextArg &&next_arg) const {
         return invoke_or_extend_const(std::forward<NextArg>(next_arg),
-                                       std::index_sequence_for<BoundArgs...>{});
+                                      std::index_sequence_for<BoundArgs...>{});
     }
 
   private:
     template <class NextArg, std::size_t... Idx>
     constexpr auto invoke_or_extend(NextArg &&next_arg,
-                                     std::index_sequence<Idx...>) {
+                                    std::index_sequence<Idx...>) {
         if constexpr (std::invocable<Function &, BoundArgs &..., NextArg>) {
             return std::invoke(function, std::get<Idx>(bound_args)...,
-                                std::forward<NextArg>(next_arg));
+                               std::forward<NextArg>(next_arg));
         } else {
             using next_partial =
                 terminating_partial<Function, BoundArgs...,
-                                     std::remove_cvref_t<NextArg>>;
+                                    std::remove_cvref_t<NextArg>>;
             return next_partial{
                 function,
                 std::tuple_cat(std::move(bound_args),
-                                std::tuple<std::remove_cvref_t<NextArg>>{
-                                    std::forward<NextArg>(next_arg)})};
+                               std::tuple<std::remove_cvref_t<NextArg>>{
+                                   std::forward<NextArg>(next_arg)})};
         }
     }
 
     template <class NextArg, std::size_t... Idx>
     constexpr auto invoke_or_extend_const(NextArg &&next_arg,
-                                           std::index_sequence<Idx...>) const {
+                                          std::index_sequence<Idx...>) const {
         if constexpr (std::invocable<const Function &, const BoundArgs &...,
-                                      NextArg>) {
+                                     NextArg>) {
             return std::invoke(function, std::get<Idx>(bound_args)...,
-                                std::forward<NextArg>(next_arg));
+                               std::forward<NextArg>(next_arg));
         } else {
             using next_partial =
                 terminating_partial<Function, BoundArgs...,
-                                     std::remove_cvref_t<NextArg>>;
+                                    std::remove_cvref_t<NextArg>>;
             return next_partial{
                 function,
                 std::tuple_cat(bound_args,
-                                std::tuple<std::remove_cvref_t<NextArg>>{
-                                    std::forward<NextArg>(next_arg)})};
+                               std::tuple<std::remove_cvref_t<NextArg>>{
+                                   std::forward<NextArg>(next_arg)})};
         }
     }
 };
@@ -88,7 +88,7 @@ template <class Function>
 constexpr auto make_terminating_partial(Function &&function) {
     using stored = std::remove_cvref_t<Function>;
     return terminating_partial<stored>{std::forward<Function>(function),
-                                        std::tuple<>{}};
+                                       std::tuple<>{}};
 }
 
 } // namespace detail
@@ -122,7 +122,7 @@ struct applicative : protected Impl {
     /// @tparam RestArgs  Additional effectful argument types.
     template <class Function, class FirstArg, class... RestArgs>
     constexpr auto invoke(this auto &&self, Function &&function,
-                           FirstArg &&first_arg, RestArgs &&...rest_args) {
+                          FirstArg &&first_arg, RestArgs &&...rest_args) {
         using Self = std::remove_reference_t<decltype(self)>;
         using ImplBase =
             std::conditional_t<std::is_const_v<Self>, const Impl, Impl>;
@@ -149,25 +149,25 @@ struct applicative : protected Impl {
     /// Equivalent to @c invoke(function, a, b).
     template <class Function, class A, class B>
     constexpr auto lift_a2(this auto &&self, Function &&function, A &&a,
-                            B &&b) {
+                           B &&b) {
         return self.invoke(std::forward<Function>(function), std::forward<A>(a),
-                            std::forward<B>(b));
+                           std::forward<B>(b));
     }
 
     /// Alias for the @c apply primitive; applies a contextualized function
     /// to a contextualized argument.
     template <class FunctionInContext, class ArgInContext>
     constexpr auto ap(this auto &&self, FunctionInContext &&function,
-                       ArgInContext &&argument) {
+                      ArgInContext &&argument) {
         return self.apply(std::forward<FunctionInContext>(function),
-                           std::forward<ArgInContext>(argument));
+                          std::forward<ArgInContext>(argument));
     }
 
     /// Sequences two effectful values, discarding the first value and
     /// returning the second. Logs/effects from both are preserved.
     template <class FirstArg, class SecondArg>
     constexpr auto discard_first(this auto &&self, FirstArg &&first,
-                                  SecondArg &&second) {
+                                 SecondArg &&second) {
         return self.invoke(
             [](const auto &, auto &&rhs) {
                 return std::forward<decltype(rhs)>(rhs);
@@ -179,7 +179,7 @@ struct applicative : protected Impl {
     /// returning the first. Logs/effects from both are preserved.
     template <class FirstArg, class SecondArg>
     constexpr auto discard_second(this auto &&self, FirstArg &&first,
-                                   SecondArg &&second) {
+                                  SecondArg &&second) {
         return self.invoke(
             [](auto &&lhs, const auto &) {
                 return std::forward<decltype(lhs)>(lhs);
@@ -195,14 +195,14 @@ struct applicative : protected Impl {
 
     template <class Accumulated, class NextArg, class... RestArgs>
     constexpr auto apply_chain(this auto &&self, Accumulated &&accumulated,
-                                NextArg &&next_arg, RestArgs &&...rest_args) {
+                               NextArg &&next_arg, RestArgs &&...rest_args) {
         auto next = self.ap(std::forward<Accumulated>(accumulated),
-                             std::forward<NextArg>(next_arg));
+                            std::forward<NextArg>(next_arg));
         if constexpr (sizeof...(RestArgs) == 0) {
             return next;
         } else {
             return self.apply_chain(std::move(next),
-                                     std::forward<RestArgs>(rest_args)...);
+                                    std::forward<RestArgs>(rest_args)...);
         }
     }
 };
@@ -231,11 +231,11 @@ struct invoke_fn {
         class Function, class FirstArg, class... RestArgs,
         const auto &TC = applicative_typeclass<std::remove_cvref_t<FirstArg>>>
     constexpr auto operator()(Function &&function, FirstArg &&first_arg,
-                               RestArgs &&...rest_args) const {
+                              RestArgs &&...rest_args) const {
         using tc_type = std::remove_cvref_t<decltype(TC)>;
         return tc_type{}.invoke(std::forward<Function>(function),
-                                 std::forward<FirstArg>(first_arg),
-                                 std::forward<RestArgs>(rest_args)...);
+                                std::forward<FirstArg>(first_arg),
+                                std::forward<RestArgs>(rest_args)...);
     }
 };
 

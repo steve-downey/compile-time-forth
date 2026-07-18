@@ -30,8 +30,8 @@ struct functor : protected Impl {
     template <class T, class U>
     constexpr auto replace(this auto &&self, T &&value, U &&replacement) {
         return self.fmap([replacement = std::forward<U>(replacement)](
-                              const auto &) { return replacement; },
-                          std::forward<T>(value));
+                             const auto &) { return replacement; },
+                         std::forward<T>(value));
     }
 };
 

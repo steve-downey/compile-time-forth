@@ -88,8 +88,8 @@ static_assert([] {
 static_assert([] {
     auto pa = char_p('a');
     auto pb = char_p('b');
-    auto p = invoke([](char a, char b) { return a == 'a' && b == 'b'; }, pa,
-                    pb);
+    auto p =
+        invoke([](char a, char b) { return a == 'a' && b == 'b'; }, pa, pb);
     auto r = p(cursor{"ab"});
     return r.has_value() && r.value().value == true;
 }());
@@ -97,8 +97,7 @@ static_assert([] {
 static_assert([] {
     auto p = alt(char_p('a'), char_p('b'));
     return p(cursor{"a"}).value().value == 'a' &&
-           p(cursor{"b"}).value().value == 'b' &&
-           !p(cursor{"c"}).has_value();
+           p(cursor{"b"}).value().value == 'b' && !p(cursor{"c"}).has_value();
 }());
 
 // Derived operations: apply from lift2, invoke from pure+apply (via
@@ -171,7 +170,8 @@ static_assert([] {
     auto p = parser_v.alt(char_p('a'), none);
     auto q = parser_v.alt(none, char_p('a'));
     return p(cursor{"a"}).value().value == 'a' &&
-           q(cursor{"a"}).value().value == 'a' && !none(cursor{"a"}).has_value();
+           q(cursor{"a"}).value().value == 'a' &&
+           !none(cursor{"a"}).has_value();
 }());
 
 // NTTP pinning: explicit typeclass override at call site.
@@ -195,7 +195,8 @@ static_assert([] {
     auto mapped = fmap([](char c) { return c; }, p);
     auto r1 = p(cursor{"q"});
     auto r2 = mapped(cursor{"q"});
-    return r1.has_value() == r2.has_value() && r1.value().value == r2.value().value;
+    return r1.has_value() == r2.has_value() &&
+           r1.value().value == r2.value().value;
 }());
 
 // Functor law: fmap(g . f, p) == fmap(g, fmap(f, p)).

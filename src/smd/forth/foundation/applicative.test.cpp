@@ -45,7 +45,7 @@ struct logged_applicative_impl {
     template <class FW, class AW>
     constexpr auto apply(this auto &&, FW &&func_logged, AW &&arg_logged) {
         using result_type = std::invoke_result_t<decltype(func_logged.value),
-                                                   decltype(arg_logged.value)>;
+                                                 decltype(arg_logged.value)>;
         return logged<result_type>{
             func_logged.log + arg_logged.log,
             std::invoke(func_logged.value, arg_logged.value)};
@@ -140,8 +140,8 @@ TEST_CASE("ApplicativeTest - InvokeThreeArgs") {
     auto a = logged<int>{"a:", 1};
     auto b = logged<int>{"b:", 2};
     auto c = logged<int>{"c:", 3};
-    auto result = m.invoke([](int x, int y, int z) { return x + y + z; }, a, b,
-                            c);
+    auto result =
+        m.invoke([](int x, int y, int z) { return x + y + z; }, a, b, c);
     CHECK(result.log == "a:b:c:");
     CHECK(result.value == 6);
 }

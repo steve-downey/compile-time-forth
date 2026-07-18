@@ -91,8 +91,7 @@ struct parser_alternative_impl {
     template <class T>
     [[nodiscard]] constexpr auto empty(this auto &&) {
         return parser{[](cursor cur) -> parse_result<T> {
-            return foundation::parse_error{cur.position(),
-                                            "empty alternative"};
+            return foundation::parse_error{cur.position(), "empty alternative"};
         }};
     }
 };

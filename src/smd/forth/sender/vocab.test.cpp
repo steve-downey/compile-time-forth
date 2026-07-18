@@ -7,15 +7,13 @@
 
 #include <catch2/catch_test_macros.hpp>
 
-TEST_CASE("SenderVocabTest - HeaderIsIdempotent")
-{
+TEST_CASE("SenderVocabTest - HeaderIsIdempotent") {
     // Placeholder: verifies header re-inclusion safety and build coherency.
     // This test always passes if the file compiles.
     REQUIRE(true);
 }
 
-TEST_CASE("SenderVocabTest - JustThenSyncWait")
-{
+TEST_CASE("SenderVocabTest - JustThenSyncWait") {
     using smd::forth::sender::just;
     using smd::forth::sender::sync_wait;
     using smd::forth::sender::then;

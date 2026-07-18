@@ -6,11 +6,7 @@ target_sources(
     PUBLIC
         FILE_SET forth_forth_headers
             TYPE HEADERS
-            FILES
-                alt.hpp
-                cursor.hpp
-                parser.hpp
-                parser_ops.hpp
+            FILES alt.hpp cursor.hpp parser.hpp parser_ops.hpp
 )
 
 if(FORTH_ENABLE_TESTING)
@@ -18,11 +14,7 @@ if(FORTH_ENABLE_TESTING)
 
     target_sources(
         parser_test
-        PRIVATE
-            alt.test.cpp
-            cursor.test.cpp
-            parser.test.cpp
-            parser_ops.test.cpp
+        PRIVATE alt.test.cpp cursor.test.cpp parser.test.cpp parser_ops.test.cpp
     )
 
     target_link_libraries(parser_test compile-time-forth.forth)

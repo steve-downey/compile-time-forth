@@ -48,7 +48,7 @@ class static_vector {
     constexpr auto end() const -> const T * { return storage_.data() + size_; }
 
     friend constexpr auto operator==(static_vector const &lhs,
-                                      static_vector const &rhs) -> bool {
+                                     static_vector const &rhs) -> bool {
         if (lhs.size_ != rhs.size_)
             return false;
         for (int i = 0; i < lhs.size_; ++i)
