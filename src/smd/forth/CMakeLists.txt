@@ -33,3 +33,5 @@ if(FORTH_ENABLE_TESTING)
     include(Catch)
     catch_discover_tests(forth_test)
 endif()
+
+add_subdirectory(foundation)
