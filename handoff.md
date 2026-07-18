@@ -60,3 +60,15 @@ a fact just because a later step changed something adjacent.
   an untracked file in the main working copy the worktree was cut from); F0
   copied it in verbatim so the governance files that reference it by name
   resolve. F0 did not author its content.
+
+## Step F1 — C++26 baseline
+
+- Baseline is `gnu++26` (`CMAKE_CXX_STANDARD 26`, `-std=gnu++26`) on
+  `TOOLCHAIN=gcc-16` (primary) and `TOOLCHAIN=clang-21` (secondary), matching
+  `~/src/compile-time-scheme/main/etc/{gcc,clang}-flags.cmake`.
+- Only `etc/gcc-flags.cmake` needed the edit (was `gnu++23`/`CMAKE_CXX_STANDARD
+  23`). `etc/clang-flags.cmake` already matched the reference repo exactly
+  (already `gnu++26`), so it was left untouched.
+- `make compile`, `make test`, `make lint` are green on both toolchains;
+  `smoke.sh gcc-16` and `smoke.sh clang-21` both end `SMOKE OK`.
+- No divergence from `docs/forth-plan.md` — no DIV filed for this step.
