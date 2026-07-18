@@ -104,3 +104,73 @@ the full facts (submodule URL + pinned commit, `BEMAN_USE_MODULES OFF` note,
 `smoke.sh` are green on gcc-16 and clang-21. Not merged by this worker — the
 orchestrator merges. F3 (parallel, separate worktree) is unaffected; its
 section above is unchanged by this note.
+
+## F3 complete — what F4/F6/F8 need to know about the foundation API
+
+F3 landed `src/smd/forth/foundation/` (namespace `smd::forth::foundation`,
+canonical includes `<smd/forth/foundation/*.hpp>`). All 50 imported/authored
+tests pass on `gcc-16` and `clang-21`; `make compile`, `make test`,
+`make lint` and both `smoke.sh` runs are green. See `handoff.md`'s
+"Step F3 — Import foundation" section for the full list of what was
+imported, what was left out (`fix.hpp`, `version.hpp`), and DIV-0002 (a
+`clang-21`-only constexpr-portability fix in `parse_error::operator==`, no
+behavior change).
+
+The API surface later steps build on:
+
+- `static_vector<T, Capacity>`: fixed-capacity, constexpr-friendly vector.
+  `push_back`, `size`, `empty`, `operator[]`, iteration via `begin`/`end`,
+  structural `operator==`. `Capacity` has no default — always specify it.
+- `source_pos{offset, line, column}` and `source_span{first, last}`: plain
+  structs, defaulted equality, no behavior beyond that. F5's lexer will
+  produce these; F7's grammar will attach them to parse errors and to
+  captured stack-effect comment spans.
+- `parse_error{where, message}`: `message` must be a string literal or other
+  static-lifetime `char const *`. Equality now only ever compares pointers
+  against `nullptr` (DIV-0002) — if you add new fields or a new equality
+  operator anywhere in the imported tree, check whether it compares two
+  possibly-distinct pointers to each other in a `constexpr`/`static_assert`
+  context, not just against `nullptr`; `clang-21` will reject that in a
+  constant expression even when `gcc-16` accepts it silently.
+- `result<T>`: discriminated union of `T` or `parse_error`, built from
+  `std::variant`. `has_value()`/`value()`/`error()`. This is the error type
+  D7 machine primitives (F8) and D9 elaboration (F11) both use — `apply_primitive`
+  and `elaborate` should return `result<...>` the same way the parser will.
+- `arena_box<T, MaxNodes = 1024>`: a typed integer handle (`id_`, `-1` =
+  null, `explicit operator bool`). `tree_arena<T, MaxNodes = 1024>`: a
+  bump-allocator arena (`allocate`, `get` by `int` or by `arena_box`).
+  `make_arena_box(arena, args...)` constructs in place and returns a handle.
+  **Both template parameters now default to 1024** (added a default to
+  `tree_arena` during F3 — it had none upstream, unlike `arena_box`); still
+  always specify `MaxNodes` explicitly at each real use site the way the
+  Scheme repo's own call sites do (they never relied on a default either).
+  This is the D3 substrate: F6's syntax tree, F11's elaborated core, and
+  F14's instruction program are each one `tree_arena` of a trivially
+  destructible node type, referenced by `arena_box` handles — no `fix`/`Box`
+  anywhere in that path.
+- `functor<Impl>`/`fmap`, `applicative<Impl>`/`invoke`, `alternative<Impl>`/
+  `alt`/`empty`: CRTP typeclass bases plus CPOs, dispatching through the
+  `..._typeclass<T>` template-variable lookup. F4's parser combinators
+  register `parser<...>` types against these three typeclasses (that's the
+  "typeclass-object (`parser_v` CPO) machinery" the plan's import inventory
+  mentions); no Forth-specific type registers against them yet. Note:
+  `functor.hpp`/`applicative.hpp`/`alternative.hpp` had **no dedicated
+  upstream tests** — F3 wrote new ones using small test-local instance types
+  (not exported); F4 is the first step that registers a real, exported
+  production type against these typeclasses, so its tests are the first
+  place a typeclass-law regression would actually be caught project-wide.
+
+CMake shape to match: foundation's headers are additional `FILES` in the
+already-declared `forth_forth_headers` `FILE_SET` on the
+`compile-time-forth.forth` target (no separate `compile-time-forth.foundation`
+target); its tests build as the `foundation_test` executable, wired from
+`src/smd/forth/foundation/CMakeLists.txt`, descended into via
+`add_subdirectory(foundation)` in `src/smd/forth/CMakeLists.txt`. F4's
+`parser/` directory should follow the same pattern unless it has a concrete
+reason not to (e.g. a genuine need to link foundation as a distinct
+compiled unit, which nothing here has needed so far since everything in
+`foundation/` is header-only).
+
+Dependencies satisfied by this merge: F3 -> {F4, F6, F8} per the plan's
+parallelism summary. F4, F6, and F8 can each start once F3 is merged to
+main; they are mutually parallel (separate worktrees), same as F2/F3 were.

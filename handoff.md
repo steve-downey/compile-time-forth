@@ -26,6 +26,14 @@ a fact just because a later step changed something adjacent.
 - `foundation/` and `parser/` are adapted by copy from compile-time-scheme
   (`smd::smdscheme` -> `smd::forth`); provenance lines are added to file
   prologs; there is no build coupling to that repository.
+- `foundation/` headers (and their tests) are folded into the existing
+  `compile-time-forth.forth` target's `forth_forth_headers` `FILE_SET`
+  (declared with `BASE_DIRS src` at the top-level `CMakeLists.txt`), the same
+  file-set name `forth.cpp`/`forth.hpp` already use; there is no separate
+  `compile-time-forth.foundation` target. Imported tests build into their own
+  `foundation_test` executable (mirroring `forth_test`), wired from
+  `src/smd/forth/foundation/CMakeLists.txt` via `add_subdirectory(foundation)`
+  in `src/smd/forth/CMakeLists.txt`.
 
 ## Architectural invariants
 
@@ -115,3 +123,52 @@ a fact just because a later step changed something adjacent.
   implementation necessity to match the plan's stated integration (plain
   `add_subdirectory`, traditional headers), not a deviation from
   `docs/forth-plan.md` or Forth-2012 semantics.
+
+## Step F3 — Import foundation
+
+- Imported from `~/src/compile-time-scheme/main/src/smd/smdscheme/foundation/`
+  into `src/smd/forth/foundation/`, renamespaced `smd::smdscheme::foundation`
+  -> `smd::forth::foundation`: `static_vector.hpp`, `source_pos.hpp`,
+  `source_span.hpp`, `parse_error.hpp`, `result.hpp`, `arena_box.hpp` (with
+  `tree_arena`), `functor.hpp`, `applicative.hpp`, `alternative.hpp`, plus
+  their `.test.cpp` files (already `.test.cpp` upstream, no rename needed).
+- Not imported, per D3: `foundation/fix.hpp`, its test, and
+  `src/smd/fixpoint/`. Not imported, out of this step's inventory:
+  `version.hpp`/`version.cpp` (not in the F3 file list).
+- `functor.hpp`, `applicative.hpp`, and `alternative.hpp` had no dedicated
+  upstream test files (they were only exercised indirectly through
+  `smd::smdscheme::sender::string_writer`, which this project does not
+  import); this step wrote new `.test.cpp` files for all three, each
+  registering a small test-local typeclass instance (a `box`/`logged` type
+  private to the test TU) to exercise the CRTP base (`fmap`/`replace`,
+  `invoke`/`lift_a2`/`ap`/`discard_first`/`discard_second`,
+  `alt`/`combine`/`empty`) and the CPO dispatch path, per house-style's
+  bootstrap-plus-substantive-test rule.
+- Parameterized: `tree_arena<T, MaxNodes>` had no default for `MaxNodes`
+  upstream (only `arena_box<T, MaxNodes = 1024>` did); added
+  `MaxNodes = 1024` to `tree_arena` too, so a handle type and its backing
+  arena share a capacity default without restating it. No other hardcoded
+  capacities were found in the F3 file set — `static_vector`'s `Capacity` and
+  `arena_box`/`tree_arena`'s `MaxNodes` were already template parameters
+  everywhere else.
+- DIV-0002 (`docs/divergences/DIV-0002-parse-error-equality-constexpr.md`):
+  `parse_error::operator==`'s pointer-equality fast path
+  (`lhs.message == rhs.message`) is not usable in a constant expression under
+  `clang-21` when both operands are identical string literals (unspecified
+  address-equality result per `[expr.eq]`), though `gcc-16` accepted it;
+  replaced with an explicit `lhs.message == nullptr && rhs.message ==
+  nullptr` check ahead of the existing null-mismatch check, preserving the
+  exact truth table while comparing pointers only against `nullptr` (always
+  constant-evaluable). No other equality/comparison operators in the F3 file
+  set had this pattern.
+- CMake: no separate `compile-time-forth.foundation` target (see "Build and
+  verification" above) — headers fold into `compile-time-forth.forth`'s
+  existing `forth_forth_headers` `FILE_SET`; tests build as `foundation_test`.
+- Verified on both `gcc-16` and `clang-21`: `make compile`, `make test`
+  (50/50 passed), `make lint` all green; `smoke.sh gcc-16` and
+  `smoke.sh clang-21` both end `SMOKE OK`.
+- The `arena_box.test.cpp` merge-criterion `static_assert` lives in
+  `src/smd/forth/foundation/arena_box.test.cpp`: an immediately-invoked
+  lambda builds a `tree_arena<point_node, 8>` (a local test node type),
+  allocates two nodes via `make_arena_box`, and reads them back through their
+  `arena_box` handles, all at compile time.
