@@ -6,7 +6,7 @@
 - [x] Step F1: C++26 baseline
 - [x] Step F2: vendor Beman Execution
 - [x] Step F3: import foundation
-- [ ] Step F4: import parser combinators
+- [x] Step F4: import parser combinators
 - [ ] Step F5: Forth lexical layer
 - [ ] Step F6: syntax tree
 - [ ] Step F7: grammar
