@@ -396,3 +396,87 @@ a fact just because a later step changed something adjacent.
   next should decide whether to normalize those seven files' formatting in
   their own (unrelated) commit, or pin/reconcile the `clang-format` version
   the project expects.
+## Step F8 — Machine substrate
+
+- Landed `src/smd/forth/machine/{cell,stacks,forth_state}.hpp` (+
+  `.test.cpp` each), namespace `smd::forth::machine`, canonical includes
+  `<smd/forth/machine/*.hpp>`. Headers fold into
+  `compile-time-forth.forth`'s existing `forth_forth_headers` `FILE_SET`
+  (no separate compiled target, matching F3's pattern); tests build as the
+  new `machine_test` executable, wired from
+  `src/smd/forth/machine/CMakeLists.txt`, descended into via
+  `add_subdirectory(machine)` in `src/smd/forth/CMakeLists.txt` (placed
+  alphabetically between `foundation` and `sender`).
+- `cell.hpp`: `cell = std::int64_t` (D7); `flag_true = -1` / `flag_false = 0`
+  (Forth truth-value convention, all-bits-set / no-bits-set); and
+  `status = foundation::result<std::monostate>` — `foundation::result<T>` is
+  a `std::variant<T, parse_error>` and has no `T = void` specialization
+  (`std::variant` cannot hold `void`), so `std::monostate` is the concrete
+  stand-in everywhere the plan speaks of a conceptual `result<void>`. No
+  change made to `foundation/result.hpp` itself.
+- `stacks.hpp`: one template, `cell_stack<MaxDepth>`, with `data_stack` and
+  `return_stack` as template aliases to it (same behavior; they only differ
+  in which register of `forth_state` holds them). Backing storage is a
+  `foundation::static_vector<cell, MaxDepth>` **pre-filled to `MaxDepth`**
+  at construction (loop of `push_back(cell{0})`), because `static_vector`
+  offers no `pop_back`/shrink operation; `cell_stack` tracks its own logical
+  `depth_` separately and always indexes the (now full-size) backing vector
+  in bounds, diagnosing overflow (`depth_ >= MaxDepth`) and underflow
+  (`depth_ <= 0`, or `peek(offset)` with `offset >= depth_`) itself via
+  `foundation::result`/`status` before ever touching storage out of range —
+  `static_vector::push_back`'s own bounds check is an `assert` precondition
+  (UB in release builds), so `cell_stack` never lets it fire from ordinary
+  Forth-level misuse.
+- `forth_state.hpp`: `forth_state<MaxDepth, MaxRDepth, MaxData, MaxOut>`
+  bundles `data()`/`returns()` (the two stacks), `data_space()` (currently
+  just a `foundation::static_vector<cell, MaxData>` placeholder — F10 wires
+  real `allot`/`fetch`/`store` and a distinct typed `addr` over it), and
+  `output()` (a `foundation::static_vector<char, MaxOut>`) with
+  `emit_char`/`emit_cell` mutators. `emit_cell` renders decimal digits by
+  hand (no `<charconv>` dependency) and negates through `std::uint64_t`
+  (`0 - static_cast<std::uint64_t>(value)`, well-defined unsigned wraparound)
+  rather than through `cell` itself, so `std::numeric_limits<cell>::min()`
+  (whose positive magnitude has no representation in `cell`) renders
+  correctly; `emit_cell(-42)` yields `"-42 "` (merge criterion, tested both
+  as a `static_assert` and a Catch2 case). All of `forth_state`'s members
+  are literal-type-compatible; the whole class is usable in `constexpr`
+  contexts and is exercised via `static_assert` throughout
+  `forth_state.test.cpp`.
+- `forth_state.hpp` also declares the primitive opcode enum, `enum class
+  primitive`, and the free function template `apply_primitive(primitive,
+  forth_state<...> &) -> status` (both plan deliverables have no other
+  named home among the three specified files, and `apply_primitive` takes
+  `forth_state` by reference, so they live here). Enumerator names spell
+  the Forth word, with a trailing underscore only where the bare spelling
+  collides with a C++ keyword or another enumerator: `plus, minus, star,
+  slash, mod_, negate, abs_, min_, max_, and_, or_, xor_, invert, lshift,
+  rshift, zero_equal, zero_less, equal, not_equal, less, greater,
+  less_equal, greater_equal, true_, false_, dup, drop, swap, over, rot,
+  question_dup, nip, tuck, depth, to_r, r_from, r_fetch`. `/` and `MOD` use
+  symmetric (C++ truncating) division — `a / b` and `a % b` directly — not
+  floored division, and both diagnose division-by-zero via `status` before
+  dividing. `LSHIFT`/`RSHIFT` shift through `std::uint64_t` (`RSHIFT` is
+  logical/unsigned, per Forth-2012) and mask the shift count to `& 63` to
+  avoid shift-amount UB. Every primitive's stack behavior, plus
+  underflow/overflow/div-zero diagnosis, has a dedicated `static_assert` in
+  `forth_state.test.cpp` (merge criterion).
+- Verified on `gcc-16`: `make compile`, `make test` (68/68 passed), and
+  `smoke.sh gcc-16` all green. `clang-21` was not re-verified this step (F8
+  depends only on F3, already `clang-21`-clean); nothing added here is
+  toolchain-specific.
+- `make lint` (`pre-commit run -a`) reports **Failed** in this environment
+  regardless of F8's changes: `clang-format` reformats pre-existing,
+  untouched files (`src/smd/forth/foundation/{applicative,functor,
+  parse_error,source_pos,static_vector}.hpp`,
+  `foundation/applicative.test.cpp`, `sender/vocab.test.cpp`) by one space
+  on wrapped `friend`/multi-line signatures, reproducible starting from a
+  clean checkout of those files with F8's new `machine/` directory absent
+  entirely from the working tree (confirmed by reverting and rerunning).
+  This is pre-existing formatting drift, not something F8 introduced or is
+  in scope to fix (those files belong to F2/F3); F8's own new files
+  (`src/smd/forth/machine/*`) were checked directly with `pre-commit run
+  clang-format --files src/smd/forth/machine/*.hpp
+  src/smd/forth/machine/*.cpp` and produced **no** modifications. No DIV
+  filed for this — it is environment/tooling drift, not a deviation from
+  `docs/forth-plan.md` or Forth-2012 semantics. Flagged in
+  `handoff-next.md` for whoever next runs `make lint` repo-wide.

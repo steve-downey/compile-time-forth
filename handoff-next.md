@@ -375,3 +375,104 @@ node type instead of `fix`, the empty-span convention for `declared_effect`,
 the `program` field on `syntax_tree`) is an implementation detail that
 satisfies D3 and the plan's literal node-kind spec, not a deviation from
 `docs/forth-plan.md` or Forth-2012 semantics.
+## F8 complete — what F9/F10 need to know about the machine API
+
+Step F8 (machine substrate) is done in worktree `wt-f8` / branch `step/f8`.
+See `handoff.md`'s "Step F8 — Machine substrate" section for the full
+facts. `make compile`, `make test` (68/68) and `smoke.sh gcc-16` are green.
+Not merged by this worker — the orchestrator merges.
+
+The API surface F9 (dictionary) and F10 (data space) build on, all in
+namespace `smd::forth::machine`, canonical includes
+`<smd/forth/machine/{cell,stacks,forth_state}.hpp>`:
+
+- `cell = std::int64_t`; `flag_true = -1` / `flag_false = 0`; `status =
+  foundation::result<std::monostate>` (the concrete stand-in for a
+  conceptual `result<void>` — `foundation::result<T>` cannot hold `T =
+  void`). All three live in `cell.hpp`.
+- `cell_stack<MaxDepth>` (`stacks.hpp`) is the single implementation behind
+  both `data_stack<MaxDepth>` and `return_stack<MaxRDepth>` (template
+  aliases to it — same type, same behavior, they just occupy different
+  registers of `forth_state`). API: `push(cell) -> status`, `pop() ->
+  result<cell>`, `peek(int offset = 0) const -> result<cell>` (0 = top),
+  `depth() const -> int`. Overflow/underflow are always diagnosed, never
+  UB — see `handoff.md` for why the backing `static_vector` is pre-filled
+  to capacity at construction (it has no `pop_back`/shrink operation).
+- `forth_state<MaxDepth, MaxRDepth, MaxData, MaxOut>` (`forth_state.hpp`)
+  bundles everything: `data()`/`returns()` (mutable + const overloads)
+  return the two stacks; `data_space()` (mutable + const) currently returns
+  a bare `foundation::static_vector<cell, MaxData> &` — **this is the
+  placeholder F10 replaces**: F10 should wire real `allot(n) ->
+  result<addr>` / `fetch(addr)` / `store(addr, cell)` bounds-checked over
+  this same storage (or a wrapping type that owns it), and per D10 give
+  `addr` its own distinct type, explicitly convertible to/from `cell` so
+  addresses can live on the data stack — do not just hand out raw
+  `static_vector` indices as `cell`s without that conversion boundary.
+  `output()` (const-only) exposes the accumulated
+  `foundation::static_vector<char, MaxOut>`; `emit_char(char) -> status`
+  and `emit_cell(cell) -> status` append to it (`emit_cell(-42)` yields
+  `"-42 "`, D10's number-space-trailing format). `forth_state` is a literal
+  type — usable in `constexpr` locals and in `static_assert`.
+- `enum class primitive` (in `forth_state.hpp`, since `apply_primitive`
+  needs `forth_state` and the plan gave no other file for it) covers all
+  section-6 arithmetic/logic, comparison, data-stack, and return-stack
+  words from the spec. Enumerator names spell the Forth word verbatim
+  except for a trailing underscore where the bare spelling collides with a
+  C++ keyword or another enumerator: `mod_, abs_, min_, max_, and_, or_,
+  xor_, true_, false_`. Full list, in declaration order: `plus, minus,
+  star, slash, mod_, negate, abs_, min_, max_, and_, or_, xor_, invert,
+  lshift, rshift, zero_equal, zero_less, equal, not_equal, less, greater,
+  less_equal, greater_equal, true_, false_, dup, drop, swap, over, rot,
+  question_dup, nip, tuck, depth, to_r, r_from, r_fetch`.
+- `apply_primitive(primitive, forth_state<...> &) -> status` (function
+  template, deduces the four `forth_state` capacity parameters) implements
+  every one of those as a pure stack operation. `/` and `MOD` are symmetric
+  (C++ truncating) division/remainder, not floored, and both diagnose
+  division-by-zero as a `status` error rather than dividing. `LSHIFT` /
+  `RSHIFT` operate through `std::uint64_t` (`RSHIFT` is a logical/unsigned
+  shift per Forth-2012) and mask the shift amount to `& 63`. F9's colon-word
+  bodies and F11's elaborator will presumably call `apply_primitive` per
+  `core_prim{opcode}` node when interpreting/evaluating (F13's direct
+  evaluator) rather than compiling to native code directly — nothing in F8
+  assumes how `primitive` values get chosen at a call site, only that
+  callers hold a `forth_state<...> &` to apply them to.
+- Every primitive's stack behavior, plus every underflow/overflow/div-zero
+  path, has a dedicated `static_assert` in
+  `src/smd/forth/machine/forth_state.test.cpp` (merge criterion); `stacks.
+  test.cpp` covers the underlying `cell_stack` underflow/overflow
+  directly; `cell.test.cpp` covers the flag constants and `status` alias.
+- CMake shape: headers fold into `compile-time-forth.forth`'s existing
+  `forth_forth_headers` `FILE_SET` (no separate compiled
+  `compile-time-forth.machine` target — matches the `foundation`/`sender`
+  pattern); tests build as `machine_test`, wired from
+  `src/smd/forth/machine/CMakeLists.txt`, descended into via
+  `add_subdirectory(machine)` in `src/smd/forth/CMakeLists.txt`. F9's
+  `dictionary.hpp` and F10's `data_space.hpp` should each get their own
+  `.hpp`/`.test.cpp` pair added to this same `machine/` directory and
+  `CMakeLists.txt` (new `FILES`/test-source entries, same `machine_test`
+  executable) rather than a new subdirectory, unless one of them has a
+  concrete reason to be a separate compiled target — nothing in `machine/`
+  has needed that so far.
+
+## Known environment issue: `make lint` fails repo-wide, unrelated to F8
+
+`make lint` (`pre-commit run -a`) currently reports **Failed** in this
+environment even on a checkout with F8's new `machine/` files entirely
+absent: the pinned `clang-format` hook (`v21.1.2` via the portable wheel,
+per `.pre-commit-config.yaml`) reformats several pre-existing,
+already-committed files by one space on wrapped `friend`/multi-line
+function-signature continuation lines —
+`src/smd/forth/foundation/{applicative,functor,parse_error,source_pos,
+static_vector}.hpp`, `foundation/applicative.test.cpp`, and
+`sender/vocab.test.cpp`. This reproduces on a clean `git checkout --` of
+exactly those files with no other changes present, so it predates F8 and
+is not caused by it; F8's own new files were verified independently
+clean via `pre-commit run clang-format --files src/smd/forth/machine/*`
+(no modifications). Likely cause: a `clang-format` micro-version mismatch
+between whatever produced the currently-committed formatting and the
+`v21.1.2` wheel this environment's pre-commit resolves. Not filed as a DIV
+(it's tooling/environment drift, not a deviation from `docs/forth-plan.md`
+or Forth-2012 semantics) — but whoever next needs a fully green `make
+lint` repo-wide should either re-pin/re-vendor a matching `clang-format`
+build, or run `clang-format -i` repo-wide once and commit the result as its
+own small housekeeping change, separate from any feature step.
