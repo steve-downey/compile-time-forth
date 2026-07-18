@@ -3,7 +3,7 @@
 ## Forth compiler (docs/forth-plan.md)
 
 - [x] Step F0: governance install
-- [ ] Step F1: C++26 baseline
+- [x] Step F1: C++26 baseline
 - [ ] Step F2: vendor Beman Execution
 - [ ] Step F3: import foundation
 - [ ] Step F4: import parser combinators
