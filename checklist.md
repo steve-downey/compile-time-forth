@@ -7,7 +7,7 @@
 - [x] Step F2: vendor Beman Execution
 - [x] Step F3: import foundation
 - [x] Step F4: import parser combinators
-- [ ] Step F5: Forth lexical layer
+- [x] Step F5: Forth lexical layer
 - [x] Step F6: syntax tree
 - [ ] Step F7: grammar
 - [x] Step F8: machine substrate
