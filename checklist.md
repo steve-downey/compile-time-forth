@@ -11,7 +11,7 @@
 - [x] Step F6: syntax tree
 - [ ] Step F7: grammar
 - [x] Step F8: machine substrate
-- [ ] Step F9: dictionary
+- [x] Step F9: dictionary
 - [ ] Step F10: data space
 - [ ] Step F11: elaborated core and resolution
 - [ ] Step F12: stack-effect analysis
