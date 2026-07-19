@@ -1,189 +1,163 @@
-# Next step: Step F11 — elaborated core and resolution
+# Next step: Step F12 — stack-effect analysis
 
-Step F7 (grammar) is done in worktree `wt-f7` / branch `step/f7`. Together
-with F6 (syntax tree, already merged), F9 (dictionary, already merged), and
-F10 (data space, already merged), every dependency Step F11 needs is now
-satisfied. This file is a full rewrite for F11 — see `handoff.md`'s "Step
-F7 — Grammar" section (and the F2–F10 sections above it) for the complete
-historical record; this file only summarizes what F11 needs to start.
+Step F11 (elaborated core and resolution) is done in worktree `wt-f11` /
+branch `step/f11`. This file is a full rewrite for F12 — see `handoff.md`'s
+"Step F11 — Elaborated core and resolution" section (and everything above
+it) for the complete historical record; this file only summarizes what F12
+needs to start.
 
-## What F11 is
+## What F12 is
 
-Read `docs/forth-plan.md` section "Step F11 — elaborated core and
-resolution" for the authoritative spec. In short: F11 walks the syntax tree
-(`src/smd/forth/reader/syntax_tree.hpp`, produced by F7's
-`read_program`) in program order, threading a `machine::dictionary` forward
-as it goes, resolving every `syn_word`/`syn_tick` reference against that
-dictionary, and building a new tree — the elaborated core — in the same
-flat-arena, `arena_box`-handle style as the syntax tree, per D3. Program-
-order threading is what makes static binding "just work": a colon
-definition's body resolves against whatever the dictionary looks like *at
-the point that definition is elaborated*, so a later redefinition of a word
-does not retroactively change an earlier definition's already-elaborated
-calls (`dictionary::lookup` is newest-first, and `dictionary`'s `define_*`
-methods never remove or overwrite a shadowed entry — see `handoff.md`'s
-"Step F9 — Dictionary" section for the exact mechanics).
+Read `docs/forth-plan.md` section "Step F12 — Stack-effect analysis" for the
+authoritative spec. In short: `src/smd/forth/elaborator/stack_effect.hpp`
+(+ test), run **as part of** `elaborate` (D9) — abstract interpretation over
+the elaborated core, computing each definition's net data-stack effect and
+minimum entry depth, tracking the return stack separately. Diagnosed:
+- `IF`/`ELSE` arms with unequal net effects.
+- Loop bodies with nonzero net effect: a `DO` body must be net-zero; a
+  `BEGIN ... UNTIL` body must be net-zero *after* the `UNTIL` flag pop; a
+  `BEGIN ... WHILE ... REPEAT` condition must leave exactly the flag (net
+  effect +1, consumed by `WHILE`).
+- `>R`/`R>` imbalance across a control-structure boundary (return-stack
+  depth must match going into and out of any `IF`/loop body).
+- `EXIT` inside a `DO` loop without `UNLOOP` (F17 is what actually adds
+  `UNLOOP`/counted-loop machinery; F12 only needs to *diagnose* this shape
+  now, since `core_exit` and `core_do_loop` both already exist).
+- Mismatch between a declared `( a b -- c )` effect comment and the
+  computed effect.
 
-## The grammar/syntax-tree API F11 consumes (Step F7)
+Words with input-dependent effects (`?DUP`, anything reached only through
+`EXECUTE`) get an `unknown` lattice value that suppresses checking
+downstream rather than erroring. Record the lattice in the architecture doc.
 
-- **Entry point:** `template <int MaxNodes = 1024, int MaxBody = 64, int
-  MaxName = 32, int MaxDepth = 32> constexpr auto smd::forth::reader::
-  read_program(std::string_view source) -> foundation::result<
-  reader::syntax_tree<MaxNodes, MaxBody, MaxName>>`
-  (`src/smd/forth/reader/read_program.hpp`). Note the extra `MaxDepth`
-  parameter relative to `syntax_tree`'s own three capacities — it only
-  bounds the *parser's* recursion, not anything F11 needs to thread through;
-  F11's elaborator should pick its own capacities (likely reusing
-  `MaxNodes`/`MaxBody`/`MaxName` from whatever `syntax_tree` it was handed,
-  plus a `MaxDepth`-shaped bound of its own if its own core-building
-  recursion turns out to need one — see DIV-0005 below).
-- The syntax tree's eleven node kinds (`syn_literal`, `syn_word<MaxName>`,
-  `syn_colon_def<...>`, `syn_if<...>`, `syn_begin_until<...>`,
-  `syn_begin_while<...>`, `syn_do_loop<...>`, `syn_variable<MaxName>`,
-  `syn_constant<MaxName>`, `syn_create<MaxName>`, `syn_tick<MaxName>`) are
-  fully populated by F7, including every `foundation::source_pos pos`
-  field — F11 has real source positions to attach to its own diagnostics
-  (e.g. "word X not found" at the position of the `syn_word` that names it),
-  not placeholders.
-- `syntax_tree.program` (a `syn_body<...>`, i.e. `static_vector` of
-  `syn_box` handles) holds every top-level form in source order: colon
-  defs, `VARIABLE`/`CONSTANT`/`CREATE` declarations, and any top-level
-  executable words/literals/control-structures (the grammar's `item`
-  production is a strict superset of `body-item`, so bare executable code
-  at the top level parses too, even though the plan doesn't dwell on what
-  it means — that semantic question is F11's/F12's, not F7's).
-  **F11 should walk `program` in order**, dispatching on each item's
-  `std::variant` alternative via `std::get`/`std::visit` against
-  `tree.arena.get(handle).value`.
-- `syn_colon_def.declared_effect` is a `foundation::source_span` into the
-  *original source text* passed to `read_program` — empty (`first ==
-  last`) if no qualifying comment was present, otherwise the exact span of
-  a `( ... )` comment containing `--`, captured immediately after the
-  definition's name. **F11 does not need to parse this span's text itself**
-  (that's F12's job, stack-effect analysis) — F11 just needs to keep the
-  original source text available (or the span itself) if it wants to
-  thread a `colon_word.effect` guess through early, otherwise it can install
-  every new colon word with `stack_effect{.known = false}` and leave it to
-  F12, exactly as F9's `handoff.md` section already anticipated.
-- `syn_constant` carries only a name (no value field) — per Forth-2012, a
-  `CONSTANT`'s value comes from whatever the immediately preceding body
-  form(s) left on the stack. **F7 does not resolve or attach that value**;
-  it is still just a `syn_literal` (or other body form) followed by a
-  `syn_constant` node as two separate top-level items in `program`, in
-  source order. F11 is the step that has to notice this adjacency and
-  compute/attach the actual constant value when it builds a
-  `machine::constant_word`.
-- Reserved words are enforced only at parse time (a colon-def may not name
-  itself `IF`/`BEGIN`/etc.) — F11 does not need to re-check this; by the
-  time a `syntax_tree` exists, every `syn_colon_def.name` is guaranteed not
-  to collide with a reserved word. Ordinary word *resolution* failures
-  (`dictionary::lookup` returning `nullptr` for a `syn_word`/`syn_tick`
-  that names something never defined) are **not** caught by F7 at all —
-  that diagnosis is entirely F11's to produce, with a real source position
-  now available on every `syn_word`/`syn_tick` node to attach it to.
+Merge criteria: positive tests verifying a declared effect against the
+computed one; one failure test per diagnosis listed above.
 
-## DIV-0005 — read this before writing F11's own recursive walk
+Deliverable: extend `docs/compiler_architecture.org`'s "Phase 4:
+Elaboration" section (F11 already filled in the resolution half; F12 adds
+the stack-effect-checking half) with a transclusion of the new checker.
 
-`docs/divergences/DIV-0005-grammar-recursive-descent.md`: F7's nested
-control-structure productions (`IF`/`BEGIN...UNTIL`/`BEGIN...WHILE...
-REPEAT`/`DO...LOOP`, each recursively containing more body-items) are
-**not** built from chained F4 combinators (`map`/`lift2`/`operator|`) — a
-self-recursive grammar production has no finite `parser<F>` type to
-compose it from, and building tree nodes needs a mutable arena threaded
-alongside the parser state, which the combinator calling convention
-(`cursor -> parse_result<T>`) has no slot for. F7 instead used a small set
-of mutually recursive plain `constexpr` function templates
-(`parse_body_until`, `parse_body_item_from_token`, `parse_if`,
-`parse_begin`, `parse_do`), each still built from F4/F5 free-function
-combinators for its own token-level work, and bounded by an explicit
-`MaxDepth` template parameter checked before ever recursing one level
-deeper.
+## The elaborated-core API F12 consumes (Step F11)
 
-**F11 will almost certainly hit the identical wall**, since walking a
-`syn_if`/`syn_begin_until`/etc. to build a corresponding elaborated-core
-node is exactly this same "self-recursive tree shape plus a mutable arena"
-situation, just walking instead of parsing. Reach for the same
-plain-mutually-recursive-function-template shape (with its own bounded
-recursion parameter if the elaborated core can nest independently of the
-syntax tree's own nesting) rather than trying to force it through
-`functor`/`applicative`/`alternative`-style combinators — there is nothing
-in `foundation`'s typeclass machinery designed for tree-shaped recursion
-with shared mutable state, and inventing one is out of scope for F11.
+See `handoff.md`'s "Step F11" section for full detail; summary:
 
-## Standing action item: DIV-0004 follow-up (retype `variable_word::addr`)
-
-F9 (dictionary) filed DIV-0004 because `machine::variable_word::addr` had
-to be a plain `cell` — F10 (the step that defines `machine::addr`, the
-distinct typed address D10 calls for) ran in parallel off the same F8
-baseline, so F9 had no dependency on it at the time. **Both F9 and F10 are
-now merged.** Before or as part of F11's own work (F11 is the first step
-that actually constructs `variable_word` values, when elaborating a
-`VARIABLE` declaration), retype `machine::dictionary.hpp`'s
-`variable_word::addr` field from `cell` to `machine::addr`
-(`src/smd/forth/machine/data_space.hpp`'s type) — update the field's type
-and `dictionary.hpp`'s include list (`#include
-<smd/forth/machine/data_space.hpp>`); nothing else in `dictionary.hpp`
-needs to change, since `addr`'s only current uses are construction and
-storage, not arithmetic. Close DIV-0004 (mark it superseded/resolved) once
-this lands, and record the change in `handoff.md` under whichever step
-does it (most naturally F11, since F11 is the first real caller of
-`define_variable`).
-
-## Dictionary and data-space APIs F11 threads through elaboration
-
-See `handoff.md`'s "Step F9 — Dictionary" and "Step F10 — Data space"
-sections for full detail; summary:
-
-- `machine::dictionary<MaxWords, MaxName>` (or
-  `machine::default_dictionary<MaxWords, MaxName>()` to start with the 37
-  F8 primitives pre-installed) is what F11 threads through the program-
-  order walk. `lookup(std::string_view) const -> dictionary_entry<MaxName>
-  const *` resolves a name (case-insensitively); `nullptr` means
-  undefined — F11 must turn that into a real `parse_error`/diagnostic using
-  the `syn_word`/`syn_tick`'s own `pos`, since `dictionary` itself has no
-  notion of source position.
-- `define_colon`/`define_variable`/`define_constant`/`define_foreign` each
-  return `status`, diagnosing "dictionary full" rather than overflowing.
-  Redefinition is always legal (never rejected) — F11 is expected to
-  *notice* a pre-existing entry (via `lookup` before defining) and route
-  that fact into whatever collected-diagnostics/warning channel it
-  introduces, per the plan's "warn, don't error, on redefinition" note.
-- `machine::data_space<MaxData>::allot(int) -> result<addr>` is what F11's
-  `VARIABLE` elaboration should call (allot exactly one cell) to get the
-  `addr` a `variable_word` should store (see the DIV-0004 follow-up above).
+- **`src/smd/forth/elaborator/elaborated_core.hpp`**: `core_node<MaxNodes=
+  1024, MaxBody=64>` is the closed node variant (no `MaxName` — every name
+  is already resolved to an index/addr/value by this point). Twelve
+  alternatives: `core_push{cell,pos}`, `core_prim{machine::primitive,pos}`,
+  `core_call{word_index,pos}`, `core_var{machine::addr,pos}`,
+  `core_const{cell,pos}`, `core_push_xt{word_index,pos}`, `core_exit{pos}`,
+  `core_if{then_body,else_body,pos}`, `core_begin_until{body,pos}`,
+  `core_begin_while{condition,body,pos}`, `core_do_loop{body,
+  is_plus_loop,pos}`, `core_seq{items,pos}` (a definition's whole body, the
+  node `colon_word::core_id` points at). Every node kind carries its own
+  `foundation::source_pos pos` — real positions are available for every
+  diagnosis F12 needs to attach one to.
+- **`compiled_unit<MaxNodes=1024, MaxBody=64, MaxName=32, MaxWords=256,
+  MaxData=1024, MaxWarnings=64>`**: `.arena` (the core `tree_arena`),
+  `.dictionary` (`machine::dictionary<MaxWords,MaxName>`, 37 primitives
+  pre-installed plus every colon/variable/constant word the program
+  defined), `.data_space` (a real `machine::data_space<MaxData>`),
+  `.program` (`core_body<MaxNodes,MaxBody>`, the top-level executable
+  body), `.warnings` (`warning_log<MaxWarnings>`, currently only
+  redefinition notices).
+- **`src/smd/forth/elaborator/elaborate.hpp`**:
+  `elaborate<MaxNodes,MaxBody,MaxName,MaxWords,MaxData,MaxWarnings>(
+  reader::syntax_tree<MaxNodes,MaxBody,MaxName> const&) ->
+  foundation::result<compiled_unit<...>>`. Walks the syntax tree once, in
+  program order, threading the dictionary forward.
+- **`machine::stack_effect{int inputs=0, int outputs=0, bool known=false}`**
+  (`machine/dictionary.hpp`, landed in F9) is the shape
+  `machine::colon_word::effect` already has. F11 always installs
+  `stack_effect{}` (i.e. `known = false`) for every colon word it defines
+  — **F12 is the first step that ever computes or checks a real effect**.
+  `dictionary` has no in-place mutation method for an already-inserted
+  entry (only `insert`/`lookup`/`lookup_index`/`entry_at`, all
+  append-or-read-only) — the natural integration seam is *inside*
+  `elaborate_colon_def` (in `elaborate.hpp`), between "the body has been
+  elaborated into a `core_seq`" and "`define_colon` is called": compute the
+  effect there and pass the real `stack_effect` into the `colon_word` at
+  the point it is first constructed, rather than trying to patch it in
+  after the fact.
+- `RECURSE` resolves to `core_call{word_index = self_index}` where
+  `self_index` is the *currently-being-compiled* definition's own eventual
+  dictionary index (see `handoff.md`'s "RECURSE's self-index trick" note
+  for why this is knowable before the word is actually defined). **A
+  `core_call` back to the definition currently being analyzed is a real
+  design problem for F12's abstract interpretation**: the callee's net
+  effect is exactly the thing being computed, so it is not yet known when
+  the interpreter reaches the `RECURSE` call site. Two ways out, neither
+  implemented yet: (a) require a declared `( ... )` effect comment on any
+  recursive definition and trust it as the assumed effect of the `RECURSE`
+  call site (verify everything else against it), or (b) reuse the same
+  `unknown` lattice value the plan already specifies for `?DUP`/
+  `EXECUTE`-reached code, treating a self-call as effect-unknown and
+  suppressing the net-effect check for that definition (still checking
+  everything checkable, e.g. `IF`-arm-balance elsewhere in the same body).
+  This project's plan text does not pick one — it is F12's call, documented
+  wherever F12 documents its lattice.
+- **F11 does *not* thread the original source text through `elaborate`** —
+  `elaborate`'s only parameter is the `syntax_tree`, and
+  `reader::syn_colon_def::declared_effect` is a `foundation::source_span`
+  that is meaningless without the original source string it indexes into.
+  Since F11 never needed to read a declared effect's *text* (only F12
+  does), this was never threaded through. **F12 will need the source text
+  to slice `declared_effect` into e.g. `"( a b -- c )"` for comparison
+  against what it computes.** The natural fix, since F12's own checker
+  is meant to run *as part of* `elaborate` (D9) and `elaborate_colon_def`
+  already has the `syn_colon_def` — including its `declared_effect` span
+  — in scope: add a `std::string_view source` parameter to `elaborate`
+  (and thread it down to wherever the effect check runs), rather than
+  inventing a second pass that re-walks the syntax tree separately. This
+  is a real signature change to `elaborate.hpp`'s public entry point, not
+  an addition — expect to touch `elaborate.test.cpp`'s call sites too.
+- **Primitive net effects are not tabulated anywhere yet.** F8's
+  `apply_primitive` (`machine/forth_state.hpp`) is imperative runtime code,
+  not a declarative effect table — F12 needs to build its own mapping from
+  `machine::primitive` to a static `(inputs, outputs)` pair (35 of the 37
+  primitives have one; `?DUP` is the one genuinely input-dependent
+  primitive and gets the `unknown` lattice value; `>R`/`R>`/`R@` move
+  values between stacks and need special-casing in the return-stack
+  tracking rather than an ordinary data-stack `(inputs,outputs)` pair).
 
 ## Standing constraints (unchanged)
 
 - The Makefile is the single build interface (`TOOLCHAIN`/`CONFIG` only).
 - Baseline is `gnu++26` on `gcc-16` primary / `clang-21` secondary.
 - Tests use Catch2; every public constexpr API needs a `static_assert`
-  (immediately-invoked-lambda pattern where a parser/function call is
+  (immediately-invoked-lambda pattern where a parser/elaboration call is
   needed); add matching `TEST_CASE`s for Catch2 visibility.
 - Every tree is a flat `tree_arena` of trivially destructible nodes behind
-  `arena_box` handles (D3) — no `fix`/`Box` anywhere in F11's elaborated
-  core either; forward-declare the closed node type before its composite
-  alternatives, exactly as F6's `syntax_tree.hpp` and F7's
-  `read_program.hpp` both do.
+  `arena_box` handles (D3) — the abstract interpreter walks the existing
+  core arena; it should not need a third tree type of its own, just
+  accumulator state (net effect, min depth, return-stack depth) threaded
+  through the same mutually-recursive-function-template walk shape F7/F11
+  both used (DIV-0005's pattern — expect to reach for it a third time).
 - All capacities are template parameters with defaults; no hardcoded
   capacity constants.
 - Before handoff: `make compile`, `make test`, `make lint` green on
   `gcc-16` (and `clang-21` if available); both `smoke.sh` runs end
   `SMOKE OK`; `checklist.md` ticked; `handoff.md` appended (not rewritten);
-  `handoff-next.md` rewritten for whatever comes next (F12, per the plan's
-  parallelism summary, unless it says otherwise); divergence docs filed for
-  anything done differently than `docs/forth-plan.md` or Forth-2012
-  semantics (next free number: check `docs/divergences/` — DIV-0005 is the
-  latest as of this merge).
+  `handoff-next.md` rewritten for whatever comes next (F13, per the plan's
+  ordering, unless it says otherwise); divergence docs filed for anything
+  done differently than `docs/forth-plan.md` or Forth-2012 semantics
+  (next free number: check `docs/divergences/` — DIV-0005 is the latest
+  open one; DIV-0004 is resolved as of F11).
 
-## Known open items going into F11
+## Known open items going into F12
 
-- The DIV-0004 follow-up above (retype `variable_word::addr`) — not yet
-  done by anyone; F11 is the natural place.
+- **The declared-effect/source-text gap** above — `elaborate`'s signature
+  likely needs a `std::string_view source` parameter added; not yet done
+  by anyone.
+- **The `RECURSE`-self-effect fixed-point question** above — needs a
+  documented design decision (declared-effect-as-ground-truth vs.
+  `unknown`-lattice suppression); not yet made by anyone.
+- **The primitive net-effect table** — does not exist yet; F12 builds it.
 - The recurring `make lint` `clang-format`/`gersemi` tooling-version drift
   on a shifting subset of pre-existing files (currently
-  `machine/{CMakeLists.txt,data_space.hpp,dictionary.hpp,
-  dictionary.test.cpp}` and `reader/forth_chars.test.cpp` in this worker's
-  sandbox; different files were flagged at F6/F8/F9/F10) — still
-  unresolved as a standing environment issue, not specific to any one
-  step. Whoever eventually does a dedicated formatting-hygiene pass should
-  treat it as one item, not something to chase file-by-file each step.
+  `machine/{CMakeLists.txt,data_space.hpp}` and
+  `reader/forth_chars.test.cpp` in this worker's sandbox; different files
+  were flagged at every step since F6) — still unresolved as a standing
+  environment issue, not specific to any one step. Whoever eventually does
+  a dedicated formatting-hygiene pass should treat it as one item, not
+  something to chase file-by-file each step.

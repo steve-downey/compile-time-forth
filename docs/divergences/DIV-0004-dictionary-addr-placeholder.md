@@ -1,8 +1,8 @@
 # DIV-0004: dictionary `variable_word` uses `cell`, not a distinct `addr` type, as a placeholder
 
-- **Status:** open
+- **Status:** resolved (F11)
 - **Date:** 2026-07-18
-- **Step:** F9 (dictionary)
+- **Step:** F9 (dictionary), resolved in F11 (elaborated core and resolution)
 - **Authority diverged from:** docs/forth-plan.md
 
 ## What diverged
@@ -61,3 +61,32 @@ possibly-conflicting `addr` type in a header F10 does not own.
 
 Closed once F10 merges and a follow-up change retypes
 `variable_word::addr` from `cell` to F10's distinct `addr` type.
+
+## Resolution (F11)
+
+F10 (`src/smd/forth/machine/data_space.hpp`) merged first and defines
+`machine::addr` exactly as D10 specifies: a private `cell` index, an
+`explicit addr(cell)` constructor, and an `explicit operator cell() const`.
+F11 (elaborated core and resolution) is the first step that actually
+constructs a `variable_word` (elaborating a `VARIABLE`/`CREATE`
+declaration), so it retypes the field as part of its own work:
+
+```cpp
+struct variable_word {
+    addr address{};
+};
+```
+
+The field is also renamed from `addr` to `address` -- naming a data member
+identically to its own type (`addr addr{};`) does not compile in C++
+(`-Wchanges-meaning`: the member declaration's own name hides the type name
+mid-declaration), so the field could not keep its original spelling once its
+type became `addr` itself. `dictionary.hpp` gained an `#include
+<smd/forth/machine/data_space.hpp>` for the type. `dictionary.test.cpp`
+was updated to construct `variable_word{addr{3}}` (explicit conversion,
+matching `addr`'s explicit constructor) and to read back `.address` instead
+of `.addr`.
+
+No other part of F9 or F10 depended on `variable_word::addr`'s type or
+name, so this is the only touched call site outside `dictionary.hpp`/
+`dictionary.test.cpp` themselves.
