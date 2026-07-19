@@ -7,6 +7,7 @@
 #include <smd/forth/foundation/source_pos.hpp>
 #include <smd/forth/foundation/static_vector.hpp>
 #include <smd/forth/machine/cell.hpp>
+#include <smd/forth/machine/data_space.hpp>
 #include <smd/forth/machine/forth_state.hpp>
 
 #include <array>
@@ -67,9 +68,9 @@ constexpr auto word_name_equals_folded(word_name<MaxName> const &name,
 /// count has actually been computed yet. F12 may replace or extend this
 /// shape once real stack-effect checking lands.
 struct stack_effect {
-    int inputs = 0;      ///< Cells consumed, meaningful only if @ref known.
-    int outputs = 0;      ///< Cells produced, meaningful only if @ref known.
-    bool known = false;   ///< True once a real effect has been computed.
+    int inputs = 0;     ///< Cells consumed, meaningful only if @ref known.
+    int outputs = 0;    ///< Cells produced, meaningful only if @ref known.
+    bool known = false; ///< True once a real effect has been computed.
 };
 
 /// A resolved colon-definition binding.
@@ -83,18 +84,23 @@ struct colon_word {
     stack_effect effect{}; ///< See @ref stack_effect.
 };
 
-/// A `VARIABLE`-defined word's binding: the data-space address it names.
+/// A `VARIABLE`- or `CREATE`-defined word's binding: the data-space address
+/// it names.
 ///
-/// @note Placeholder representation -- see DIV-0004
-/// (`docs/divergences/DIV-0004-dictionary-addr-placeholder.md`). D10 calls
-/// for `addr` to be its own distinct type, explicitly convertible to/from
-/// @ref cell; F10 (developed in parallel against the same F8 baseline) is
-/// the step that introduces that type. Until F10 lands, this field is a
-/// plain @ref cell holding the data-space index. Whoever merges F9 after
-/// F10 should change this field's type to F10's `addr` and update this
-/// note.
+/// F11 also uses this binding for `CREATE` (there is no separate binding
+/// kind for it): `CREATE NAME` installs @c NAME at the current data-space
+/// top with no cells allotted, while `VARIABLE NAME` allots exactly one
+/// cell first; both end up as "a name bound to an @ref addr" at the
+/// dictionary level, and F16's `ALLOT` is what later actually extends
+/// storage past a `CREATE`d address.
+///
+/// @note Was a placeholder plain @ref cell until DIV-0004
+/// (`docs/divergences/DIV-0004-dictionary-addr-placeholder.md`) was
+/// resolved in F11: D10 calls for `addr` to be its own distinct type,
+/// explicitly convertible to/from @ref cell, and F10's @ref machine::addr
+/// (`data_space.hpp`) is that type.
 struct variable_word {
-    cell addr = 0;
+    addr address{};
 };
 
 /// A `CONSTANT`-defined word's binding: its fixed value.
@@ -159,14 +165,27 @@ class dictionary {
 
     /// Defines @p name_text as a foreign word.
     /// Diagnoses dictionary-full rather than overflowing.
-    constexpr auto define_foreign(std::string_view name_text,
-                                  foreign_word word) -> status;
+    constexpr auto define_foreign(std::string_view name_text, foreign_word word)
+        -> status;
 
     /// Looks up @p name_text, newest definition first (shadowing).
     /// Folds @p name_text to uppercase before comparing. Returns `nullptr`
     /// if no entry matches.
     [[nodiscard]] constexpr auto lookup(std::string_view name_text) const
         -> dictionary_entry<MaxName> const *;
+
+    /// Looks up @p name_text like @ref lookup, but returns the matching
+    /// entry's index (0-based, insertion order) rather than a pointer, or
+    /// `-1` if no entry matches. F11's elaborator uses this to resolve a
+    /// word reference to the @c word_index a @ref colon_word call
+    /// (`core_call`/`core_push_xt` in the elaborated core) stores.
+    [[nodiscard]] constexpr auto lookup_index(std::string_view name_text) const
+        -> int;
+
+    /// Returns the entry at @p index (0-based, insertion order).
+    /// @pre 0 <= index < size()
+    [[nodiscard]] constexpr auto entry_at(int index) const
+        -> dictionary_entry<MaxName> const &;
 
     /// The number of entries currently defined (including shadowed ones).
     [[nodiscard]] constexpr auto size() const -> int;
@@ -179,15 +198,15 @@ class dictionary {
 };
 
 template <int MaxWords, int MaxName>
-constexpr auto
-dictionary<MaxWords, MaxName>::insert(std::string_view name_text,
-                                      dictionary_binding binding) -> status {
+constexpr auto dictionary<MaxWords, MaxName>::insert(std::string_view name_text,
+                                                     dictionary_binding binding)
+    -> status {
     if (entries_.size() >= MaxWords) {
         return foundation::parse_error{foundation::source_pos{},
                                        "dictionary full"};
     }
-    entries_.push_back(dictionary_entry<MaxName>{
-        make_word_name<MaxName>(name_text), binding});
+    entries_.push_back(
+        dictionary_entry<MaxName>{make_word_name<MaxName>(name_text), binding});
     return std::monostate{};
 }
 
@@ -236,6 +255,24 @@ dictionary<MaxWords, MaxName>::lookup(std::string_view name_text) const
         }
     }
     return nullptr;
+}
+
+template <int MaxWords, int MaxName>
+constexpr auto
+dictionary<MaxWords, MaxName>::lookup_index(std::string_view name_text) const
+    -> int {
+    for (int i = entries_.size() - 1; i >= 0; --i) {
+        if (word_name_equals_folded(entries_[i].name, name_text)) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+template <int MaxWords, int MaxName>
+constexpr auto dictionary<MaxWords, MaxName>::entry_at(int index) const
+    -> dictionary_entry<MaxName> const & {
+    return entries_[index];
 }
 
 template <int MaxWords, int MaxName>

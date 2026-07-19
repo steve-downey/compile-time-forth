@@ -14,7 +14,7 @@ This document describes the compiler architecture of =smd::forth=, a compile-tim
 Like its sibling document for the Scheme proof of concept (=~/src/compile-time-scheme/main/docs/compiler_architecture.org=), it exists to translate compiler jargon into terms familiar to working C++ developers.
 Every code sample below is transcluded from the real source tree by a UUID anchor, never hand-copied prose that might drift from what actually compiles.
 This document is filled in incrementally, one pipeline phase at a time, as each phase's implementation step lands (=docs/forth-plan.md=).
-As of this revision the lexical layer (step F5), the parser combinators and grammar (steps F4 and F7), and the syntax tree (step F6) all exist; later sections describe phases that are planned but not yet implemented, and carry no transclusion until their step lands.
+As of this revision the lexical layer (step F5), the parser combinators and grammar (steps F4 and F7), the syntax tree (step F6), and the elaborated core and resolution pass (step F11) all exist; later sections describe phases that are planned but not yet implemented, and carry no transclusion until their step lands.
 
 * Pipeline overview
 
@@ -91,9 +91,31 @@ The closed node type itself ties every kind above into a single variant that a =
 
 * Phase 4: Elaboration (Resolution and Stack-Effect Checking)
 
+DRAFT — pending author revision.
+
 Elaboration is compiler jargon for "figuring out what the code actually means."
-Where the syntax tree only records what the text says structurally, the elaborated core additionally resolves every word reference against the dictionary and checks that every definition's stack effect is sound before anything is allowed to run.
-This section will transclude the elaborated core's node type once step F11 lands, and the stack-effect checker once step F12 lands.
+Where the syntax tree only records what the text says structurally, the elaborated core additionally resolves every word reference against the dictionary and checks that every definition's stack effect is sound before anything is allowed to run (step F12).
+Step F11 (this section) owns resolution: it walks the syntax tree in program order, threading a =machine::dictionary= forward exactly as a traditional Forth cross-compiler would, and produces a second flat arena — the elaborated core — in the same trivially destructible, =arena_box=-addressed style as the syntax tree (D3).
+Every syntax-tree word reference (a bare word or a =' NAME= tick) becomes one of a small number of already-resolved node kinds: a direct primitive invocation, a call to another definition by its dictionary index, a variable's address, a constant's value, or an execution token — there is no dictionary lookup left to do once elaboration finishes.
+
+#+transclude: [[file:../src/smd/forth/elaborator/elaborated_core.hpp::8a9a3c73-7150-4019-97f5-0485af9c56bb]] :lines 2- :src cpp :end "8a9a3c73-7150-4019-97f5-0485af9c56bb end"
+
+The three control-flow node kinds mirror the syntax tree's =IF=/=BEGIN...UNTIL=/=BEGIN...WHILE...REPEAT=/=DO...LOOP= shapes one for one, and =core_seq= is the one new shape: it is what a colon definition's elaborated body becomes, and it is the node a =colon_word= dictionary entry's =core_id= actually points at.
+
+#+transclude: [[file:../src/smd/forth/elaborator/elaborated_core.hpp::36591b76-b56e-4425-a5c6-a6f32dda00ae]] :lines 2- :src cpp :end "36591b76-b56e-4425-a5c6-a6f32dda00ae end"
+
+The closed node type ties every kind into one variant, exactly like the syntax tree's own =syn_node=, and for the same reason: an =arena_box= handle only ever stores an integer, so the composite kinds above can hold handles to sibling nodes of the very type being defined without ever reaching for =fix=.
+
+#+transclude: [[file:../src/smd/forth/elaborator/elaborated_core.hpp::6100f8d6-3f92-47ce-b4e2-d4137a801740]] :lines 2- :src cpp :end "6100f8d6-3f92-47ce-b4e2-d4137a801740 end"
+
+Elaboration threads a dictionary forward and mutates it as it goes: a colon definition's body is resolved against whatever the dictionary looks like *at that definition's own position in the source*, never against the whole program at once.
+This is what makes redefinition behave the way a traditional (cross-compiling) Forth expects: defining a word a second time does not retroactively change any earlier definition that already called the old one.
+=machine::dictionary= never overwrites or removes a shadowed entry — it only ever appends — so an earlier colon definition's already-elaborated =core_call= keeps pointing at the old entry's index by construction, while later code that looks the name up again reaches the new one first (newest-first lookup).
+Elaboration does not treat redefinition as an error; it records it as a warning in the =compiled_unit='s own collected-diagnostics channel and keeps going, matching the traditional Forth expectation that redefining a word is routine, not exceptional.
+
+#+transclude: [[file:../src/smd/forth/elaborator/elaborate.hpp::5dfe0ab6-e4f5-481b-ad89-926e077d406f]] :lines 2- :src cpp :end "5dfe0ab6-e4f5-481b-ad89-926e077d406f end"
+
+This section will transclude the stack-effect checker once step F12 lands.
 
 * Phase 5: Codegen and the Three Backends
 

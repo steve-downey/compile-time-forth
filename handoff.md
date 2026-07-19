@@ -876,3 +876,203 @@ a fact just because a later step changed something adjacent.
   this as the same open item F6/F8/F9/F10 already flagged, not a new one.
 - Filed DIV-0005 (see above); no other divergence from `docs/forth-plan.md`
   or Forth-2012 semantics.
+
+## Step F11 — Elaborated core and resolution
+
+- Added `src/smd/forth/elaborator/{elaborated_core,elaborate}.hpp` (+
+  `.test.cpp` each), namespace `smd::forth::elaborator`, canonical includes
+  `<smd/forth/elaborator/*.hpp>`. New directory, new component (this project's
+  first `add_subdirectory` placed alphabetically *before* `foundation` in
+  `src/smd/forth/CMakeLists.txt`); headers fold into
+  `compile-time-forth.forth`'s existing `forth_forth_headers` `FILE_SET`
+  (matching every prior step's pattern, no separate compiled target); tests
+  build as the new `elaborator_test` executable, wired from
+  `src/smd/forth/elaborator/CMakeLists.txt`.
+- **Core node layout** (`elaborated_core.hpp`): eleven node kinds exactly as
+  the plan specifies, plus one more the plan's parenthetical anticipated
+  ("or bodies as static_vector of arena_box -- follow the F6 syntax-tree
+  pattern") — `core_seq{items, pos}`. `core_seq` is what a colon
+  definition's elaborated body actually becomes; `machine::colon_word::
+  core_id` (a bare `int` since F9) is the arena index of one of these, the
+  only way to give that bare `int` somewhere concrete to point at.
+  `core_push{cell,pos}`, `core_prim{primitive,pos}`,
+  `core_call{word_index,pos}`, `core_var{addr,pos}`, `core_const{cell,pos}`,
+  `core_push_xt{word_index,pos}`, `core_exit{pos}` are simple (non-recursive)
+  leaf kinds; `core_if{then_body,else_body,pos}`,
+  `core_begin_until{body,pos}`, `core_begin_while{condition,body,pos}`,
+  `core_do_loop{body,is_plus_loop,pos}`, `core_seq{items,pos}` are the
+  composite kinds, each `core_body<MaxNodes,MaxBody>` a
+  `static_vector<core_box<MaxNodes,MaxBody>,MaxBody>` -- same
+  handle-sequence shape as `reader::syn_body`. `core_node<MaxNodes,MaxBody>`
+  (forward-declared before the composite kinds, exactly like F6's
+  `syn_node`) is the closed `std::variant` over all twelve; every node kind
+  carries its own `foundation::source_pos pos` (F12 needs these for its own
+  diagnostics). Unlike `reader::syn_node`, the core has no `MaxName`
+  parameter at all -- every name has already been resolved away into an
+  `int` index, an `addr`, or a `cell` by the time a node reaches the core.
+  Every node kind and the closed variant are `static_assert`-checked
+  trivially destructible (D3), matching F6/F9's pattern.
+- **`compiled_unit<MaxNodes=1024, MaxBody=64, MaxName=32, MaxWords=256,
+  MaxData=1024, MaxWarnings=64>`** bundles: `arena` (the elaborated-core
+  `tree_arena`), `dictionary` (`machine::dictionary<MaxWords,MaxName>`,
+  pre-populated with all 37 F8 primitives via `machine::default_dictionary`
+  before elaboration starts), `data_space`
+  (`machine::data_space<MaxData>` -- a real F10 instance, not a bare
+  counter: `VARIABLE`'s elaboration calls its `allot(1)` directly, so
+  `compiled_unit` reuses F10's own bounds-checked API rather than
+  reimplementing a redundant high-water-mark counter; `data_space.size()`
+  *is* "the data-space size consumed by declarations" the plan's prose
+  asks for), `program` (`core_body<MaxNodes,MaxBody>`, the top-level
+  executable body in source order -- `VARIABLE`/`CONSTANT`/`CREATE`/colon
+  defs contribute nothing here, only bare top-level executable forms do),
+  and `warnings` (see below). `MaxName` is reused as-is from whatever
+  `syntax_tree`/`read_program` instantiation produced the input tree (the
+  same value parameterizes both `elaborate`'s input and `compiled_unit`'s
+  dictionary).
+- **Warning channel:** `warning_log<MaxWarnings> = static_vector<
+  foundation::parse_error, MaxWarnings>` -- reuses `parse_error`'s
+  `{where, message}` shape rather than inventing a second identical struct
+  (the only difference between a warning and an error is which channel it
+  travels through). `push_warning(unit, pos, message)` appends, silently
+  dropping anything past `MaxWarnings` capacity (a warning is never itself
+  a reason to fail elaboration, so there is no error path for "too many
+  warnings" -- this is a documented, deliberate choice, not an oversight).
+  Redefining any name (colon def, `VARIABLE`, `CONSTANT`, or `CREATE`)
+  triggers exactly one `"redefined word"` warning at the new declaration's
+  own position; the elaboration itself proceeds normally (matches the
+  plan's "warn, don't error, on redefinition").
+- **`elaborate<MaxNodes=1024, MaxBody=64, MaxName=32, MaxWords=256,
+  MaxData=1024, MaxWarnings=64>(reader::syntax_tree<MaxNodes,MaxBody,
+  MaxName> const&) -> foundation::result<compiled_unit<MaxNodes,MaxBody,
+  MaxName,MaxWords,MaxData,MaxWarnings>>`** -- takes an already-parsed
+  syntax tree (not source text); walks `tree.program` in program order
+  with an explicit index loop (not a range-for), because `CONSTANT`'s
+  constant-folding needs one-token lookahead (see below). Reuses the
+  syntax tree's own `MaxNodes`/`MaxBody`/`MaxName` for the core arena's
+  capacities, per DIV-0005's follow-up note in the F7->F11 handoff.
+- **Resolution dispatch** (`elaborate_word_ref`, used for every bare
+  `syn_word` reference, at top level and inside colon-def bodies alike):
+  `EXIT` and `RECURSE` are checked *before* any dictionary lookup (neither
+  is ever installed as a dictionary entry) -- `EXIT` becomes `core_exit`;
+  `RECURSE` becomes `core_call{word_index = self_index}`, where
+  `self_index` is threaded down through every recursive elaboration call
+  as "the dictionary index of the colon definition currently being
+  compiled, or -1 at the top level". Both are diagnosed
+  (`"EXIT outside a definition"` / `"RECURSE outside a definition"`) when
+  `self_index < 0` -- **this project's documented choice** for the plan's
+  explicitly-open "EXIT at top level is an error or ignore" question:
+  diagnosed as an error, for both `EXIT` and `RECURSE` symmetrically (not
+  just `EXIT`). Any other name resolves via `dictionary::lookup`
+  (`nullptr` -> `"unknown word"` at the reference's own position) and then
+  branches on the resolved binding: `primitive` -> `core_prim`;
+  `colon_word` -> `core_call{word_index}` (the index comes from the new
+  `dictionary::lookup_index`, see below); `variable_word` -> `core_var`;
+  `constant_word` -> `core_const`; `foreign_word` -> diagnosed
+  (`"foreign words not yet callable"` -- nothing installs one until F19,
+  this branch exists only so the `std::visit` stays exhaustive).
+  `' NAME` (`elaborate_tick`) is simpler and uniform: no `EXIT`/`RECURSE`
+  special-casing (ticking either is just "unknown word", since neither is
+  a dictionary entry), no branching on binding kind -- `core_push_xt{
+  word_index}` regardless of what `NAME` turns out to be bound to, since
+  `EXECUTE` (F18a) is what later decides what to do with the token.
+- **`RECURSE`'s self-index trick:** F7's grammar disallows nested `:` and
+  `VARIABLE`/`CONSTANT`/`CREATE` inside a body-item sequence, so *no new
+  dictionary entry can ever be created while a colon definition's own body
+  is being elaborated*. That means `unit.dictionary.size()`, read once
+  right before a colon def's body is elaborated, is exactly the index that
+  definition will occupy once `define_colon` appends it afterward -- no
+  dictionary mutation/update method was needed to let `RECURSE` inside the
+  body resolve to "myself" before "myself" formally exists as an entry.
+- **`CONSTANT` constant-folding** (`elaborate`'s top-level loop): rather
+  than eagerly pushing every top-level literal into `unit.program` and
+  then trying to "unpush" it if a `CONSTANT` follows (`static_vector` has
+  no pop), the loop peeks one token ahead: when `tree.program[i]` is a
+  `syn_literal` and `tree.program[i+1]` is a `syn_constant`, the pair is
+  consumed together (`elaborate_constant`, using the literal's `.cell`
+  directly -- no arena node for the literal is ever built), and the loop
+  advances by two. Any other `syn_constant` encountered directly (no
+  immediately preceding literal that survived to be looked at -- either
+  nothing precedes it, or the preceding top-level form was some other,
+  non-literal body-item already elaborated and pushed) is diagnosed:
+  `"CONSTANT requires a preceding integer literal"` at the `CONSTANT`
+  token's own position -- this is the plan's "a non-constant initializer
+  is a diagnosed error" case.
+- **`VARIABLE`** calls `unit.data_space.allot(1)` and installs
+  `machine::variable_word{.address = <the returned addr>}`.
+  **`CREATE`** installs `machine::variable_word{.address =
+  unit.data_space.here()}` -- allotting *zero* cells, per the plan's
+  literal text ("CREATE just records the address"); `CREATE` and
+  `VARIABLE` share the same dictionary binding kind (there is no separate
+  "created word" binding -- `dictionary_binding`'s five alternatives are
+  unchanged from F9), documented on `variable_word` itself. F16's `ALLOT`
+  is what later actually extends storage past a `CREATE`d address.
+- **DIV-0004 resolved** (`docs/divergences/DIV-0004-dictionary-addr-
+  placeholder.md`, updated in place, not superseded by a new number):
+  `machine::dictionary`'s `variable_word::addr` field is now
+  `machine::addr address{}` (was a placeholder plain `cell addr`). The
+  field was also *renamed* `addr` -> `address`: `addr addr{};` does not
+  compile in C++ once the field's type is itself named `addr` (GCC:
+  `-Wchanges-meaning`, a hard error -- the member declaration's own name
+  shadows the type name mid-declaration). `dictionary.hpp` gained
+  `#include <smd/forth/machine/data_space.hpp>`; `dictionary.test.cpp` was
+  updated (`variable_word{addr{3}}`, `.address` instead of `.addr`). No
+  other F9/F10 call site referenced this field.
+- **`dictionary.hpp` API extension** (additive, non-breaking, needed
+  because `core_call`/`core_push_xt` must store a `word_index`, and F9's
+  `lookup` only ever returned a pointer): added
+  `lookup_index(std::string_view) const -> int` (same newest-first scan as
+  `lookup`, returns the index instead of a pointer, `-1` if not found) and
+  `entry_at(int) const -> dictionary_entry<MaxName> const&`. Both have
+  their own `static_assert`/`TEST_CASE` coverage in `dictionary.test.cpp`.
+  `lookup` itself is untouched.
+- **Defensive-only branch:** `elaborate_body_item`'s `std::visit` has an
+  `else` arm for `syn_colon_def`/`syn_variable`/`syn_constant`/
+  `syn_create` appearing *inside* a body-item sequence -- F7's grammar
+  already makes this unreachable (none of the four are part of the
+  `body-item` production), but `std::visit` must stay exhaustive; it
+  diagnoses `"declaration not allowed inside a body"` rather than being
+  silently impossible-but-unchecked.
+- **Merge criteria** (`static_assert`, immediately-invoked-lambda pattern,
+  each mirrored as a `TEST_CASE` for Catch2 visibility, in
+  `elaborate.test.cpp`): `: SQUARED DUP * ; : QUAD SQUARED SQUARED ;` --
+  `QUAD`'s elaborated body (a `core_seq` reached through its
+  `colon_word::core_id`) has exactly two `core_call` items, both with
+  `word_index == lookup_index("SQUARED")`; unknown word
+  (`: F NOPE ;`) diagnosed `"unknown word"` at `source_pos{4,1,5}`;
+  forward reference (`: A B ; : B ;`) diagnosed identically (B is simply
+  not yet in the dictionary when A is elaborated -- "use before
+  definition" *is* "unknown word", no separate diagnosis needed);
+  `VARIABLE`/`CONSTANT`/tick each independently exercised, plus
+  redefinition-warns-not-errors, `RECURSE`-calls-self, and
+  `EXIT`/`RECURSE`-outside-a-definition-is-diagnosed.
+- Verified on `gcc-16` (only toolchain available in this worker's
+  sandbox): `make compile`, `make test` (155/155 passed, up from 138/138
+  at F7's baseline -- F9/F10 had already landed in the interim, hence part
+  of the jump), `make lint`, and `smoke.sh gcc-16` all green/`SMOKE OK`.
+  `clang-21` was not re-verified this step (not installed in this
+  sandbox); nothing added is toolchain-specific.
+- **`make lint` note:** the same recurring pre-existing `clang-format`/
+  `gersemi` tooling-version drift flagged at every step since F6
+  (`machine/{CMakeLists.txt,data_space.hpp}`,
+  `reader/forth_chars.test.cpp` in this run) reproduced again, confirmed
+  via `git checkout --` + rerun with zero F11 changes present; this
+  step's own new/touched files (`elaborator/*`, `machine/dictionary.hpp`,
+  `machine/dictionary.test.cpp`, `src/smd/forth/CMakeLists.txt`) were
+  independently confirmed clean via targeted `pre-commit run clang-format`/
+  `gersemi --files ...` runs. Still an open, standing environment item,
+  not specific to F11.
+- Updated `docs/compiler_architecture.org`'s "Phase 4: Elaboration"
+  section with real prose (marked `DRAFT -- pending author revision`) plus
+  three UUID transclusions from `elaborated_core.hpp` (leaf kinds,
+  composite kinds, closed variant) and one from `elaborate.hpp` (the
+  `elaborate` entry point), plus a paragraph on redefinition/static-binding
+  semantics matching traditional cross-compiling-Forth behavior.
+- No new DIV filed: every choice above either directly implements the
+  plan's own explicitly-delegated wording ("your documented choice" for
+  `EXIT`/`RECURSE` outside a definition; "document this" for `CREATE`
+  reusing the `variable_word` binding), or is a non-surprising
+  implementation necessity for the plan's own literal requirements
+  (`word_index` needs a dictionary index-returning lookup; `RECURSE` needs
+  the self-index trick; `CONSTANT` folding needs one-token lookahead).
+  DIV-0004 is resolved (not superseded) in place, per its own "Revisit
+  condition".

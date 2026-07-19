@@ -8,6 +8,7 @@
 
 #include <variant>
 
+using smd::forth::machine::addr;
 using smd::forth::machine::colon_word;
 using smd::forth::machine::constant_word;
 using smd::forth::machine::default_dictionary;
@@ -86,10 +87,9 @@ TEST_CASE("DictionaryTest - RedefinitionShadowsButDoesNotErase") {
 
 TEST_CASE("DictionaryTest - ColonVariableAndForeignBindingsRoundTrip") {
     dictionary<4> dict;
-    CHECK(
-        dict.define_colon("SQUARED", colon_word{7, stack_effect{1, 1, true}})
-            .has_value());
-    CHECK(dict.define_variable("COUNTER", variable_word{3}).has_value());
+    CHECK(dict.define_colon("SQUARED", colon_word{7, stack_effect{1, 1, true}})
+              .has_value());
+    CHECK(dict.define_variable("COUNTER", variable_word{addr{3}}).has_value());
     CHECK(dict.define_foreign("PUTS", foreign_word{2}).has_value());
 
     auto const *colon_entry = dict.lookup("SQUARED");
@@ -101,7 +101,7 @@ TEST_CASE("DictionaryTest - ColonVariableAndForeignBindingsRoundTrip") {
     auto const *variable_entry = dict.lookup("COUNTER");
     REQUIRE(variable_entry != nullptr);
     REQUIRE(std::holds_alternative<variable_word>(variable_entry->binding));
-    CHECK(std::get<variable_word>(variable_entry->binding).addr == 3);
+    CHECK(std::get<variable_word>(variable_entry->binding).address == addr{3});
 
     auto const *foreign_entry = dict.lookup("PUTS");
     REQUIRE(foreign_entry != nullptr);
@@ -119,4 +119,25 @@ TEST_CASE("DictionaryTest - FullDictionaryIsDiagnosed") {
 TEST_CASE("DictionaryTest - LookupMissingWordReturnsNull") {
     auto dict = default_dictionary<>();
     CHECK(dict.lookup("NOSUCHWORD") == nullptr);
+}
+
+// lookup_index/entry_at: F11's elaborator resolves a word reference to a
+// dictionary index (for core_call/core_push_xt), not just a pointer.
+static_assert([] {
+    dictionary<4> dict;
+    (void)dict.define_constant("X", constant_word{1});
+    (void)dict.define_constant("X", constant_word{2});
+    int const index = dict.lookup_index("X");
+    return index == 1 &&
+           std::get<constant_word>(dict.entry_at(index).binding).value == 2;
+}());
+
+TEST_CASE("DictionaryTest - LookupIndexAndEntryAt") {
+    auto dict = default_dictionary<>();
+    int const index = dict.lookup_index("SWAP");
+    REQUIRE(index >= 0);
+    auto const &entry = dict.entry_at(index);
+    REQUIRE(std::holds_alternative<primitive>(entry.binding));
+    CHECK(std::get<primitive>(entry.binding) == primitive::swap);
+    CHECK(dict.lookup_index("NOSUCHWORD") == -1);
 }

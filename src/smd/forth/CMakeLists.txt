@@ -34,6 +34,7 @@ if(FORTH_ENABLE_TESTING)
     catch_discover_tests(forth_test)
 endif()
 
+add_subdirectory(elaborator)
 add_subdirectory(foundation)
 add_subdirectory(machine)
 add_subdirectory(parser)
