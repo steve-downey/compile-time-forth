@@ -262,6 +262,117 @@ The API surface later steps build on:
 Dependencies satisfied by this merge: F4 -> F5 per the plan's parallelism
 summary (Track A: F4 -> F5 -> F7, F6 joins F7). F5 (Forth lexical layer,
 `src/smd/forth/reader/forth_chars.hpp`) can start once this merges to main.
+
+## F5 complete — what F7 needs to know about the lexical API
+
+Step F5 (Forth lexical layer) is done in worktree `wt-f5` / branch
+`step/f5`. `src/smd/forth/reader/forth_chars.hpp` (+ `forth_chars.test.cpp`),
+namespace `smd::forth::reader`, canonical include
+`<smd/forth/reader/forth_chars.hpp>`. All 113 tests pass on `gcc-16`
+(`clang-21` not available in this worker's sandbox — not re-verified, see
+`handoff.md`); `make compile`, `make test`, `make lint`, and
+`smoke.sh gcc-16` are all green. No divergence filed. See `handoff.md`'s
+"Step F5 — Forth lexical layer" section for the full facts.
+
+Built entirely from the F4 combinators (`cursor`, `satisfy`, `map`, `some`,
+`char_p`, `skip_intertoken_space`) per D6 — no hand-rolled scanning loop for
+word/number tokens; the only two places that iterate directly over `cursor`
+are `skip_forth_space` (a fixpoint loop over three alternatives: plain
+whitespace / `\` comment / `( ... )` comment — not naturally a `satisfy`-
+style single-predicate scan) and `scan_paren_comment` (which needs to record
+a span while scanning, not just a value), matching the precedent already set
+by F4's own `cursor::skip_intertoken_space`.
+
+The API surface F7's grammar (`src/smd/forth/reader/read_program.hpp`)
+builds on, all in `smd::forth::reader`:
+
+- `fold_char(char) -> char`: uppercase-folds one ASCII letter (D8); passes
+  everything else through unchanged. Used internally by `scan_word`; F7
+  should not need to call it directly except to fold a literal spelling by
+  hand (e.g. matching a reserved word like `IF`/`ELSE`/`THEN` against
+  already-folded text — those keyword spellings are already uppercase in
+  source, so no folding call is needed for them either).
+- `is_word_char(char) -> bool` / `is_digit(char) -> bool`: character-level
+  predicates, exported in case F7 wants to compose its own `satisfy`-based
+  scanners directly rather than going through `scan_word`.
+- `skip_forth_space(cursor) -> cursor`: **use this, not
+  `parser::skip_intertoken_space`**, everywhere in the grammar that needs to
+  skip between tokens — it also skips `\` line comments and `( ... )`
+  comments (D9), which plain `parser::skip_intertoken_space` does not know
+  about. An unterminated `(` comment leaves the cursor positioned at the
+  unclosed `(` rather than consuming to end of input, so a subsequent parse
+  step will fail there with a sensible position.
+- `forth_lexeme(P) -> parser`: wraps any parser (not just `scan_word`) to
+  skip `skip_forth_space` on both sides — the Forth-aware analogue of
+  `parser::lexeme`. Reach for this when building new token-level
+  productions (e.g. a `tick` production wrapping `char_p('\'')`) instead of
+  `parser::lexeme`, so comments between tokens are handled uniformly.
+- `token_text<MaxName = 32> = foundation::static_vector<char, MaxName>` and
+  `scan_word<MaxName = 32>(cursor) -> parse_result<token_text<MaxName>>`:
+  the word/token scanner. Already folds to uppercase and already skips
+  surrounding `skip_forth_space` (via `forth_lexeme`) — this is almost
+  certainly what F7's `name`, keyword-matching, and bare-word productions
+  should be built from. To match a specific reserved word (e.g. `IF`), scan
+  with `scan_word`, then compare the resulting `token_text` against the
+  literal uppercase spelling (or convert to `std::string_view` via
+  `std::string_view{tok.begin(), static_cast<std::size_t>(tok.size())}` —
+  see `forth_chars.test.cpp`'s local `view_of` helper for the exact
+  pattern) — there is no dedicated `keyword_p("IF")` combinator in F5;
+  build it in F7 from `scan_word` + comparison, or via `map`/`satisfy` over
+  the same primitives, whichever reads better in the grammar.
+- `is_number_token(std::string_view) -> bool`: call this on a `scan_word`
+  result's text to decide whether a token is a number or a word (D8):
+  `-1` is a number, `1-` and `-` are words. This is how F7's `body-item`
+  production should distinguish `literal` from `word` — scan one token with
+  `scan_word`, then branch on `is_number_token` of its text, rather than
+  trying to parse a number and a word as separate alternatives (that would
+  require careful ordering/backtracking around `operator|`'s no-backtrack-
+  after-consuming rule; branching after a single scan avoids the issue
+  entirely).
+- `token_to_cell(std::string_view) -> std::int64_t`: converts a token
+  already confirmed by `is_number_token` (precondition, not checked) into
+  its signed decimal value — build `syn_literal{token_to_cell(text), pos}`
+  from this once a token is recognized as a number.
+- `scan_paren_comment(cursor) -> parse_result<foundation::source_span>`:
+  the comment-capture primitive for D9. Requires `cur` to already be
+  positioned at `(` — call this (not `skip_forth_space`) at the exact point
+  in the grammar where a declared stack-effect comment may appear, i.e.
+  right after scanning a colon-definition's name, when you want to *test*
+  whether the next non-whitespace token is `(` and, if so, capture its
+  span into `syn_colon_def.declared_effect` rather than discarding it. The
+  returned span covers the opening `(` through the closing `)` inclusive
+  (`first` = position of `(`, `last` = position just past `)`), so
+  `source.substr(span.first.offset, span.last.offset - span.first.offset)`
+  reproduces the comment text verbatim, e.g. `"( a b -- c )"` — F12 (not
+  F7) is the step that actually parses that text for `--` and the
+  before/after stack-effect items; F7 only needs to capture the span
+  faithfully. Per the plan (Step F7 section), the *first* `( ... )` comment
+  after the name is the one to capture; if none is present, leave
+  `declared_effect` at its default-constructed empty span (`first == last`)
+  as F6 already documented.
+- Every function above is `constexpr` and has a `static_assert` (mostly the
+  immediately-invoked-lambda pattern, since most checks need to invoke a
+  parser) in `forth_chars.test.cpp`, including the three literal merge
+  criteria from the plan's Step F5 section: folding (`scan_word` on `"dup"`
+  yields `"DUP"`), comment skipping (both `\` and `( ... )` kinds, alone
+  and interleaved), and number/word discrimination (`-1`/`1-`/`-`).
+
+CMake shape to match: `forth_chars.hpp` folds into
+`compile-time-forth.forth`'s existing `forth_forth_headers` `FILE_SET`;
+`forth_chars.test.cpp` is a new source on the existing `reader_test`
+executable, both wired from `src/smd/forth/reader/CMakeLists.txt` (same
+directory and executable as F6's `syntax_tree.hpp`/`.test.cpp` — no new
+target, no new subdirectory). F7's `read_program.hpp`/`.test.cpp` should
+follow the same pattern: new `FILES`/test-source entries in this same
+`CMakeLists.txt`, same `reader_test` executable, unless there's a concrete
+reason to split — nothing here has needed that so far.
+
+Dependencies satisfied by this merge: per the plan's parallelism summary,
+Track A is F4 -> F5 -> F7, with F6 (already merged, separate track) joining
+at F7. F7 (grammar, `src/smd/forth/reader/read_program.hpp`) can start once
+this merges to main — both of its dependencies (F5's lexical layer, F6's
+syntax tree) are now satisfied.
+
 ## F6 complete — what F7/F11 need to know about the syntax-tree API
 
 Step F6 (syntax tree) is done in worktree `wt-f6` / branch `step/f6`. See

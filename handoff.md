@@ -275,6 +275,79 @@ a fact just because a later step changed something adjacent.
   file under `src/smd/forth/parser/` is ever reformatted by the same
   `clang-format` run. `smoke.sh gcc-16` and `smoke.sh clang-21` both end
   `SMOKE OK`.
+## Step F5 — Forth lexical layer
+
+- Added `src/smd/forth/reader/forth_chars.hpp` (+ `forth_chars.test.cpp`),
+  namespace `smd::forth::reader`, canonical include
+  `<smd/forth/reader/forth_chars.hpp>`. Built entirely on the F4 combinators
+  (`smd::forth::parser::{cursor,parser,satisfy,map,some,char_p,
+  skip_intertoken_space}`) — no hand-rolled scanning loop for word/number
+  tokens.
+- `fold_char(char) -> char`: uppercase-folds one ASCII letter (D8); other
+  characters pass through unchanged.
+- `is_word_char(char) -> bool`: true for anything that is not ASCII
+  whitespace — the plan's literal "a word is any run of non-whitespace
+  characters" definition. `is_digit(char) -> bool`: ASCII decimal digit.
+- `skip_forth_space(cursor) -> cursor`: Forth's own intertoken-space skip —
+  loops skipping plain ASCII whitespace (via
+  `parser::skip_intertoken_space`), `\` line comments (backslash to end of
+  line or end of input), and `( ... )` comments, until none of the three
+  remain. Distinct from `parser::skip_intertoken_space`, which only knows
+  about plain whitespace. An unterminated `(` comment stops the skip in
+  place (does not silently consume to end of input) so the next parse step
+  fails in context.
+- `scan_paren_comment(cursor) -> parse_result<source_span>`: the
+  comment-capture primitive (D9) — requires `cur` to already be positioned
+  at `(`; on success returns a `source_span` covering from the opening `(`
+  through the closing `)` inclusive, so re-slicing the original source text
+  through the span reproduces the comment text verbatim, e.g.
+  `( a b -- c )`. `skip_forth_space` calls this internally and discards the
+  span when it only needs to skip, not capture. This is what F7 should call
+  right after parsing a colon-definition's name to capture
+  `syn_colon_def.declared_effect` (`src/smd/forth/reader/syntax_tree.hpp`,
+  from F6) when the next token is a `(` comment.
+- `forth_lexeme(P) -> parser`: the Forth-aware analogue of
+  `parser::alt::lexeme`, wrapping any parser so it skips `skip_forth_space`
+  (not just plain whitespace) on both sides.
+- `token_text<MaxName = 32> = foundation::static_vector<char, MaxName>`:
+  alias for scanned token text.
+- `scan_word<MaxName = 32>(cursor) -> parse_result<token_text<MaxName>>`:
+  the token scanner — `forth_lexeme(map(some<MaxName>(satisfy(is_word_char,
+  ...)), <fold each char>))`. Scanning `"dup"` yields `"DUP"` (merge
+  criterion). Skips surrounding `skip_forth_space` (so it composes across
+  comments, not just plain whitespace) via `forth_lexeme`.
+- `is_number_token(std::string_view) -> bool`: true iff the text is an
+  optional leading `-` followed by one or more decimal digits and nothing
+  else. `-1` is a number; `1-` is a word (the `-` isn't the first
+  character); `-` alone is a word (no digits after the sign) — merge
+  criterion, all three cases have a dedicated `static_assert`.
+- `token_to_cell(std::string_view) -> std::int64_t`: converts a token
+  already confirmed by `is_number_token` into its signed decimal value
+  (precondition, not checked). This is what F7 will call to build a
+  `syn_literal.cell` once it has recognized a number token via
+  `is_number_token`.
+- Every public function has a compile-time (`static_assert`,
+  immediately-invoked-lambda pattern where the check needs a parser
+  invocation) exercise in `forth_chars.test.cpp`, plus a small number of
+  matching `TEST_CASE`s for runtime/Catch2 coverage, per house style. No
+  new capacity constants: `MaxName` is a template parameter defaulting to
+  `32`, matching `syn_name<MaxName>`'s default from F6.
+- CMake: `forth_chars.hpp` folds into the existing `forth_forth_headers`
+  `FILE_SET` on `compile-time-forth.forth`; `forth_chars.test.cpp` is a new
+  source on the existing `reader_test` executable
+  (`src/smd/forth/reader/CMakeLists.txt`, alongside F6's `syntax_tree.hpp`/
+  `syntax_tree.test.cpp`) — no new target, no new subdirectory.
+- No divergence filed: every design choice above (the `forth_lexeme`
+  wrapper, the inclusive-span convention for `scan_paren_comment`, folding
+  during the same scan pass rather than as a separate post-pass) is an
+  implementation detail satisfying the plan's literal Step F5 spec and D8/
+  D9, not a deviation from `docs/forth-plan.md` or Forth-2012 semantics.
+- Verified on `gcc-16` only (no `clang-21` available in this worker's
+  sandbox): `make compile`, `make test` (113/113 passed), `make lint`, and
+  `.claude/skills/run-compile-time-forth/smoke.sh gcc-16` (`SMOKE OK`) are
+  all green. `clang-21` was not re-verified for this step — nothing added
+  is toolchain-specific, but confirm on `clang-21` before or at the next
+  merge point if that toolchain is available to whoever does it.
 ## Step F6 — Syntax tree
 
 - Added `src/smd/forth/reader/syntax_tree.hpp` (+ `syntax_tree.test.cpp`),
