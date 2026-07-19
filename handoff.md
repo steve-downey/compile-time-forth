@@ -480,3 +480,99 @@ a fact just because a later step changed something adjacent.
   filed for this — it is environment/tooling drift, not a deviation from
   `docs/forth-plan.md` or Forth-2012 semantics. Flagged in
   `handoff-next.md` for whoever next runs `make lint` repo-wide.
+
+## Step F9 — Dictionary
+
+- Landed `src/smd/forth/machine/dictionary.hpp` (+ `dictionary.test.cpp`),
+  namespace `smd::forth::machine`, canonical include
+  `<smd/forth/machine/dictionary.hpp>`. Headers fold into
+  `compile-time-forth.forth`'s existing `forth_forth_headers` `FILE_SET`
+  (no separate compiled target); tests build into the existing
+  `machine_test` executable (new source added to
+  `src/smd/forth/machine/CMakeLists.txt`'s existing `FILES`/test-source
+  lists, per F8's stated plan — no new subdirectory).
+- `word_name<MaxName>` is an alias for
+  `foundation::static_vector<char, MaxName>` (default `MaxName = 32`,
+  matching F6's `syn_name`). Two free helpers: `fold_upper(char) -> char`
+  (ASCII-only uppercase fold) and `make_word_name<MaxName>(std::string_view)
+  -> word_name<MaxName>` (folds every character while building). Unlike F6's
+  `syn_name`/`make_syn_name` (which assume pre-folded input and document
+  that choice), `dictionary.hpp` folds internally on both insertion and
+  lookup — this is the header's documented choice for satisfying the F9
+  merge criterion "case-folded lookup: `dup` finds `DUP`" directly, so
+  entries are always stored already-uppercase regardless of what case a
+  caller passes to `define_*`, and `lookup` folds its query the same way
+  before comparing.
+- The dictionary-entry binding is `dictionary_binding = std::variant<
+  primitive, colon_word, variable_word, constant_word, foreign_word>`
+  exactly as the plan specifies, plus:
+  - `stack_effect{inputs = 0, outputs = 0, known = false}` — the minimal
+    effect summary the plan calls for; F12 owns refining or replacing it.
+  - `colon_word{core_id = -1, effect = stack_effect{}}` — `core_id` is a
+    bare `int` (handle into F11's not-yet-built elaborated-core arena);
+    F9 cannot name a typed handle to a type it doesn't know.
+  - `variable_word{addr = cell{0}}` — **DIV-0004**
+    (`docs/divergences/DIV-0004-dictionary-addr-placeholder.md`): the plan's
+    D10 calls for `addr` to be a distinct type convertible to/from `cell`,
+    but that type is F10's deliverable (F10 runs in parallel off the same
+    F8 baseline, so F9 has no dependency on it); `addr` is a plain `cell`
+    here until F10 lands and a follow-up retypes this field.
+  - `constant_word{value = cell{0}}`, `foreign_word{index = -1}` — as
+    specified.
+- `dictionary<MaxWords, MaxName = 32>` wraps one
+  `foundation::static_vector<dictionary_entry<MaxName>, MaxWords> entries_`.
+  Five typed `define_primitive`/`define_colon`/`define_variable`/
+  `define_constant`/`define_foreign` methods (rather than one overloaded
+  `define`) each fold the name via `make_word_name` and append via a private
+  `insert`, returning `status`; `insert` diagnoses `"dictionary full"` via
+  `foundation::parse_error` before ever calling `static_vector::push_back`
+  once `entries_.size() >= MaxWords` (`push_back`'s own bounds check is a
+  debug-only `assert`, same reasoning as F8's `cell_stack`). Redefinition is
+  never rejected — `insert` always appends, never overwrites or removes.
+- `lookup(std::string_view) const -> dictionary_entry<MaxName> const *`
+  scans `entries_` from `size() - 1` down to `0` (newest-first) and returns
+  the first case-folded match, or `nullptr`. Because insertion never
+  removes a shadowed entry, `size()` after redefining a name is larger by
+  one per redefinition, and the shadowed entry is still reachable by index
+  (just not by `lookup`) — this is what lets a cross-compiling Forth keep
+  already-elaborated bodies bound to the old definition while new bodies
+  see the new one (the plan's own note on this: "later words see the new
+  definition, earlier resolutions keep the old one — static binding falls
+  out of F11's program-order resolution").
+- `default_dictionary<MaxWords = 256, MaxName = 32>() -> dictionary<MaxWords,
+  MaxName>` installs all 37 F8 primitives (one `std::array<std::pair<
+  std::string_view, primitive>, 37>` literal, looped over with
+  `define_primitive`), under exactly the Forth spellings the plan lists:
+  `+ - * / MOD NEGATE ABS MIN MAX AND OR XOR INVERT LSHIFT RSHIFT 0= 0< =
+  <> < > <= >= TRUE FALSE DUP DROP SWAP OVER ROT ?DUP NIP TUCK DEPTH >R R>
+  R@` — a one-to-one mapping onto every `enum class primitive` enumerator
+  from F8's `forth_state.hpp` (verified by count: 37 words, 37
+  enumerators). `MaxWords` default of 256 leaves headroom beyond the 37
+  primitives for a program's own colon/variable/constant/foreign
+  definitions.
+- Every binding alternative, the closed `dictionary_binding` variant, one
+  `dictionary_entry<32>`, and a representative `dictionary<256, 32>` are all
+  checked `std::is_trivially_destructible_v` in a `detail` namespace at the
+  bottom of `dictionary.hpp` (same pattern as F6's `syntax_tree.hpp`).
+- Merge-criterion `static_assert`s (immediately-invoked-lambda pattern) live
+  at the top of `dictionary.test.cpp`, each also mirrored as a runtime
+  `TEST_CASE` for Catch2 visibility: lookup finds an installed word
+  (`default_dictionary<>().lookup("DUP")` holds `primitive::dup`);
+  shadowing (`define_constant("X", 1)` then `define_constant("X", 2)`,
+  `lookup("X")` returns the value-`2` entry, `size() == 2`); case-folded
+  lookup (`lookup("dup")` also finds `DUP`). Additional `TEST_CASE`s cover
+  colon/variable/foreign round-trip through `lookup` +
+  `std::get<...>(entry->binding)`, dictionary-full diagnosis
+  (`dictionary<1>`, second `define_constant` fails), and a missing-word
+  lookup returning `nullptr`.
+- Verified on `gcc-16` (only toolchain available in this worker's sandbox):
+  `make compile`, `make test` (114/114, up from 68/68 at F8), `make lint`
+  (all hooks Passed, including `clang-format` and `gersemi` CMake
+  linting — no repeat of the F6/F8 pre-existing `clang-format` drift on
+  `foundation/{applicative,functor,parse_error,source_pos,static_vector}.hpp`
+  et al.; that drift is not present in this checkout), and
+  `smoke.sh gcc-16` all green/`SMOKE OK`. `clang-21` was not independently
+  re-verified this step (not installed in this worker's sandbox); nothing
+  in `dictionary.hpp` is toolchain-specific.
+- DIV-0004 filed (see above) for the `variable_word::addr` placeholder.
+  No other divergence from `docs/forth-plan.md` or Forth-2012 semantics.

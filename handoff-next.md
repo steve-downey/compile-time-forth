@@ -476,3 +476,109 @@ or Forth-2012 semantics) — but whoever next needs a fully green `make
 lint` repo-wide should either re-pin/re-vendor a matching `clang-format`
 build, or run `clang-format -i` repo-wide once and commit the result as its
 own small housekeeping change, separate from any feature step.
+
+## F9 complete — what F11 needs to know about the dictionary API
+
+Step F9 (dictionary) is done in worktree `wt-f9` / branch `step/f9`. See
+`handoff.md`'s "Step F9 — Dictionary" section for the full facts.
+`make compile`, `make test` (114/114, up from 68/68 at F8), `make lint`
+(fully green — no repeat of the pre-existing `clang-format` drift F6/F8
+flagged; that drift is not present in this checkout), and `smoke.sh gcc-16`
+are all green. Not merged by this worker — the orchestrator merges. F5
+(lexical layer) and F10 (data space), running in parallel in other
+worktrees, are unaffected by this merge; `forth_state.hpp` was not touched.
+
+New component: `src/smd/forth/machine/dictionary.hpp` (+
+`dictionary.test.cpp`), namespace `smd::forth::machine`, canonical include
+`<smd/forth/machine/dictionary.hpp>`. CMake: headers fold into
+`compile-time-forth.forth`'s `forth_forth_headers` `FILE_SET`; tests build
+into the existing `machine_test` executable (new `FILES`/test-source
+entries in `src/smd/forth/machine/CMakeLists.txt`, no new subdirectory).
+
+The API surface F11 (elaborated core and resolution) builds on:
+
+- `dictionary<MaxWords, MaxName = 32>` is the word list F11 threads through
+  program-order resolution. Construct one with `dictionary<MaxWords,
+  MaxName> dict;` or start from `default_dictionary<MaxWords, MaxName>()`
+  (default `MaxWords = 256`, enough for the 37 installed primitives plus
+  headroom) to get every F8 primitive pre-installed under its Forth name.
+- Five typed definer methods, each returning `status` (diagnoses
+  `"dictionary full"` rather than overflowing, never UB):
+  `define_primitive(name, primitive)`, `define_colon(name, colon_word)`,
+  `define_variable(name, variable_word)`,
+  `define_constant(name, constant_word)`, `define_foreign(name,
+  foreign_word)`. F11 should call `define_colon` once per colon definition
+  it elaborates, threading the dictionary forward through the program in
+  source order (each subsequent top-level form's word references resolve
+  against whatever the dictionary looks like *at that point*, including
+  any earlier colon definitions in the same program) — this is what the
+  plan's "static binding falls out of F11's program-order resolution" note
+  refers to.
+- `colon_word{core_id, effect}`: `core_id` is a bare `int` — F11 should
+  treat it as the index/handle of the elaborated-core node it just built
+  for this definition (into whatever arena F11's `tree_arena` for the
+  elaborated core turns out to be); nothing in F9 interprets `core_id`
+  beyond storing it. `effect` is a `stack_effect{inputs, outputs, known}`
+  — F9 always installs `stack_effect{}` (i.e. `known = false`) for new
+  colon words; F11 either leaves it unknown or fills in a real value if it
+  computes one inline, but F12 is the step that actually owns stack-effect
+  analysis end-to-end.
+- `variable_word{addr}`, `constant_word{value}`: build these from whatever
+  F11 resolves a `VARIABLE`/`CONSTANT` declaration to.
+  **DIV-0004** (`docs/divergences/DIV-0004-dictionary-addr-placeholder.md`):
+  `variable_word::addr` is currently a plain `cell`, not the distinct typed
+  `addr` the plan's D10 calls for — that type is F10's deliverable, and F9
+  has no dependency on F10 (both depend only on F8, run in parallel).
+  **When F9 and F10 are both merged, retype `variable_word::addr` from
+  `cell` to F10's `addr` type as a small follow-up** (update
+  `dictionary.hpp`'s include and the field's type; nothing else in
+  `dictionary.hpp` needs to change). Until then, treat any `variable_word`
+  you build as holding a raw data-space index with no more type safety
+  than a `cell` has.
+- `foreign_word{index}`: a placeholder slot for F19 (foreign function
+  interface); F11 has no reason to construct one yet.
+- `dictionary::lookup(std::string_view name_text) const ->
+  dictionary_entry<MaxName> const *` is linear, **newest-first** (scans
+  from the last-inserted entry backward), and **folds `name_text` to
+  uppercase internally** before comparing — pass either case, it doesn't
+  matter (`lookup("dup")` and `lookup("DUP")` are equivalent). Returns
+  `nullptr` if nothing matches. F11's word-reference resolution should
+  call this once per `syn_word` it needs to resolve, then `std::visit` (or
+  `std::get_if`) on `entry->binding` to decide what kind of reference it
+  just resolved (primitive opcode vs. colon word vs. variable vs. constant
+  vs. foreign word) and shape its elaborated-core node accordingly. A
+  resolution failure (word not found at all) is `entry == nullptr`; F9
+  does not itself produce a diagnostic for that case, since it has no
+  notion of "the elaborator is currently resolving word X at source
+  position Y" — F11 owns turning a `nullptr` lookup into a real
+  `parse_error`/diagnostic with source position.
+- Redefinition is legal, not an error: `define_*` never rejects a name
+  already present, it just appends another entry. The plan calls for F11
+  to *warn* (not error) on redefinition via a "collected-diagnostics
+  channel" — F9 does not implement that channel itself (out of scope: F9
+  only has to make redefinition legal and make `lookup` return the newest
+  entry, which it does); F11 is expected to notice "this name already had
+  an entry before I called `define_colon`/etc." (e.g. by calling `lookup`
+  first and checking for a non-null result before defining) and route that
+  fact into whatever collected-diagnostics mechanism F11 introduces.
+- `dictionary_entry<MaxName>{name, binding}`: `name` is a `word_name<MaxName>
+  = foundation::static_vector<char, MaxName>`, always stored already
+  uppercase (`make_word_name` folds on construction, called internally by
+  every `define_*`). `binding` is the closed
+  `dictionary_binding = std::variant<primitive, colon_word, variable_word,
+  constant_word, foreign_word>`.
+- Every binding type, the closed variant, `dictionary_entry`, and
+  `dictionary` itself are trivially destructible (D3-adjacent — the
+  dictionary is one flat `foundation::static_vector`, never a
+  destructor-owning heap container); F11's elaborated-core arena should
+  follow the same discipline, per F6's precedent (forward-declare the
+  closed node type, hold `arena_box` handles to children, no `fix`/`Box`).
+- Merge-criterion tests live in `dictionary.test.cpp` (both as
+  `static_assert`s and mirrored `TEST_CASE`s): lookup finds an installed
+  word, shadowing (newest wins, old entry still counted in `size()`), and
+  case-folded lookup (`dup` finds `DUP`).
+
+Dependencies satisfied by this merge: F9 -> F11 (elaboration also depends
+on F6 (syntax tree, already merged) and F5/F7 (lexical layer + grammar,
+still in flight) for its input; F11 cannot fully start until F7 lands, but
+the dictionary API it consumes is stable as of this merge).
