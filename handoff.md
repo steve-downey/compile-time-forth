@@ -725,3 +725,154 @@ a fact just because a later step changed something adjacent.
   `size()`/`here()` convenience accessors) is an implementation detail
   within the plan's literal spec, not a deviation from `docs/forth-plan.md`
   or Forth-2012 semantics.
+
+## Step F7 — Grammar
+
+- Added `src/smd/forth/reader/read_program.hpp` (+ `read_program.test.cpp`),
+  namespace `smd::forth::reader`, canonical include
+  `<smd/forth/reader/read_program.hpp>`. Header folds into
+  `compile-time-forth.forth`'s existing `forth_forth_headers` `FILE_SET`
+  (matching F5/F6's pattern, no separate compiled target); test source added
+  to the existing `reader_test` executable via
+  `src/smd/forth/reader/CMakeLists.txt`.
+- **Entry point:** `template <int MaxNodes = 1024, int MaxBody = 64, int
+  MaxName = 32, int MaxDepth = 32> constexpr auto
+  read_program(std::string_view source) -> foundation::result<syntax_tree<
+  MaxNodes, MaxBody, MaxName>>`. `MaxDepth` is new relative to F6's
+  `syntax_tree` capacities -- it bounds the grammar's own recursive-descent
+  nesting (see DIV-0005 below), checked before `IF`/`BEGIN`/`DO` ever
+  recurse one level deeper, diagnosed as `"max nesting depth exceeded"`
+  rather than either compiling forever or accepting unbounded nesting.
+- Grammar implemented exactly as specified (`docs/forth-plan.md` Step F7):
+  `program := item* eof`; `item := colon-def | variable | constant |
+  create | body-item`; `colon-def := ':' name effect-comment? body-item*
+  ';'`; `body-item := literal | tick | if | begin-until | begin-while |
+  do-loop | word`; `if`/`begin-until`/`begin-while`/`do-loop`/`tick`/
+  `variable`/`constant`/`create` all as given. `VARIABLE`/`CONSTANT`/
+  `CREATE` are legal only at the top level (the `item` production), matching
+  the grammar's literal shape -- encountering one of them while parsing a
+  body diagnoses `"VARIABLE/CONSTANT/CREATE not allowed inside a
+  definition"` rather than silently treating it as a bare word (Forth-2012
+  itself does not allow defining words to run inside colon-compilation
+  either).
+- **Token-level scanning is built entirely from F4/F5's free-function
+  combinators** (`scan_word`, `skip_forth_space`, `scan_paren_comment`,
+  `is_number_token`, `token_to_cell`, `parser::some`, `parser::satisfy`),
+  per D6. Two small helpers layer directly on top: `scan_token<MaxName>
+  (cursor) -> parse_result<scanned_token<MaxName>>` pairs a `scan_word`
+  result with the token's own starting position (which `scan_word` alone
+  does not preserve); `scan_token_no_trailing_skip<MaxName>` is a second
+  variant used **only** for a colon-definition's name, because `scan_word`
+  wraps its scan in `forth_lexeme`, which skips trailing Forth intertoken
+  space -- and `( ... )` comments count as intertoken space (D9) -- so an
+  ordinary `scan_token` call would silently consume a stack-effect comment
+  immediately following the name before `parse_colon_def` ever got a chance
+  to inspect it. `scan_token_no_trailing_skip` only performs the *leading*
+  skip, so its returned cursor sits exactly at the first character after
+  the name's own text, letting `parse_colon_def` peek (via plain
+  `parser::skip_intertoken_space`, not `skip_forth_space`, so it stops at a
+  `(` rather than consuming the comment) for an immediately-following `(`
+  before anything else has a chance to eat it. **This was the one real bug
+  caught during this step's own verification** (the `abs_ok`
+  merge-criterion static_assert initially failed because the effect
+  comment had already been swallowed) -- worth flagging to whoever next
+  writes a "scan X, then look at what comes right after" grammar production
+  against these combinators.
+- **DIV-0005** (`docs/divergences/DIV-0005-grammar-recursive-descent.md`):
+  the grammar's nested control-structure productions (`if`/`begin-until`/
+  `begin-while`/`do-loop`, each recursively containing `body-item*`) are a
+  small set of mutually recursive plain `constexpr` function templates
+  (`parse_body_until`, `parse_body_item_from_token`, `parse_if`,
+  `parse_begin`, `parse_do`), not a chain of F4 combinator composition
+  (`map`/`lift2`/`operator|`) -- a self-recursive grammar production has no
+  finite `parser<F>` type to compose it from, and assembling tree nodes
+  needs a mutable `tree_arena` threaded alongside the cursor, which the
+  combinator calling convention (`cursor -> parse_result<T>`) has no slot
+  for. Every one of these functions still calls down into the F4/F5 free
+  functions for its own token-level work -- only the tree-shaped recursion
+  and arena-threading are hand-written. **F11 (and any later step with a
+  genuinely self-recursive node kind) should expect to reach for this same
+  plain-mutually-recursive-function-template shape**, not try to force it
+  through `functor`/`applicative`/`alternative`-style combinators.
+- **Error catalog** (every one has a dedicated failure test in
+  `read_program.test.cpp`, checking the exact `foundation::parse_error`
+  message and source position, via `parse_error`'s own `operator==`):
+  - `"unterminated definition (no ;)"` -- colon-def body ran out of input
+    before `;`; position is where the failed token scan landed (effectively
+    end-of-input). The same "ran out of input before the expected
+    terminator" pattern produces `"unterminated IF (missing THEN)"`,
+    `"unterminated IF (missing THEN after ELSE)"`, `"unterminated BEGIN
+    (missing UNTIL or WHILE)"`, `"unterminated BEGIN...WHILE (missing
+    REPEAT)"`, and `"unterminated DO (missing LOOP or +LOOP)"` for the
+    other four body-sequence productions (only the colon-def case has a
+    dedicated test, since all five share the same `parse_body_until`
+    implementation path).
+  - `"ELSE without IF"`, `"THEN without IF"`, `"UNTIL without BEGIN"`,
+    `"WHILE without BEGIN"`, `"REPEAT without BEGIN...WHILE"`, `"LOOP
+    without DO"`, `"+LOOP without DO"` -- any closing keyword encountered
+    as a body-item head when it isn't the *current* context's own
+    terminator is diagnosed by name, at that token's position (tested:
+    `ELSE`/`THEN`/`UNTIL`, the rest share the identical dispatch branch in
+    `parse_body_item_from_token`).
+  - `"stray ;"` -- a `;` encountered anywhere it isn't the current
+    colon-def's own terminator (including a bare `;` at the top level, no
+    open colon-def at all -- the required test case).
+  - `"nested : inside definition"` -- a `:` encountered as a body-item head
+    (only ever possible inside an already-open colon-def, since a
+    top-level `:` is instead the start of a new colon-def).
+  - `"reserved word cannot be redefined"` -- a colon-def's name (after case
+    folding) matches the reserved set `: ; IF ELSE THEN BEGIN UNTIL WHILE
+    REPEAT DO LOOP +LOOP VARIABLE CONSTANT CREATE '`, checked only for
+    colon-def names per the plan's literal wording, position at the name's
+    own start.
+  - `"VARIABLE/CONSTANT/CREATE not allowed inside a definition"` -- an
+    implementation-level extension beyond the plan's four explicitly-listed
+    error cases (not a divergence -- the grammar's `body-item` production
+    never included these three keywords as alternatives in the first
+    place; this diagnoses the otherwise-unreachable case cleanly instead of
+    treating the token as an ordinary, permanently-unresolvable word
+    reference).
+  - `"max nesting depth exceeded"` -- `MaxDepth` reached before `IF`/
+    `BEGIN`/`DO` recurses another level; tested with `MaxDepth = 0` against
+    a single level of nesting.
+- **Declared stack-effect capture (D9):** the first `( ... )` comment
+  immediately after a colon-def's name is captured into
+  `syn_colon_def.declared_effect` *only if* its text contains `--`
+  (substring search over the re-sliced comment span); a comment that
+  exists but doesn't qualify is left alone and simply gets skipped later as
+  ordinary intertoken space, exactly like any other comment -- no special
+  handling needed for "wrong-shaped comment present." Merge-criterion test
+  slices `declared_effect` back out of the *original* source text (not a
+  duplicated copy) and checks it equals `"( n -- n )"` verbatim, per F6's
+  documented span convention.
+- **Merge criteria, both as `static_assert` (immediately-invoked-lambda)
+  and mirrored `TEST_CASE`s in `read_program.test.cpp`:**
+  - Round-trip `: ABS ( n -- n ) DUP 0< IF NEGATE THEN ;` -- verifies the
+    colon def's name, the declared-effect span text, the three-item body
+    (`DUP`, `0<` as a *word* -- not a number, since `<` fails `is_digit` --
+    and the `IF` node), and the `IF` node's `then_body`/`else_body` shape.
+  - Two-level nesting `: F BEGIN DUP IF DROP THEN UNTIL ;` -- `IF` nested
+    inside `BEGIN ... UNTIL` inside a definition, verifying the full nested
+    structure walks back correctly.
+- Verified on both `gcc-16` and `clang-21` (both available in this
+  worker's sandbox): `make compile`, `make test` (138/138 passed, up from
+  113/113 at F5/F6's baseline -- F8/F9/F10 landed in parallel in the
+  interim, hence the jump), `make lint`, and both `smoke.sh gcc-16` /
+  `smoke.sh clang-21` all green/`SMOKE OK`.
+- **`make lint` note:** `clang-format`/`gersemi` reformatted several
+  pre-existing, untouched files on every run in this sandbox
+  (`machine/{CMakeLists.txt,data_space.hpp,dictionary.hpp,
+  dictionary.test.cpp}`, `reader/forth_chars.test.cpp`) -- the same kind of
+  tooling-version drift flagged at F6/F8/F9/F10 (sometimes present,
+  sometimes not, depending on the sandbox's installed `clang-format`/
+  `gersemi` versions), reproducible with zero F7 changes present (confirmed
+  via `git checkout --` on exactly those files and re-running `make
+  lint`). This step left those files untouched (reverted after each `make
+  lint` run) per "no unrelated files changed"; this step's own new files
+  (`read_program.hpp`/`read_program.test.cpp`) and its one edit
+  (`reader/CMakeLists.txt`) were independently confirmed
+  `clang-format`-clean via a targeted `pre-commit run clang-format --files
+  ...`. Whoever next does a dedicated formatting-hygiene pass should treat
+  this as the same open item F6/F8/F9/F10 already flagged, not a new one.
+- Filed DIV-0005 (see above); no other divergence from `docs/forth-plan.md`
+  or Forth-2012 semantics.
