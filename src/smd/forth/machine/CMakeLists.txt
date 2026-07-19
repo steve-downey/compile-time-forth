@@ -6,7 +6,7 @@ target_sources(
     PUBLIC
         FILE_SET forth_forth_headers
             TYPE HEADERS
-            FILES cell.hpp dictionary.hpp forth_state.hpp stacks.hpp
+            FILES cell.hpp data_space.hpp dictionary.hpp forth_state.hpp stacks.hpp
 )
 
 if(FORTH_ENABLE_TESTING)
@@ -16,6 +16,7 @@ if(FORTH_ENABLE_TESTING)
         machine_test
         PRIVATE
             cell.test.cpp
+            data_space.test.cpp
             dictionary.test.cpp
             forth_state.test.cpp
             stacks.test.cpp

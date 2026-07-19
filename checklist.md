@@ -12,7 +12,7 @@
 - [ ] Step F7: grammar
 - [x] Step F8: machine substrate
 - [x] Step F9: dictionary
-- [ ] Step F10: data space
+- [x] Step F10: data space
 - [ ] Step F11: elaborated core and resolution
 - [ ] Step F12: stack-effect analysis
 - [ ] Step F13: direct evaluator

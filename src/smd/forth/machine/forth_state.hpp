@@ -8,6 +8,7 @@
 #include <smd/forth/foundation/source_pos.hpp>
 #include <smd/forth/foundation/static_vector.hpp>
 #include <smd/forth/machine/cell.hpp>
+#include <smd/forth/machine/data_space.hpp>
 #include <smd/forth/machine/stacks.hpp>
 
 #include <cstdint>
@@ -18,9 +19,9 @@ namespace smd::forth::machine {
 
 /// The bundled Forth machine state (D7, D10).
 ///
-/// Holds both stacks, a placeholder data space (a sized cell array; F10
-/// wires real @c allot/@c fetch/@c store over it and gives addresses their
-/// own typed index), and a fixed-capacity output buffer with Forth
+/// Holds both stacks, a @ref data_space "data_space" arena (bounds-checked
+/// @c allot/@c fetch/@c store over a typed @ref addr, see
+/// `data_space.hpp`), and a fixed-capacity output buffer with Forth
 /// number-formatting helpers. A literal type: usable as a local in a
 /// @c constexpr function, or exercised wholesale in a @c static_assert.
 ///
@@ -44,14 +45,15 @@ class forth_state {
     [[nodiscard]] constexpr auto returns() const
         -> return_stack<MaxRDepth> const &;
 
-    /// The data space. A placeholder sized cell array until F10 wires real
-    /// @c allot/@c fetch/@c store over it.
-    [[nodiscard]] constexpr auto data_space()
-        -> foundation::static_vector<cell, MaxData> &;
-    /// The data space. A placeholder sized cell array until F10 wires real
-    /// @c allot/@c fetch/@c store over it.
+    /// The data space: a bounds-checked cell arena (D10). See
+    /// `data_space.hpp` for @c allot/@c fetch/@c store and the @ref addr
+    /// type.
+    [[nodiscard]] constexpr auto data_space() -> machine::data_space<MaxData> &;
+    /// The data space: a bounds-checked cell arena (D10). See
+    /// `data_space.hpp` for @c allot/@c fetch/@c store and the @ref addr
+    /// type.
     [[nodiscard]] constexpr auto data_space() const
-        -> foundation::static_vector<cell, MaxData> const &;
+        -> machine::data_space<MaxData> const &;
 
     /// The output accumulated so far by @ref emit_char / @ref emit_cell.
     [[nodiscard]] constexpr auto output() const
@@ -70,7 +72,7 @@ class forth_state {
   private:
     data_stack<MaxDepth> data_{};
     return_stack<MaxRDepth> returns_{};
-    foundation::static_vector<cell, MaxData> data_space_{};
+    machine::data_space<MaxData> data_space_{};
     foundation::static_vector<char, MaxOut> output_{};
 };
 
@@ -101,14 +103,14 @@ forth_state<MaxDepth, MaxRDepth, MaxData, MaxOut>::returns() const
 
 template <int MaxDepth, int MaxRDepth, int MaxData, int MaxOut>
 constexpr auto forth_state<MaxDepth, MaxRDepth, MaxData, MaxOut>::data_space()
-    -> foundation::static_vector<cell, MaxData> & {
+    -> machine::data_space<MaxData> & {
     return data_space_;
 }
 
 template <int MaxDepth, int MaxRDepth, int MaxData, int MaxOut>
 constexpr auto
 forth_state<MaxDepth, MaxRDepth, MaxData, MaxOut>::data_space() const
-    -> foundation::static_vector<cell, MaxData> const & {
+    -> machine::data_space<MaxData> const & {
     return data_space_;
 }
 

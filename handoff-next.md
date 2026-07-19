@@ -693,3 +693,104 @@ Dependencies satisfied by this merge: F9 -> F11 (elaboration also depends
 on F6 (syntax tree, already merged) and F5/F7 (lexical layer + grammar,
 still in flight) for its input; F11 cannot fully start until F7 lands, but
 the dictionary API it consumes is stable as of this merge).
+## F10 complete — what F11/F16 need to know about the data-space API
+
+Step F10 (data space) is done in worktree `wt-f10` / branch `step/f10`. See
+`handoff.md`'s "Step F10 — Data space" section for the full facts.
+`make compile`, `make test` (114/114), `make lint` (fully green, including
+the `clang-format` hook — see below), and `smoke.sh gcc-16` are all green.
+Not merged by this worker — the orchestrator merges. F9 (dictionary,
+parallel worktree, a new `machine/dictionary.hpp`) did not touch
+`forth_state.hpp` or `data_space.hpp`; this step did not touch
+`dictionary.hpp`.
+
+The API surface F11 (elaborated core and resolution) and F16 (memory words
+end-to-end) build on, namespace `smd::forth::machine`, canonical include
+`<smd/forth/machine/data_space.hpp>`:
+
+- `addr`: a plain (untemplated) class wrapping a private `cell index_{}`.
+  Default-constructible (converts to cell `0`). `explicit addr(cell)` and
+  `explicit operator cell() const` are the *only* ways in or out — no
+  arithmetic, no implicit conversions, no comparison beyond a defaulted
+  hidden-friend `operator==`. This is deliberately narrow: an `addr` moves
+  between "a `cell` sitting on the data stack" (what `VARIABLE X` / `X`
+  push) and "an index `data_space` will accept" (what `@`/`!` consume), and
+  every hop between those two roles is an explicit cast at the call site.
+  If F16's `CREATE ... DOES>` or pointer-like address arithmetic needs
+  `addr + n`, add that operator to `addr` then — nothing here precludes it,
+  it just wasn't needed yet.
+- `data_space<MaxData = 1024>`: a bump allocator over a
+  `foundation::static_vector<cell, MaxData>` pre-filled to `MaxData` at
+  construction (same trick F8's `cell_stack` uses, since `static_vector` has
+  no shrink operation). API:
+  - `allot(int count) -> result<addr>`: reserves `count` contiguous,
+    zero-initialized cells, returns the address of the first. Diagnoses a
+    negative `count` and exhaustion (`count > MaxData - high_water_mark`,
+    checked to avoid signed overflow). **F11's `VARIABLE` allots exactly
+    one cell at elaboration time** by calling `allot(1)` on the
+    `data_space` threaded through `elaborate`; **`compiled_unit`'s
+    "data-space size consumed by declarations" field should be the sum of
+    every `allot` call size made during elaboration** — read it back via
+    `data_space::size()` (below) after elaborating, or track it
+    incrementally as each declaration allots.
+  - `fetch(addr) const -> result<cell>` / `store(addr, cell) -> status`:
+    read/write one cell. **Bounds-checked against the allotted high-water
+    mark, not just raw `MaxData` capacity** — an `addr` that `allot` never
+    handed out (even if numerically `< MaxData`) is diagnosed as
+    out-of-bounds. This means F16's `@`/`!`/`+!` must only ever be handed
+    addresses that trace back to a real `allot` call (which is already true
+    for `VARIABLE`/`CONSTANT`/`CREATE`/`ALLOT` — they all go through
+    `elaborate`'s `data_space`) — do not synthesize an `addr` out of thin
+    air and expect `fetch`/`store` to accept it.
+  - `size() -> int`: count of cells allotted so far (matches
+    `foundation::static_vector::size()`'s meaning/type, which is what F8's
+    placeholder `data_space()` accessor originally exposed — kept the name
+    so the one pre-existing test that called `.size()` needed no change).
+  - `here() -> addr`: the address one past the last allotted cell, i.e.
+    Forth's `HERE`. Useful if F16 wires `HERE` itself, or if F11 wants an
+    `addr`-typed handle to "the next declaration's base" rather than an
+    `int` count.
+- `forth_state<MaxDepth, MaxRDepth, MaxData, MaxOut>::data_space()`
+  (mutable + const) now returns `machine::data_space<MaxData> &` / `const
+  &` — this is the real thing, not the F8 placeholder
+  (`foundation::static_vector<cell, MaxData> &`). Every other
+  `forth_state` member (`data()`, `returns()`, `output()`, `emit_char`,
+  `emit_cell`, `primitive`, `apply_primitive`) is byte-for-byte unchanged
+  from F8 — F9's dictionary work and F11/F13's evaluator work should not
+  need to touch anything about `forth_state` except this one accessor's
+  return type.
+- Merge-criterion tests live in `src/smd/forth/machine/data_space.test.cpp`
+  (immediately-invoked-lambda `static_assert`s, per house style):
+  allot/fetch/store round-trip (single- and multi-cell), out-of-bounds
+  fetch/store (both "past `here()`" and "negative index"), allot
+  exhaustion (both "exceeds remaining capacity" and "negative count"), and
+  `addr` <-> `cell` explicit-conversion round-trip plus structural
+  equality. Follow this same shape for F11's `elaborated_core.hpp` tests —
+  `data_space` is exactly the kind of small, fully-bounds-checked component
+  those merge criteria expect.
+- CMake: `data_space.hpp`/`data_space.test.cpp` were added as additional
+  `FILES`/test sources on the existing `compile-time-forth.forth` /
+  `machine_test` targets, in `src/smd/forth/machine/CMakeLists.txt` — no
+  new subdirectory or target, matching F8's/F9's pattern. F11's
+  `elaborator/` directory should get its own new `CMakeLists.txt` +
+  `add_subdirectory(elaborator)` (there is no existing `elaborator_test`
+  target yet), following the same shape as `machine/`, `reader/`, etc.
+- **`make lint` environment note, resolved (not carried forward as an open
+  item):** the `clang-format` drift on pre-existing F2/F3 files documented
+  at F6/F8 (`foundation/{applicative,functor,parse_error,source_pos,
+  static_vector}.hpp`, `foundation/applicative.test.cpp`,
+  `sender/vocab.test.cpp`) did **not** reproduce in this worker's sandbox —
+  `make lint` (`pre-commit run -a`) passed fully clean, repo-wide, with
+  zero files touched beyond this step's own edits (verified via `git status
+  --porcelain`). Whoever next runs `make lint` should confirm this is still
+  the case rather than assuming the old caveat still applies; if it's still
+  green, that open item from F6/F8's handoff notes can be considered
+  closed.
+- No DIV filed for F10 — see `handoff.md` for why each design choice (the
+  allotted-high-water-mark bounds check, `addr`'s narrow
+  explicit-conversion-only surface, the `size()`/`here()` accessors) is
+  within the plan's literal spec rather than a deviation from it.
+
+Dependencies satisfied by this merge: F10 -> F11 (alongside F7, F9) per the
+plan's parallelism summary. F11 needs F7 (grammar), F9 (dictionary), and
+F10 (this step) all merged before it can start.
