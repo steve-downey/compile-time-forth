@@ -6,7 +6,7 @@ target_sources(
     PUBLIC
         FILE_SET forth_forth_headers
             TYPE HEADERS
-            FILES forth_chars.hpp syntax_tree.hpp
+            FILES forth_chars.hpp read_program.hpp syntax_tree.hpp
 )
 
 if(FORTH_ENABLE_TESTING)
@@ -14,7 +14,7 @@ if(FORTH_ENABLE_TESTING)
 
     target_sources(
         reader_test
-        PRIVATE forth_chars.test.cpp syntax_tree.test.cpp
+        PRIVATE forth_chars.test.cpp read_program.test.cpp syntax_tree.test.cpp
     )
 
     target_link_libraries(reader_test compile-time-forth.forth)

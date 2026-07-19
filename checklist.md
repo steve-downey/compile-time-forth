@@ -9,7 +9,7 @@
 - [x] Step F4: import parser combinators
 - [x] Step F5: Forth lexical layer
 - [x] Step F6: syntax tree
-- [ ] Step F7: grammar
+- [x] Step F7: grammar
 - [x] Step F8: machine substrate
 - [x] Step F9: dictionary
 - [x] Step F10: data space

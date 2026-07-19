@@ -14,7 +14,7 @@ This document describes the compiler architecture of =smd::forth=, a compile-tim
 Like its sibling document for the Scheme proof of concept (=~/src/compile-time-scheme/main/docs/compiler_architecture.org=), it exists to translate compiler jargon into terms familiar to working C++ developers.
 Every code sample below is transcluded from the real source tree by a UUID anchor, never hand-copied prose that might drift from what actually compiles.
 This document is filled in incrementally, one pipeline phase at a time, as each phase's implementation step lands (=docs/forth-plan.md=).
-As of this revision only the syntax-tree phase (step F6) exists; later sections describe phases that are planned but not yet implemented, and carry no transclusion until their step lands.
+As of this revision the lexical layer (step F5), the parser combinators and grammar (steps F4 and F7), and the syntax tree (step F6) all exist; later sections describe phases that are planned but not yet implemented, and carry no transclusion until their step lands.
 
 * Pipeline overview
 
@@ -37,17 +37,40 @@ All three read the same elaborated core; none of them re-parses source text or r
 
 * Phase 1: Source Text and the Lexical Layer
 
+DRAFT — pending author revision.
+
 Forth source is plain text: whitespace-delimited words, numeric literals, and =( ... )= stack-effect comments.
 Unlike the Scheme front end, there is no reader/eval loop and no =IMMEDIATE=; the entire program is parsed structurally, once, before anything executes (=docs/forth-plan.md= D5).
 The lexical layer (step F5) folds every word to uppercase at scan time, so nothing downstream of it ever needs to re-fold case.
-This section will transclude the lexer's scanning primitives once step F5 lands.
+A word, in this project's sense, is any run of characters that is not ASCII whitespace; numbers are recognized textually, not by any special punctuation, so =-1= is a number but =1-= and a bare =-= are words.
 
-* Phase 2: Applicative Parser Combinators
+#+transclude: [[file:../src/smd/forth/reader/forth_chars.hpp::e9a1c6a1-9d3d-4a6a-9f2e-7d3f2b3c8a1c]] :lines 2- :src cpp :end "e9a1c6a1-9d3d-4a6a-9f2e-7d3f2b3c8a1c end"
+
+Forth's own notion of intertoken space is wider than plain whitespace: it also swallows =\ ...= line comments and =( ... )= parenthesized comments, repeating until none of the three remain.
+A colon definition's declared stack-effect comment is the one =( ... )= exception to "comments are just whitespace": step F7's grammar captures its span (rather than discarding it, the way ordinary comment-skipping does) whenever that comment contains =--=, so a later step (F12) can re-slice the original source text through the span without the tree ever duplicating the comment's characters.
+
+#+transclude: [[file:../src/smd/forth/reader/forth_chars.hpp::c3d5e8b2-7f2a-4b9c-8d3e-4f6a8c2b1e9f]] :lines 2- :src cpp :end "c3d5e8b2-7f2a-4b9c-8d3e-4f6a8c2b1e9f end"
+
+* Phase 2: Applicative Parser Combinators and the Forth Grammar
+
+DRAFT — pending author revision.
 
 Recursive descent, hand-rolled as a tree of =if=/=else=/=while=, is error-prone and hard to compose.
 Instead the front end is built from parser combinators: small composable objects that snap together into a grammar the way Lego bricks snap together into a model.
 Because C++26 =constexpr= evaluation cannot easily juggle capturing lambdas converted to function pointers, parsers are represented as ordinary callable objects (functors with =operator()=), registered against the project's =functor=/=applicative=/=alternative= typeclasses (imported in step F3, exercised for real the first time in step F4).
-This section will transclude the combinator vocabulary once step F4 lands, and the Forth grammar built from it once step F7 lands.
+
+#+transclude: [[file:../src/smd/forth/parser/parser.hpp::5f36b161-a5b2-45a9-82e4-4d4679a8a60e]] :lines 2- :src cpp :end "5f36b161-a5b2-45a9-82e4-4d4679a8a60e end"
+
+Alternatives compose with an ordered-choice operator: try the first parser, and only fall back to the second if the first failed without having consumed any input, so a parser that has committed to a partial match is never silently backtracked out of.
+
+#+transclude: [[file:../src/smd/forth/parser/parser.hpp::2a77ed5e-0863-4a2a-8ea0-1b03b56ffeb4]] :lines 2- :src cpp :end "2a77ed5e-0863-4a2a-8ea0-1b03b56ffeb4 end"
+
+Step F7's grammar (=src/smd/forth/reader/read_program.hpp=) is the production parser built from this combinator library, per the project's decision D6 that the combinator library is the parser, not merely a tool for scanning atoms.
+Every token-level production — names, numbers, keywords, the stack-effect comment capture — is composed directly from the F4/F5 free functions above and from Phase 1's lexical layer.
+The grammar's *nested* productions are the one place this project accepts a documented exception rather than a silent hand-rolled fallback: an =IF= that can itself contain another =IF= has no finite combinator type to compose it from (the combinator's own C++ type would have to mention itself), and building syntax-tree nodes needs a mutable arena threaded alongside the cursor, which the combinator calling convention (=cursor -> parse_result<T>=) has no slot for.
+DIV-0005 records this in full; the entry point below still returns a =foundation::result=, exactly like every combinator above it, and every recursive production is bounded by an explicit =MaxDepth= template parameter rather than being allowed to recurse without limit.
+
+#+transclude: [[file:../src/smd/forth/reader/read_program.hpp::3a09b40c-8b43-476a-b16d-a7b54249ca95]] :lines 2- :src cpp :end "3a09b40c-8b43-476a-b16d-a7b54249ca95 end"
 
 * Phase 3: The Syntax Tree
 
