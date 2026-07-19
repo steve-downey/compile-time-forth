@@ -480,3 +480,80 @@ a fact just because a later step changed something adjacent.
   filed for this — it is environment/tooling drift, not a deviation from
   `docs/forth-plan.md` or Forth-2012 semantics. Flagged in
   `handoff-next.md` for whoever next runs `make lint` repo-wide.
+
+## Step F10 — Data space
+
+- Added `src/smd/forth/machine/data_space.hpp` (+ `.test.cpp`), namespace
+  `smd::forth::machine`, canonical include
+  `<smd/forth/machine/data_space.hpp>`. Header folds into
+  `compile-time-forth.forth`'s existing `forth_forth_headers` `FILE_SET`
+  (matching F8's pattern, no separate compiled target); test source added to
+  the existing `machine_test` executable via
+  `src/smd/forth/machine/CMakeLists.txt`.
+- `addr` (untemplated, plain class in `smd::forth::machine`) is the distinct
+  typed cell index (D10): a private `cell index_{}` plus a default
+  constructor, `explicit addr(cell)`, `explicit operator cell() const`, and a
+  defaulted hidden-friend `operator==`. No arithmetic or implicit-conversion
+  operators are provided on purpose -- an `addr` only ever moves between "a
+  `cell` on the data stack" and "an index `data_space` accepts", both via
+  explicit casts at the boundary; nothing in F10 needs `addr + 1` etc. (F16's
+  `CREATE`/`ALLOT` interaction can add address arithmetic then, backed by the
+  same `explicit operator cell()`, if it turns out to need it).
+- `data_space<MaxData = 1024>` is a bump allocator: `allot(count) ->
+  result<addr>` reserves `count` contiguous zero-initialized cells and
+  returns the address of the first; `fetch(addr) const -> result<cell>` and
+  `store(addr, cell) -> status` read/write one cell. The backing
+  `foundation::static_vector<cell, MaxData>` is pre-filled to `MaxData` at
+  construction (same trick as F8's `cell_stack`, since `static_vector` has no
+  shrink/pop operation); a separate `int high_` tracks the allotted
+  high-water mark (Forth's `HERE`), exposed as `size() -> int` and
+  `here() -> addr`.
+- **Bounds-check design decision** (not a DIV -- an implementation choice
+  within the plan's "bounds-checked" requirement, not a deviation from it):
+  `fetch`/`store` diagnose an address as out-of-bounds when it is negative
+  **or when it has not yet been returned by `allot`** (`index >= high_`), not
+  merely when it exceeds the physical `MaxData` capacity. Every real address
+  in this design originates from `allot`, so this is a strictly *stronger*
+  safety net than bounds-checking against raw capacity alone -- it catches
+  stray/uninitialized `addr` values (e.g. `addr{5}` conjured without ever
+  calling `allot(6)`) as errors rather than silently handing back a
+  zero-initialized cell that was never actually reserved.
+  `allot(count)` itself diagnoses both a negative `count` and exhaustion
+  (`count > MaxData - high_`, computed to avoid signed-overflow on the
+  addition).
+- `forth_state<MaxDepth, MaxRDepth, MaxData, MaxOut>`'s `data_space()`
+  accessor (mutable + const) now returns `machine::data_space<MaxData> &` /
+  `const &` instead of the F8 placeholder
+  `foundation::static_vector<cell, MaxData> &`; the private member changed
+  from a bare `static_vector` to a `machine::data_space<MaxData>`. No other
+  `forth_state` member changed signature. The pre-existing
+  `forth_state.test.cpp` assertion `state.data_space().size() == 0` still
+  compiles and passes unchanged, since `data_space::size()` was deliberately
+  named/typed to match `static_vector::size()`'s `-> int` meaning ("count of
+  cells in active use so far").
+- Merge-criterion `static_assert`s (immediately-invoked-lambda pattern) live
+  in `src/smd/forth/machine/data_space.test.cpp`: allot/fetch/store
+  round-trip (single-cell and multi-cell/contiguous-run cases), out-of-bounds
+  fetch/store diagnosis (both "past `here()`" and "negative index" cases),
+  allot exhaustion diagnosis (both "request exceeds remaining capacity" and
+  "negative count" cases), and `addr` <-> `cell` explicit-conversion
+  round-trip (plus structural equality).
+- Verified on `gcc-16` (only toolchain available in this worker's sandbox):
+  `make compile`, `make test` (114/114 passed), `make lint`
+  (`pre-commit run -a`) all green, `smoke.sh gcc-16` ends `SMOKE OK`. Notably,
+  the `clang-format` drift on pre-existing F2/F3 files documented at F6/F8
+  (`foundation/{applicative,functor,parse_error,source_pos,
+  static_vector}.hpp`, `foundation/applicative.test.cpp`,
+  `sender/vocab.test.cpp`) was **not** reproduced in this run -- `make lint`
+  passed clean repo-wide with zero unrelated files touched (confirmed via
+  `git status --porcelain` before/after). Whoever tracked that drift as an
+  open item can likely close it; it may have been an environment/tooling
+  version that has since resolved itself, or a prior worker's `make lint`
+  run already normalized those files upstream of this worktree's base.
+  `clang-21` was not re-verified this step (not installed in this sandbox);
+  nothing added is toolchain-specific.
+- No DIV filed for F10 -- every design choice above (the allotted-high-water
+  bounds check, `addr`'s narrow explicit-conversion-only interface, the
+  `size()`/`here()` convenience accessors) is an implementation detail
+  within the plan's literal spec, not a deviation from `docs/forth-plan.md`
+  or Forth-2012 semantics.
