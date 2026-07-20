@@ -28,7 +28,8 @@ namespace {
 /// directly).
 template <int MaxName>
 constexpr auto view_of(token_text<MaxName> const &text) -> std::string_view {
-    return std::string_view{text.begin(), static_cast<std::size_t>(text.size())};
+    return std::string_view{text.begin(),
+                            static_cast<std::size_t>(text.size())};
 }
 
 } // namespace
@@ -96,8 +97,8 @@ static_assert([] {
 
 static_assert([] {
     // Runs of whitespace, `\` comments, and `( ... )` comments interleave.
-    auto cur = skip_forth_space(
-        cursor{"  \\ line comment\n  ( paren comment )  dup"});
+    auto cur =
+        skip_forth_space(cursor{"  \\ line comment\n  ( paren comment )  dup"});
     return cur.remaining() == "dup";
 }());
 
@@ -118,9 +119,9 @@ static_assert([] {
         return false;
     }
     auto span = r.value().value;
-    auto text = src.substr(static_cast<std::size_t>(span.first.offset),
-                           static_cast<std::size_t>(span.last.offset -
-                                                     span.first.offset));
+    auto text = src.substr(
+        static_cast<std::size_t>(span.first.offset),
+        static_cast<std::size_t>(span.last.offset - span.first.offset));
     return text == "( a b -- c )" && r.value().rest.remaining() == " DUP";
 }());
 
@@ -172,7 +173,8 @@ TEST_CASE("ForthCharsTest - ScanWordFoldsCase") {
 }
 
 TEST_CASE("ForthCharsTest - SkipForthSpaceHandlesBothCommentKinds") {
-    auto cur = skip_forth_space(cursor{"\\ eol comment\n( paren comment ) dup"});
+    auto cur =
+        skip_forth_space(cursor{"\\ eol comment\n( paren comment ) dup"});
     REQUIRE(cur.remaining() == "dup");
 }
 
@@ -187,9 +189,9 @@ TEST_CASE("ForthCharsTest - ScanParenCommentPreservesText") {
     auto r = scan_paren_comment(cursor{src});
     REQUIRE(r.has_value());
     auto span = r.value().value;
-    auto text = src.substr(static_cast<std::size_t>(span.first.offset),
-                           static_cast<std::size_t>(span.last.offset -
-                                                     span.first.offset));
+    auto text = src.substr(
+        static_cast<std::size_t>(span.first.offset),
+        static_cast<std::size_t>(span.last.offset - span.first.offset));
     REQUIRE(text == "( a b -- c )");
 }
 

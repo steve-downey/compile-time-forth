@@ -6,7 +6,12 @@ target_sources(
     PUBLIC
         FILE_SET forth_forth_headers
             TYPE HEADERS
-            FILES cell.hpp data_space.hpp dictionary.hpp forth_state.hpp stacks.hpp
+            FILES
+                cell.hpp
+                data_space.hpp
+                dictionary.hpp
+                forth_state.hpp
+                stacks.hpp
 )
 
 if(FORTH_ENABLE_TESTING)

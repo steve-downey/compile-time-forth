@@ -122,8 +122,7 @@ constexpr auto data_space<MaxData>::fetch(addr address) const
 }
 
 template <int MaxData>
-constexpr auto data_space<MaxData>::store(addr address, cell value)
-    -> status {
+constexpr auto data_space<MaxData>::store(addr address, cell value) -> status {
     auto const index = static_cast<cell>(address);
     if (index < 0 || index >= static_cast<cell>(high_)) {
         return foundation::parse_error{foundation::source_pos{},
