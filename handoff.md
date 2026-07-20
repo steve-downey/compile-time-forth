@@ -1250,3 +1250,176 @@ a fact just because a later step changed something adjacent.
   standing environment item, not specific to F12.
 - DIV-0006 filed (see above); no other divergence from `docs/forth-plan.md`
   or Forth-2012 semantics.
+
+## Step F13 — Direct evaluator
+
+- Added `src/smd/forth/machine/{eval_direct.hpp,eval_direct.test.cpp}`,
+  namespace `smd::forth::machine` (not `smd::forth::elaborator`), canonical
+  include `<smd/forth/machine/eval_direct.hpp>` — this is the plan's own
+  placement, not a mistake: `eval_direct.hpp` depends on
+  `elaborator::compiled_unit` the same direction every `elaborator/*.hpp`
+  header already depends on `machine/*.hpp` for `dictionary`/`forth_state`,
+  and both directories fold into the one single build target
+  (`compile-time-forth.forth`), so this is a documented one-way layering
+  choice, not a new library boundary or a cycle. Header folds into the
+  existing `forth_forth_headers` `FILE_SET`; test source added to the
+  existing `machine_test` executable via `src/smd/forth/machine/
+  CMakeLists.txt`. This is the pipeline's first full read → elaborate → eval
+  milestone, per the plan's own framing.
+- **The evaluator is a structural-recursive reference interpreter over the
+  elaborated core, not a codegen+VM** — it walks `core_node`/`core_body`
+  directly by mutual recursion (`eval_body`/`eval_node`, forward-declared
+  exactly like `elaborate_body`/`elaborate_body_item` (F11) and
+  `analyze_body` (F12) before them), never flattening anything into an
+  instruction array. This is deliberate: F14's stack-machine codegen+VM is
+  checked *against* F13's own results (the plan's own F14 merge criterion
+  runs the same F13 test programs through both backends and requires
+  agreement), so F13 has to exist as an independently-derived oracle before
+  F14's flattening/back-patching logic has anything to be checked against.
+- **`core_prim` runs through `machine::apply_primitive`** (F8's imperative
+  implementation, the one that actually mutates a `forth_state`) — **never**
+  through F12's `elaborator::primitive_data_effect` table, which exists
+  purely for abstract interpretation and has no runtime behavior at all. This
+  is called out explicitly in the header's own doc comment because the two
+  tables/functions look similar enough (both keyed on `machine::primitive`)
+  to invite confusion.
+- **`core_call` recursion**: `unit.dictionary.entry_at(word_index)` to get
+  the `colon_word`, `std::get_if<colon_word>` to confirm the binding kind (a
+  defensive check — every `core_call`'s `word_index` was resolved against a
+  `colon_word` binding at elaboration time, but the evaluator does not take
+  that on faith), then `unit.arena.get(colon_word.core_id)` and
+  `std::get_if<core_seq<...>>` to reach the callee's own item list, which
+  `eval_body` then walks — exactly the same lookup chain F12's `analyze_body`
+  already used for the same purpose (finding a call target), just fetching
+  the actual body instead of a precomputed effect.
+- **`eval_signal` is the runtime early-return channel** (`enum class
+  eval_signal { normal, exited }`, returned inside `foundation::result<
+  eval_signal>` from both `eval_body` and `eval_node`): `core_exit` produces
+  `exited` directly; every control-structure handler (`core_if`'s two arms,
+  `core_begin_until`'s and `core_begin_while`'s loop bodies) checks its
+  nested `eval_body` call's returned signal and, on `exited`, immediately
+  returns `exited` itself without evaluating anything else in its own body —
+  this is what makes the signal unwind through arbitrarily many nested
+  control structures within one definition. `core_call`'s handling is where
+  the signal is absorbed: whatever the callee's own top-level `eval_body`
+  call returned (`normal` or `exited`, it does not matter which), the caller
+  always reports `normal` for the call itself, since a call is its own fresh
+  definition boundary and the callee's `EXIT` must never unwind past it. This
+  is **not** a C++ exception — the whole thing is threaded through the
+  evaluator's own `foundation::result` return channel, per the project's
+  one-shot/dynamic-extent nonlocal-control invariant. A bare top-level `EXIT`
+  cannot reach `eval_program` at all (F11's `elaborate_word_ref` already
+  diagnoses `"EXIT outside a definition"` at elaboration time), but `EXIT`
+  nested inside a top-level `IF`/`BEGIN` is legal and does reach
+  `eval_program`'s own top-level `eval_body` call — it is simply treated the
+  same as `normal` there, since the top-level program has nothing further of
+  its own to skip past either way.
+- **`core_if`/`core_begin_until`/`core_begin_while` are real control flow**:
+  `core_if` pops the flag itself (Forth's own `IF` semantics) and evaluates
+  exactly one arm; `core_begin_until` evaluates its body, pops the flag
+  UNTIL's own semantics expect, and loops until that flag is true (nonzero);
+  `core_begin_while` evaluates its condition body first (every iteration,
+  including the first), pops the flag, stops the loop on false, otherwise
+  evaluates the loop body and repeats. Verified as real repetition (not just
+  depth prediction) by `EvalDirectTest - WhileLoopIsRealRepetition`
+  (`: UPTO3 0 BEGIN DUP 3 < WHILE 1 + REPEAT ;`, actually counts to 3) and by
+  the `COUNTDOWN` merge criterion itself.
+- **`core_do_loop` is diagnosed, not evaluated** — deferred to F17 exactly as
+  handoff-next.md's F13 briefing predicted: there is no core-level node that
+  pops a `DO` loop's `(limit start)` pair or exposes `I`/`J` yet (F17's own
+  `do_setup`/`I`/`J`/`LEAVE`/`UNLOOP` deliverable), so `eval_node` returns a
+  diagnosed error (`"DO...LOOP evaluation is not implemented until F17"`)
+  rather than silently running the body some undefined number of times. Not
+  a new DIV — F12's own handoff section already declined to file one for the
+  same underlying gap ("not a DIV, since no core node represents that
+  consumption yet"), and F13 follows the same reasoning. Note a top-level
+  `DO...LOOP` is not even stack-effect-checked (F12's `analyze_colon_effect`
+  only runs for colon-definition bodies, never the top-level program body),
+  so a program like `5 0 DO LOOP` elaborates successfully and only fails at
+  evaluation time — exercised by `EvalDirectTest -
+  DoLoopIsDiagnosedNotImplemented`.
+- **Fuel design**: a single decrementing `int` (`consume_fuel(int &fuel,
+  foundation::source_pos pos)`), called once per `eval_node` invocation —
+  i.e. once per core node *visited*, so a loop that revisits the same node
+  every iteration spends fuel every time, not just once. Exhaustion is a
+  diagnosed `foundation::parse_error{pos, "evaluation budget exhausted"}`,
+  carrying whichever node's own position was being evaluated when the budget
+  ran out — never a hang, verified by the `SPIN` merge criterion (`: SPIN
+  BEGIN FALSE UNTIL ; SPIN` with `fuel = 10`) actually terminating with a
+  diagnosed error rather than looping forever. `eval_program`'s own `fuel`
+  parameter defaults to `100000`, generous enough for every merge-criterion
+  program at its default; every test that needs a tight budget passes one
+  explicitly.
+- **D10's output words (`.`, `.S`, `EMIT`, `CR`) and `1-` did not exist as
+  runtime primitives before this step** — F8 never wired them despite D10's
+  prose describing their behavior, and `1-` was missing from
+  `docs/forth-plan.md`'s own word-scoping table entirely, even though the
+  plan's own F13 `COUNTDOWN` merge-criterion text uses both `.` and `1-`
+  verbatim. This step adds five new `machine::primitive` enumerators (`dot`,
+  `dot_s`, `emit`, `cr`, `one_minus`), wires all five through
+  `apply_primitive` (`machine/forth_state.hpp`) and `default_dictionary`
+  (`machine/dictionary.hpp`), and gives each a
+  `elaborator::primitive_data_effect` table entry (`elaborator/
+  stack_effect.hpp`) so F12's stack-effect checker still handles every
+  primitive exhaustively. **DIV-0007** records this in full
+  (`docs/divergences/DIV-0007-f13-output-words-and-one-minus.md`, status
+  `accepted-permanent`). The dictionary grew from 37 to 42 entries; every
+  test/doc comment that counted dictionary size or "the N primitives" was
+  updated alongside (`machine/dictionary.test.cpp`, `elaborator/
+  elaborate.test.cpp`, `elaborator/elaborated_core.hpp`, `elaborator/
+  stack_effect.hpp`). `.S`'s exact rendering (bottom-to-top, one
+  `emit_cell`-formatted decimal per stack cell, nondestructive) is this
+  step's own implementation-defined choice per Forth-2012, not exercised by
+  any F13 merge criterion, only by `forth_state.test.cpp`'s own direct
+  `apply_primitive` tests. `1+` is deliberately **not** added this step
+  (nothing F13 needs uses it) — left for whichever step first needs it
+  (most likely F17, per its own `SUMTO` example in the plan).
+- **DIV-0006's predicted divergence is now directly observable at runtime**:
+  `: F DUP 0< IF EXIT THEN DROP ;` elaborates successfully (F12's checker
+  computes one effect for the whole definition without reconciling the
+  early-`EXIT` path against the fall-through path, exactly as DIV-0006
+  documents), and F13 actually executes both paths and observes the
+  differing depths DIV-0006 predicts: `-3 F` leaves one cell (`-3`, `EXIT`
+  fires before `DROP`), `7 F` leaves zero cells (`DROP` runs on the
+  fall-through path) — both exercised directly by
+  `EvalDirectTest - ExitUnwindsOnlyToItsOwnCallBoundary`'s sibling
+  static_asserts. This is expected behavior matching the documented
+  limitation, not a new bug; DIV-0006 itself was not modified (its own
+  "Revisit condition" is unchanged by this observation).
+- **Merge criteria** (`static_assert`, immediately-invoked-lambda pattern,
+  each mirrored as a `TEST_CASE`, in `eval_direct.test.cpp`, run through the
+  whole read → elaborate → eval pipeline via a local `run_program(source,
+  fuel)` helper): `SQUARED` (`: SQUARED DUP * ;  4 SQUARED` → stack `[16]`);
+  `ABS` (`: ABS DUP 0< IF NEGATE THEN ;  -7 ABS` → stack `[7]`); `COUNTDOWN`
+  (`: COUNTDOWN BEGIN DUP . 1- DUP 0= UNTIL DROP ;  3 COUNTDOWN` → stack
+  `[]`, output `"3 2 1 "`, both checked); budget exhaustion (`SPIN`, `fuel =
+  10`, diagnosed rather than hung). Plus additional coverage beyond the
+  plan's own four: EXIT unwinding to exactly its own call boundary (both the
+  DIV-0006 pair above and a two-definition `INNER`/`OUTER` case proving a
+  callee's `EXIT` does not escape past the call that invoked it),
+  `BEGIN...WHILE...REPEAT` as real repetition, and `DO...LOOP`'s diagnosed-
+  not-evaluated status.
+- Verified on both `gcc-16` and `clang-21` (both available in this worker's
+  sandbox): `make compile`, `make test` (**178/178** passed, up from 168/168
+  at F12's baseline), `make lint`, and `smoke.sh gcc-16`/`smoke.sh clang-21`
+  all green/`SMOKE OK` on each toolchain.
+- **`make lint` note**: unlike every prior step since F6, this run reported
+  **zero** pre-existing drift files (`machine/{CMakeLists.txt,
+  data_space.hpp}`, `reader/forth_chars.test.cpp` were flagged at F11/F12
+  and every step before) — `clang-format` did reformat this step's own
+  touched files on the first `make lint` run (mechanical only: e.g.
+  `default_dictionary`'s word-list array got reflowed to two columns after
+  growing to 42 entries), and a second run then reported clean. The
+  standing tooling-version-drift item flagged in every handoff-next.md since
+  F8 appears to have resolved itself, most likely because `c9bbacb reformat
+  via make lint` (the commit immediately preceding this step, per `git log`)
+  already normalized the whole tree; still worth re-checking at the next
+  step rather than assuming it stays resolved.
+- Updated `docs/compiler_architecture.org`'s "Phase 5: Codegen and the Three
+  Backends" section, replacing the placeholder sentence with real prose
+  (marked `DRAFT — pending author revision`) plus two UUID transclusions
+  from `eval_direct.hpp` (the `eval_signal` type plus the mutually recursive
+  `eval_body`/`eval_node` walk; the `eval_program` entry point).
+- DIV-0007 filed (see above); DIV-0006 unmodified but its predicted
+  divergence is now directly observable at runtime (see above); no other
+  divergence from `docs/forth-plan.md` or Forth-2012 semantics.

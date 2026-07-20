@@ -138,6 +138,28 @@ Reading a declared effect's *text* back out of its captured span is new work thi
 
 * Phase 5: Codegen and the Three Backends
 
+DRAFT — pending author revision.
+
 Codegen turns the elaborated core into a compiled instruction program: another flat, trivially destructible =tree_arena=, this time of machine instructions rather than syntax forms.
 That same instruction program is then interpretable three ways: directly by a tree-walking evaluator, by a small classic stack machine (two fixed-capacity stacks, an arena data space, and an output buffer), and by a Beman Execution sender graph in which Forth's one-shot, dynamic-extent control words (=EXIT=, =LEAVE=, =CATCH=/=THROW=) map directly onto the sender/receiver completion discipline.
-This section will transclude the direct evaluator once step F13 lands, the stack machine once step F14 lands, and the sender backend once step F18 lands.
+Step F13 (this section) is the first of the three to land, and it skips codegen entirely: it is a *reference* interpreter, walking the elaborated core directly by structural recursion rather than flattening it into an instruction array first.
+This is deliberate, not a shortcut taken for its own sake — step F14's stack-machine codegen and VM is checked against this evaluator's own output (the plan's own merge criterion for F14 runs the same F13 test programs through both backends and requires they agree), so F13 has to exist as a trustworthy, independently-derived oracle before F14's flattening/back-patching machinery has anything to be checked against.
+=eval_direct.hpp= lives under =src/smd/forth/machine/=, not =src/smd/forth/elaborator/=, per the plan's own placement — it depends on =elaborator::compiled_unit= the same way every =elaborator/*.hpp= header already depends on =machine/*.hpp= for =dictionary=/=forth_state=, and both directories fold into the same single build target (=compile-time-forth.forth=), so this is a documented, one-directional layering choice, not a new library boundary or a circular dependency.
+
+#+transclude: [[file:../src/smd/forth/machine/eval_direct.hpp::0faeac96-c46d-48bb-a1db-c21191d35022]] :lines 2- :src cpp :end "0faeac96-c46d-48bb-a1db-c21191d35022 end"
+
+Primitives run through =machine::apply_primitive= — F8's imperative implementation, the one that actually mutates a =forth_state= — never through F12's =elaborator::primitive_data_effect= table, which exists purely for abstract interpretation and has no notion of actually running anything.
+A =core_call= recurses structurally into the callee's own core, found the same way F12's =analyze_body= already finds a call target's effect: =unit.dictionary.entry_at(word_index)= to get the =colon_word=, then =unit.arena.get(colon_word.core_id)= to reach its =core_seq=.
+=core_if=, =core_begin_until=, and =core_begin_while= become real control flow this time, conditionally or repeatedly evaluating their bodies against the live machine state rather than only predicting a depth the way F12's analysis did — =core_begin_until='s body runs at least once and re-runs until the flag it leaves behind is true; =core_begin_while='s condition runs before every iteration (including the first) and the loop stops the moment it leaves a false flag.
+=core_exit= is the one genuinely new piece of control-flow plumbing: it is a runtime early return, threaded through the evaluator's own =foundation::result<eval_signal>= channel rather than a C++ exception, matching this project's one-shot, dynamic-extent nonlocal-control invariant (D11).
+An =eval_signal::exited= return value propagates upward through every nested control-structure body it passes through — unevaluated code after it in the same body list is simply never visited — all the way up to the nearest enclosing =core_call=, which is where it is absorbed: a call is its own fresh definition boundary, so a callee's own =EXIT= never unwinds past the call that invoked it.
+=DO...LOOP= has no loop-index machinery at the core level yet (no node pops a loop's =(limit start)= pair or exposes =I=/=J=) — that is step F17's own deliverable — so =core_do_loop= is diagnosed rather than evaluated at all; none of F13's own merge criteria exercise it.
+
+Every misuse the evaluator can observe is a diagnosed =foundation::result= error exactly as it would be calling =apply_primitive= or a =cell_stack= directly by hand: stack underflow/overflow, division by zero, output-buffer overflow, and one new failure mode this step introduces — budget exhaustion.
+A nonterminating program (=BEGIN FALSE UNTIL= never becomes true) would otherwise hang a =constexpr= evaluation forever, since the compiler is perfectly willing to keep folding a =constexpr= function that never returns; the evaluator instead threads a plain decrementing =int= "fuel" counter through every node it visits and diagnoses exhaustion rather than looping.
+
+#+transclude: [[file:../src/smd/forth/machine/eval_direct.hpp::4caeb07c-70eb-4256-9a53-f48d9fd89fe1]] :lines 2- :src cpp :end "4caeb07c-70eb-4256-9a53-f48d9fd89fe1 end"
+
+This step is also the first to need `.`, `.S`, `EMIT`, and `CR` as real, runnable primitives (D10) — F8 never wired them, and one further word this step's own merge criteria need verbatim, `1-`, was missing from the language entirely (DIV-0007 records both gaps and this step's fix).
+=eval_program= is the pipeline's first true end-to-end milestone: read (F5/F7) into a syntax tree, elaborate (F11/F12) into a =compiled_unit= whose every definition has already passed stack-effect analysis, then evaluate that =compiled_unit= directly, all in one =constexpr= chain a =static_assert= can exercise at compile time.
+This section will transclude the stack machine once step F14 lands, and the sender backend once step F18 lands.

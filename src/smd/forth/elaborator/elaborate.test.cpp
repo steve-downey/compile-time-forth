@@ -285,7 +285,7 @@ TEST_CASE("ElaborateTest - RedefinitionWarnsNotErrors") {
     REQUIRE(unit.has_value());
     auto const &u = unit.value();
     CHECK(u.warnings.size() == 1);
-    CHECK(u.dictionary.size() == 39); // 37 primitives + two X definitions
+    CHECK(u.dictionary.size() == 44); // 42 primitives + two X definitions
 }
 
 TEST_CASE("ElaborateTest - RecurseCallsSelf") {

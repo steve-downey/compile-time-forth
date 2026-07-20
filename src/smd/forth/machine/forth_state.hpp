@@ -170,28 +170,30 @@ forth_state<MaxDepth, MaxRDepth, MaxData, MaxOut>::emit_cell(cell value)
     return emit_char(' ');
 }
 
-/// The section-6 arithmetic, comparison, and stack-manipulation primitive
-/// opcodes (D7). Enumerator names spell the Forth word, with a trailing
-/// underscore where the bare spelling would collide with a C++ keyword or
-/// another enumerator (`mod_`, `abs_`, `min_`, `max_`, `and_`, `or_`,
-/// `xor_`, `true_`, `false_`).
+/// The section-6 arithmetic, comparison, stack-manipulation, and output
+/// primitive opcodes (D7, D10). Enumerator names spell the Forth word, with
+/// a trailing underscore where the bare spelling would collide with a C++
+/// keyword or another enumerator (`mod_`, `abs_`, `min_`, `max_`, `and_`,
+/// `or_`, `xor_`, `true_`, `false_`), and an underscore standing in for `.`
+/// (`dot`, `dot_s`).
 enum class primitive {
     // Arithmetic and logic.
-    plus,   ///< `+`      ( a b -- a+b )
-    minus,  ///< `-`      ( a b -- a-b )
-    star,   ///< `*`      ( a b -- a*b )
-    slash,  ///< `/`      ( a b -- a/b ), diagnoses division by zero.
-    mod_,   ///< `MOD`    ( a b -- a%b ), diagnoses division by zero.
-    negate, ///< `NEGATE` ( a -- -a )
-    abs_,   ///< `ABS`    ( a -- |a| )
-    min_,   ///< `MIN`    ( a b -- min(a,b) )
-    max_,   ///< `MAX`    ( a b -- max(a,b) )
-    and_,   ///< `AND`    ( a b -- a&b )
-    or_,    ///< `OR`     ( a b -- a|b )
-    xor_,   ///< `XOR`    ( a b -- a^b )
-    invert, ///< `INVERT` ( a -- ~a )
-    lshift, ///< `LSHIFT` ( a n -- a<<n )
-    rshift, ///< `RSHIFT` ( a n -- a>>n ), logical (unsigned) shift.
+    plus,      ///< `+`      ( a b -- a+b )
+    minus,     ///< `-`      ( a b -- a-b )
+    star,      ///< `*`      ( a b -- a*b )
+    slash,     ///< `/`      ( a b -- a/b ), diagnoses division by zero.
+    mod_,      ///< `MOD`    ( a b -- a%b ), diagnoses division by zero.
+    negate,    ///< `NEGATE` ( a -- -a )
+    abs_,      ///< `ABS`    ( a -- |a| )
+    min_,      ///< `MIN`    ( a b -- min(a,b) )
+    max_,      ///< `MAX`    ( a b -- max(a,b) )
+    and_,      ///< `AND`    ( a b -- a&b )
+    or_,       ///< `OR`     ( a b -- a|b )
+    xor_,      ///< `XOR`    ( a b -- a^b )
+    invert,    ///< `INVERT` ( a -- ~a )
+    lshift,    ///< `LSHIFT` ( a n -- a<<n )
+    rshift,    ///< `RSHIFT` ( a n -- a>>n ), logical (unsigned) shift.
+    one_minus, ///< `1-`     ( a -- a-1 ), see DIV-0007.
 
     // Comparison.
     zero_equal,    ///< `0=`  ( a -- flag )   a == 0
@@ -217,18 +219,30 @@ enum class primitive {
     depth,        ///< `DEPTH` ( -- n )
 
     // Return stack.
-    to_r,   ///< `>R` ( a -- ) ( R: -- a )
-    r_from, ///< `R>` ( -- a ) ( R: a -- )
-    r_fetch ///< `R@` ( -- a ) ( R: a -- a )
+    to_r,    ///< `>R` ( a -- ) ( R: -- a )
+    r_from,  ///< `R>` ( -- a ) ( R: a -- )
+    r_fetch, ///< `R@` ( -- a ) ( R: a -- a )
+
+    // Output (D10): append to forth_state's own output buffer; step F13 is
+    // what first wires these (no runtime behavior existed for them before).
+    dot,   ///< `.`   ( n -- )  Prints @c n via @ref forth_state::emit_cell.
+    dot_s, ///< `.S`  ( -- )    Prints the data stack, bottom to top,
+           ///< nondestructively, one cell per @ref forth_state::emit_cell.
+    emit,  ///< `EMIT` ( c -- ) Prints the character whose code is @c c.
+    cr     ///< `CR`  ( -- )    Prints a newline.
 };
 
-/// Applies a pure-stack @ref primitive to @p state.
+/// Applies a pure-stack or output @ref primitive to @p state.
 ///
 /// Every stack-underflow, stack-overflow, and division-by-zero condition is
 /// diagnosed through the returned @ref status rather than triggering
 /// undefined behavior (D7). Division (`/`) and remainder (`MOD`) use
 /// symmetric (C++ truncating) division, not floored division -- see
-/// individual opcode comments in @ref primitive.
+/// individual opcode comments in @ref primitive. The four output opcodes
+/// (`.`, `.S`, `EMIT`, `CR`) append to @p state's own output buffer (D10)
+/// via @ref forth_state::emit_char / @ref forth_state::emit_cell rather than
+/// performing any direct I/O -- an output-buffer overflow is diagnosed the
+/// same way a stack overflow is.
 template <int MaxDepth, int MaxRDepth, int MaxData, int MaxOut>
 constexpr auto
 apply_primitive(primitive op,
@@ -339,6 +353,8 @@ apply_primitive(primitive op,
         return binary([](cell a, cell b) {
             return static_cast<cell>(static_cast<std::uint64_t>(a) >> (b & 63));
         });
+    case primitive::one_minus:
+        return unary([](cell a) { return a - 1; });
     case primitive::zero_equal:
         return unary([](cell a) { return a == 0 ? flag_true : flag_false; });
     case primitive::zero_less:
@@ -472,6 +488,36 @@ apply_primitive(primitive op,
         }
         return push_cell(a.value());
     }
+    case primitive::dot: {
+        auto a = pop_one();
+        if (!a.has_value()) {
+            return a.error();
+        }
+        return state.emit_cell(a.value());
+    }
+    case primitive::dot_s: {
+        // Bottom to top, nondestructively: peek(offset) counts down from the
+        // top (offset 0), so the bottom-most cell is at offset depth() - 1.
+        for (int offset = state.data().depth() - 1; offset >= 0; --offset) {
+            auto a = state.data().peek(offset);
+            if (!a.has_value()) {
+                return a.error();
+            }
+            if (auto r = state.emit_cell(a.value()); !r.has_value()) {
+                return r;
+            }
+        }
+        return std::monostate{};
+    }
+    case primitive::emit: {
+        auto a = pop_one();
+        if (!a.has_value()) {
+            return a.error();
+        }
+        return state.emit_char(static_cast<char>(a.value()));
+    }
+    case primitive::cr:
+        return state.emit_char('\n');
     }
     return foundation::parse_error{foundation::source_pos{},
                                    "unknown primitive opcode"};

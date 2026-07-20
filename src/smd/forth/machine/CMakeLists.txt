@@ -10,6 +10,7 @@ target_sources(
                 cell.hpp
                 data_space.hpp
                 dictionary.hpp
+                eval_direct.hpp
                 forth_state.hpp
                 stacks.hpp
 )
@@ -23,6 +24,7 @@ if(FORTH_ENABLE_TESTING)
             cell.test.cpp
             data_space.test.cpp
             dictionary.test.cpp
+            eval_direct.test.cpp
             forth_state.test.cpp
             stacks.test.cpp
     )

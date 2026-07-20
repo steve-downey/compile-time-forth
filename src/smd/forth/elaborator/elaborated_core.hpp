@@ -45,7 +45,7 @@ struct core_push {
 };
 
 /// Invokes a primitive opcode directly -- no dictionary indirection needed at
-/// run time, since the 37 primitives never change identity once elaborated.
+/// run time, since the 42 primitives never change identity once elaborated.
 struct core_prim {
     machine::primitive op{};      ///< Which primitive to run.
     foundation::source_pos pos{}; ///< Where the reference appeared in source.
