@@ -15,7 +15,7 @@
 - [x] Step F10: data space
 - [x] Step F11: elaborated core and resolution
 - [x] Step F12: stack-effect analysis
-- [ ] Step F13: direct evaluator
+- [x] Step F13: direct evaluator
 - [ ] Step F14: stack-machine codegen and VM
 - [ ] Step F15: public one-shot API
 - [ ] Step F16: memory words end-to-end

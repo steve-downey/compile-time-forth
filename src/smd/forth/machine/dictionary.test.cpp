@@ -57,11 +57,25 @@ static_assert([] {
 
 TEST_CASE("DictionaryTest - DefaultDictionaryInstallsAllPrimitives") {
     auto dict = default_dictionary<>();
-    CHECK(dict.size() == 37);
+    CHECK(dict.size() == 42);
     auto const *entry = dict.lookup("SWAP");
     REQUIRE(entry != nullptr);
     REQUIRE(std::holds_alternative<primitive>(entry->binding));
     CHECK(std::get<primitive>(entry->binding) == primitive::swap);
+}
+
+TEST_CASE("DictionaryTest - F13OutputAndOneMinusPrimitivesInstalled") {
+    auto dict = default_dictionary<>();
+    auto const *dot_entry = dict.lookup(".");
+    REQUIRE(dot_entry != nullptr);
+    REQUIRE(std::holds_alternative<primitive>(dot_entry->binding));
+    CHECK(std::get<primitive>(dot_entry->binding) == primitive::dot);
+
+    auto const *one_minus_entry = dict.lookup("1-");
+    REQUIRE(one_minus_entry != nullptr);
+    REQUIRE(std::holds_alternative<primitive>(one_minus_entry->binding));
+    CHECK(std::get<primitive>(one_minus_entry->binding) ==
+          primitive::one_minus);
 }
 
 TEST_CASE("DictionaryTest - CaseFoldedLookup") {

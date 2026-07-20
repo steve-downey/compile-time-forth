@@ -116,9 +116,12 @@ constexpr auto combine_branch(effect then_eff, effect else_eff) -> effect {
 
 /// The per-primitive net data-stack effect table (F12's deliverable -- no
 /// such table existed before this step; F8's `apply_primitive` is imperative
-/// runtime code, not a declarative mapping).
+/// runtime code, not a declarative mapping). F13 added the four output
+/// opcodes' entries (`.`, `.S`, `EMIT`, `CR`) and `1-`'s (see DIV-0007) when
+/// it first wired their runtime behavior; none of the five touch the return
+/// stack.
 ///
-/// 35 of the 37 primitives have a fixed effect; `?DUP` is genuinely
+/// 41 of the 42 primitives have a fixed effect; `?DUP` is genuinely
 /// input-dependent (`( a -- 0 | a a )`) and maps to @ref unknown_effect.
 /// `>R`/`R>`/`R@` move cells between the data and return stacks -- this
 /// table reports only their *data*-stack view; @ref primitive_return_delta
@@ -153,6 +156,7 @@ constexpr auto primitive_data_effect(machine::primitive op) -> effect {
     case P::negate:
     case P::abs_:
     case P::invert:
+    case P::one_minus:
     case P::zero_equal:
     case P::zero_less:
         return known(1, 1);
@@ -180,6 +184,14 @@ constexpr auto primitive_data_effect(machine::primitive op) -> effect {
         return known(0, 1); // Data-stack view only; see primitive_return_delta.
     case P::r_fetch:
         return known(0, 1);
+    case P::dot:
+        return known(1, 0);
+    case P::dot_s:
+        return identity_effect; // Nondestructive: no minimum entry depth.
+    case P::emit:
+        return known(1, 0);
+    case P::cr:
+        return identity_effect;
     }
     // Defensive-only: every enumerator is listed above; reachable only if a
     // future step adds a primitive without updating this table.

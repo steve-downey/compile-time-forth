@@ -283,56 +283,42 @@ constexpr auto dictionary<MaxWords, MaxName>::size() const -> int {
     return entries_.size();
 }
 
-/// Builds a dictionary with every F8 primitive installed under its Forth
-/// name (`+ - * / MOD NEGATE ABS MIN MAX AND OR XOR INVERT LSHIFT RSHIFT
+/// Builds a dictionary with every F8/F13 primitive installed under its Forth
+/// name (`+ - * / MOD NEGATE ABS MIN MAX AND OR XOR INVERT LSHIFT RSHIFT 1-
 /// 0= 0< = <> < > <= >= TRUE FALSE DUP DROP SWAP OVER ROT ?DUP NIP TUCK
-/// DEPTH >R R> R@`) -- 37 words, one per @ref primitive enumerator.
+/// DEPTH >R R> R@ . .S EMIT CR`) -- 42 words, one per @ref primitive
+/// enumerator (`.`, `.S`, `EMIT`, `CR` are step F13's output words, D10;
+/// `1-` is also new this step, see DIV-0007).
 ///
-/// @tparam MaxWords Dictionary capacity; must be at least 37 plus whatever
+/// @tparam MaxWords Dictionary capacity; must be at least 42 plus whatever
 ///                  room the caller wants for later colon/variable/constant/
 ///                  foreign definitions.
 /// @tparam MaxName  Maximum name length.
 template <int MaxWords = 256, int MaxName = 32>
 constexpr auto default_dictionary() -> dictionary<MaxWords, MaxName> {
     dictionary<MaxWords, MaxName> dict;
-    constexpr std::array<std::pair<std::string_view, primitive>, 37> words{{
-        {"+", primitive::plus},
-        {"-", primitive::minus},
-        {"*", primitive::star},
-        {"/", primitive::slash},
-        {"MOD", primitive::mod_},
-        {"NEGATE", primitive::negate},
-        {"ABS", primitive::abs_},
-        {"MIN", primitive::min_},
-        {"MAX", primitive::max_},
-        {"AND", primitive::and_},
-        {"OR", primitive::or_},
-        {"XOR", primitive::xor_},
-        {"INVERT", primitive::invert},
-        {"LSHIFT", primitive::lshift},
-        {"RSHIFT", primitive::rshift},
-        {"0=", primitive::zero_equal},
-        {"0<", primitive::zero_less},
-        {"=", primitive::equal},
-        {"<>", primitive::not_equal},
-        {"<", primitive::less},
-        {">", primitive::greater},
-        {"<=", primitive::less_equal},
-        {">=", primitive::greater_equal},
-        {"TRUE", primitive::true_},
-        {"FALSE", primitive::false_},
-        {"DUP", primitive::dup},
-        {"DROP", primitive::drop},
-        {"SWAP", primitive::swap},
-        {"OVER", primitive::over},
-        {"ROT", primitive::rot},
-        {"?DUP", primitive::question_dup},
-        {"NIP", primitive::nip},
-        {"TUCK", primitive::tuck},
-        {"DEPTH", primitive::depth},
-        {">R", primitive::to_r},
-        {"R>", primitive::r_from},
-        {"R@", primitive::r_fetch},
+    constexpr std::array<std::pair<std::string_view, primitive>, 42> words{{
+        {"+", primitive::plus},        {"-", primitive::minus},
+        {"*", primitive::star},        {"/", primitive::slash},
+        {"MOD", primitive::mod_},      {"NEGATE", primitive::negate},
+        {"ABS", primitive::abs_},      {"MIN", primitive::min_},
+        {"MAX", primitive::max_},      {"AND", primitive::and_},
+        {"OR", primitive::or_},        {"XOR", primitive::xor_},
+        {"INVERT", primitive::invert}, {"LSHIFT", primitive::lshift},
+        {"RSHIFT", primitive::rshift}, {"1-", primitive::one_minus},
+        {"0=", primitive::zero_equal}, {"0<", primitive::zero_less},
+        {"=", primitive::equal},       {"<>", primitive::not_equal},
+        {"<", primitive::less},        {">", primitive::greater},
+        {"<=", primitive::less_equal}, {">=", primitive::greater_equal},
+        {"TRUE", primitive::true_},    {"FALSE", primitive::false_},
+        {"DUP", primitive::dup},       {"DROP", primitive::drop},
+        {"SWAP", primitive::swap},     {"OVER", primitive::over},
+        {"ROT", primitive::rot},       {"?DUP", primitive::question_dup},
+        {"NIP", primitive::nip},       {"TUCK", primitive::tuck},
+        {"DEPTH", primitive::depth},   {">R", primitive::to_r},
+        {"R>", primitive::r_from},     {"R@", primitive::r_fetch},
+        {".", primitive::dot},         {".S", primitive::dot_s},
+        {"EMIT", primitive::emit},     {"CR", primitive::cr},
     }};
     for (auto const &[name_text, op] : words) {
         (void)dict.define_primitive(name_text, op);

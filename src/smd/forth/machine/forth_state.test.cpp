@@ -64,6 +64,8 @@ static_assert(run(primitive::xor_, {0b1100, 0b1010}) == 0b0110);
 static_assert(run(primitive::invert, {0}) == -1);
 static_assert(run(primitive::lshift, {1, 4}) == 16);
 static_assert(run(primitive::rshift, {16, 4}) == 1);
+static_assert(run(primitive::one_minus, {3}) == 2);
+static_assert(run(primitive::one_minus, {0}) == -1);
 
 static_assert([] {
     // Division by zero is a diagnosed error, not UB.
@@ -271,7 +273,67 @@ static_assert([] {
     return !state.emit_char('B').has_value();
 }());
 
+// -- Output words (D10, wired this step) -------------------------------------
+
+static_assert([] {
+    // `.` pops and prints its decimal rendering plus a trailing space.
+    small_state state;
+    (void)state.data().push(42);
+    (void)apply_primitive(primitive::dot, state);
+    auto const &out = state.output();
+    return state.data().depth() == 0 && out.size() == 3 && out[0] == '4' &&
+           out[1] == '2' && out[2] == ' ';
+}());
+
+static_assert([] {
+    // `.S` prints the whole stack, bottom to top, without consuming it.
+    small_state state;
+    (void)state.data().push(1);
+    (void)state.data().push(2);
+    (void)state.data().push(3);
+    (void)apply_primitive(primitive::dot_s, state);
+    auto const &out = state.output();
+    return state.data().depth() == 3 && out.size() == 6 && out[0] == '1' &&
+           out[1] == ' ' && out[2] == '2' && out[3] == ' ' && out[4] == '3' &&
+           out[5] == ' ';
+}());
+
+static_assert([] {
+    // `EMIT` pops a cell and prints it as a raw character (no trailing
+    // space, unlike `.`).
+    small_state state;
+    (void)state.data().push(cell{'A'});
+    (void)apply_primitive(primitive::emit, state);
+    auto const &out = state.output();
+    return state.data().depth() == 0 && out.size() == 1 && out[0] == 'A';
+}());
+
+static_assert([] {
+    // `CR` prints a newline and touches nothing on the data stack.
+    small_state state;
+    (void)apply_primitive(primitive::cr, state);
+    auto const &out = state.output();
+    return state.data().depth() == 0 && out.size() == 1 && out[0] == '\n';
+}());
+
+static_assert([] {
+    // `.` on an empty stack is a diagnosed underflow, not UB.
+    small_state state;
+    return !apply_primitive(primitive::dot, state).has_value();
+}());
+
 TEST_CASE("ForthStateTest - HeaderIsIdempotent") { REQUIRE(true); }
+
+TEST_CASE("ForthStateTest - DotPrintsDecimalWithTrailingSpace") {
+    small_state state;
+    CHECK(state.data().push(-5).has_value());
+    REQUIRE(apply_primitive(primitive::dot, state).has_value());
+    auto const &out = state.output();
+    std::string_view rendered{out.begin(),
+                              static_cast<std::size_t>(out.size())};
+    CHECK(rendered == "-5 ");
+    CHECK(state.data().depth() == 0);
+}
 
 TEST_CASE("ForthStateTest - DataAndReturnStacksAreIndependent") {
     small_state state;
