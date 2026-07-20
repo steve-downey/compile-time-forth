@@ -71,6 +71,9 @@ struct stack_effect {
     int inputs = 0;     ///< Cells consumed, meaningful only if @ref known.
     int outputs = 0;    ///< Cells produced, meaningful only if @ref known.
     bool known = false; ///< True once a real effect has been computed.
+
+    friend constexpr auto operator==(stack_effect const &, stack_effect const &)
+        -> bool = default;
 };
 
 /// A resolved colon-definition binding.

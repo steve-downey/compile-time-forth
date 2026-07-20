@@ -14,7 +14,7 @@
 - [x] Step F9: dictionary
 - [x] Step F10: data space
 - [x] Step F11: elaborated core and resolution
-- [ ] Step F12: stack-effect analysis
+- [x] Step F12: stack-effect analysis
 - [ ] Step F13: direct evaluator
 - [ ] Step F14: stack-machine codegen and VM
 - [ ] Step F15: public one-shot API

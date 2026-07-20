@@ -4,6 +4,7 @@
 #define SRC_SMD_FORTH_ELABORATOR_ELABORATE_HPP
 
 #include <smd/forth/elaborator/elaborated_core.hpp>
+#include <smd/forth/elaborator/stack_effect.hpp>
 #include <smd/forth/foundation/arena_box.hpp>
 #include <smd/forth/foundation/parse_error.hpp>
 #include <smd/forth/foundation/result.hpp>
@@ -306,8 +307,11 @@ constexpr auto elaborate_body(
 /// Elaborates a `: NAME ... ;` colon definition (@p cd) into @p unit: warns
 /// (does not error) on redefinition, reserves @p cd's own future dictionary
 /// index before elaborating its body (so `RECURSE` inside the body resolves
-/// to that index), builds a @ref core_seq node for the body, and finally
-/// installs the new @ref machine::colon_word.
+/// to that index), builds a @ref core_seq node for the body, runs F12's
+/// stack-effect analysis over it (@ref analyze_colon_effect, D9 -- a program
+/// failing analysis fails elaboration), and finally installs the new
+/// @ref machine::colon_word with its real, analyzed @ref
+/// machine::stack_effect.
 ///
 /// No new dictionary entry can be created while a colon definition's own
 /// body is being elaborated (F7's grammar disallows nested `:` and
@@ -315,13 +319,20 @@ constexpr auto elaborate_body(
 /// `unit.dictionary.size()` observed just before @ref elaborate_body runs is
 /// exactly the index @p cd will occupy once @ref machine::dictionary::
 /// define_colon appends it below.
+///
+/// @p source is the original program text -- needed only here, to re-slice
+/// @p cd's @ref reader::syn_colon_def::declared_effect span into its comment
+/// text for @ref analyze_colon_effect (F11 never threaded source text
+/// through @ref elaborate, since it never needed to read a declared effect's
+/// text, only its span).
 template <int MaxNodes, int MaxBody, int MaxName, int MaxWords, int MaxData,
           int MaxWarnings>
 constexpr auto
 elaborate_colon_def(reader::syntax_tree<MaxNodes, MaxBody, MaxName> const &tree,
                     reader::syn_colon_def<MaxNodes, MaxBody, MaxName> const &cd,
                     compiled_unit<MaxNodes, MaxBody, MaxName, MaxWords, MaxData,
-                                  MaxWarnings> &unit) -> machine::status {
+                                  MaxWarnings> &unit,
+                    std::string_view source) -> machine::status {
     auto const name_text = name_view(cd.name);
     if (unit.dictionary.lookup(name_text) != nullptr) {
         push_warning(unit, cd.pos, "redefined word");
@@ -331,13 +342,18 @@ elaborate_colon_def(reader::syntax_tree<MaxNodes, MaxBody, MaxName> const &tree,
     if (!body.has_value()) {
         return body.error();
     }
+    auto effect_result =
+        analyze_colon_effect(unit, body.value(), word_index, cd, source);
+    if (!effect_result.has_value()) {
+        return effect_result.error();
+    }
     auto body_box = foundation::make_arena_box(
         unit.arena, core_node<MaxNodes, MaxBody>{
                         .value = core_seq<MaxNodes, MaxBody>{
                             .items = body.value(), .pos = cd.pos}});
     return unit.dictionary.define_colon(
         name_text, machine::colon_word{.core_id = body_box.id_,
-                                       .effect = machine::stack_effect{}});
+                                       .effect = effect_result.value()});
 }
 
 /// Elaborates a `VARIABLE NAME` declaration: warns on redefinition, allots
@@ -416,6 +432,13 @@ elaborate_constant(reader::syn_constant<MaxName> const &cn, machine::cell value,
 /// machine::default_dictionary), so ordinary arithmetic/stack words resolve
 /// to @ref core_prim from the first definition onward.
 ///
+/// @p source is the exact program text @p tree was parsed from. F11 did not
+/// take this parameter (it never needed to read a declared stack-effect
+/// comment's text, only its span); F12 adds it so @ref elaborate_colon_def
+/// can re-slice a colon definition's declared effect for @ref
+/// analyze_colon_effect -- this is a real, additive signature change to
+/// this entry point, not a new overload.
+///
 /// @tparam MaxNodes    Elaborated-core arena capacity.
 /// @tparam MaxBody     Maximum number of forms in any one node's body, and of
 ///                     top-level items in the program.
@@ -427,7 +450,8 @@ elaborate_constant(reader::syn_constant<MaxName> const &cn, machine::cell value,
 template <int MaxNodes = 1024, int MaxBody = 64, int MaxName = 32,
           int MaxWords = 256, int MaxData = 1024, int MaxWarnings = 64>
 constexpr auto
-elaborate(reader::syntax_tree<MaxNodes, MaxBody, MaxName> const &tree)
+elaborate(reader::syntax_tree<MaxNodes, MaxBody, MaxName> const &tree,
+          std::string_view source)
     -> foundation::result<compiled_unit<MaxNodes, MaxBody, MaxName, MaxWords,
                                         MaxData, MaxWarnings>> {
     compiled_unit<MaxNodes, MaxBody, MaxName, MaxWords, MaxData, MaxWarnings>
@@ -441,7 +465,7 @@ elaborate(reader::syntax_tree<MaxNodes, MaxBody, MaxName> const &tree)
         if (auto const *cd =
                 std::get_if<reader::syn_colon_def<MaxNodes, MaxBody, MaxName>>(
                     &node.value)) {
-            auto status = elaborate_colon_def(tree, *cd, unit);
+            auto status = elaborate_colon_def(tree, *cd, unit, source);
             if (!status.has_value()) {
                 return status.error();
             }

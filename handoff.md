@@ -1076,3 +1076,177 @@ a fact just because a later step changed something adjacent.
   the self-index trick; `CONSTANT` folding needs one-token lookahead).
   DIV-0004 is resolved (not superseded) in place, per its own "Revisit
   condition".
+
+## Step F12 — Stack-effect analysis
+
+- Added `src/smd/forth/elaborator/stack_effect.hpp` (+ `stack_effect.test.cpp`),
+  namespace `smd::forth::elaborator`, canonical include
+  `<smd/forth/elaborator/stack_effect.hpp>`. Header folds into
+  `compile-time-forth.forth`'s existing `forth_forth_headers` `FILE_SET`
+  (matching every prior elaborator/machine/reader step); test source added
+  to the existing `elaborator_test` executable via
+  `src/smd/forth/elaborator/CMakeLists.txt`. Runs **as part of** `elaborate`
+  per D9 — a program failing stack-effect analysis fails elaboration; there
+  is no separate opt-in checking pass.
+- **The lattice** (`effect{bool known; int inputs; int outputs;}`,
+  `unknown_effect`, `identity_effect`, `known(inputs,outputs)`): a `known`
+  value's `inputs` doubles as the "minimum entry depth" the plan asks for —
+  there is no separate field for it, it *is* that number. `unknown` is the
+  lattice's top value; it is produced only by `?DUP` today (the plan's other
+  named source, "anything reached via `EXECUTE`," has no `machine::primitive`
+  enumerator yet — F18a is what adds one, and its net-effect table entry
+  belongs in `primitive_data_effect` as `unknown_effect` once it exists,
+  documented on that function). Once a computation touches `unknown`, every
+  downstream combination (`combine_sequential`, `combine_branch`) stays
+  `unknown` — this is the concrete mechanism behind "suppresses checking
+  downstream rather than erroring."
+- **Sequential composition** (`combine_sequential`) is the standard "stack
+  level" derivation: combined-entry-requirement = first operand's own input
+  requirement, plus however much more the second operand needs beyond what
+  the first operand's own output already leaves behind; combined-output
+  follows from combined-input plus the sum of both operands' net changes
+  (`outputs - inputs`). `identity_effect` (0,0) is the identity element on
+  both sides (verified by `static_assert`).
+- **`IF`/`ELSE` arms are compared by *net effect* (the depth delta), not the
+  full `(inputs,outputs)` pair** — this is the one real design decision
+  handoff-next.md (F11→F12) flagged as ambiguous in the plan's wording
+  ("unequal net effects"), resolved here because the alternative (full-pair
+  equality) would reject the canonical Forth-2012 idiom
+  `: ABS DUP 0< IF NEGATE THEN ;` (`NEGATE` is `(1,1)`, the implicit empty
+  `ELSE` is `(0,0)` — different shapes, same net effect `0`). `combine_branch`
+  computes the `IF` node's own contributed effect from two already-verified
+  same-net arms using the same "whichever arm demands more at entry" logic as
+  sequential composition. Verified directly by the `AbsIfNoElseTypeChecks`
+  test/`static_assert` in `stack_effect.test.cpp` — this also de-risks F13's
+  own planned `ABS` merge criterion, which depends on `elaborate` succeeding
+  for exactly this program.
+- **The primitive net-effect table** (`primitive_data_effect`,
+  `primitive_return_delta`) — did not exist before this step (F8's
+  `apply_primitive` is imperative runtime code, not a declarative mapping).
+  35 of 37 primitives have a fixed data-stack effect; `?DUP` is
+  `unknown_effect`; `>R`/`R>`/`R@` report only their *data*-stack view from
+  `primitive_data_effect` (`>R`: `(1,0)`, `R>`: `(0,1)`, `R@`: `(0,1)`) —
+  their *return*-stack contribution (`+1`/`-1`/`0` respectively) is a
+  separate table, `primitive_return_delta`, since the return-stack side is
+  tracked as a plain running `int`, never a lattice value (only `?DUP` is
+  ever input-dependent, and it never touches the return stack, so return-
+  stack tracking is always exactly known regardless of whether the data-stack
+  side has gone `unknown`).
+- **`RECURSE`'s self-effect fixed-point question** (flagged open by F11's
+  handoff-next.md) — resolved as option (a)+(b) combined, exactly as that
+  file's own two options described: if the definition being compiled wrote a
+  declared `( ... )` effect comment, `RECURSE` call sites use it as ground
+  truth (`analyze_colon_effect` computes `self_effect` once, up front, before
+  walking the body); otherwise `RECURSE` resolves to `unknown_effect`,
+  identical treatment to `?DUP`. No fixed-point solving is attempted. Tested
+  by `RecurseUsesDeclaredEffect` (`: LOOP1 ( n -- n ) RECURSE ;`) and by the
+  pre-existing F11 `RecurseCallsSelf` test continuing to pass unchanged (no
+  declared effect there, so `RECURSE` is `unknown`, and the whole definition
+  ends up with `stack_effect{known = false}` — same as before F12 existed).
+- **`elaborate`'s signature changed** (additive, but a real breaking change
+  to the entry point, not a new overload): `elaborate(tree, source)` now
+  takes a second `std::string_view source` parameter — the exact program
+  text `tree` was parsed from. F11 never needed this (it never read a
+  declared effect's *text*, only its span); F12 needs it to re-slice
+  `syn_colon_def::declared_effect` inside `analyze_colon_effect`. Threaded
+  through `elaborate_colon_def` (which also gained a `source` parameter);
+  every other `elaborate_*` helper is unchanged. `elaborate.test.cpp`'s call
+  sites were updated (`elaborate<...>(tree.value(), source)`); one of its
+  existing merge-criterion `static_assert`s (`SQUARED`/`QUAD`) also gained an
+  assertion that `colon_word::effect` is now a real, analyzed `(1,1)` rather
+  than the F9/F11 `stack_effect{}` placeholder.
+- **Integration seam**, exactly where F11's handoff-next.md predicted:
+  `elaborate_colon_def` calls `analyze_colon_effect(unit, body.value(),
+  word_index, cd, source)` right after `elaborate_body` succeeds and right
+  before building the `core_seq`/calling `define_colon` — the computed
+  `machine::stack_effect` is passed directly into the new `colon_word`
+  at construction, no in-place dictionary mutation needed.
+- **Diagnoses 1-3** (`analyze_body`, recursive, one function handles `IF`,
+  `BEGIN...UNTIL`, `BEGIN...WHILE...REPEAT`, `DO...LOOP`, and plain
+  sequencing): `IF`/`ELSE` net-effect mismatch; `DO`/`BEGIN...UNTIL`/
+  `BEGIN...WHILE...REPEAT` bodies with the wrong net effect (`DO`/`UNTIL`
+  bodies must net to 0 after the loop-terminator's own flag pop is accounted
+  for; `WHILE`'s condition must leave exactly the flag, net `+1`); return-
+  stack imbalance across any single control-structure body (checked
+  independently for each nested body — `then_body`, `else_body`, `DO`'s
+  body, `BEGIN...UNTIL`'s body, `BEGIN...WHILE`'s condition and its body —
+  each must net to `r_delta == 0` on its own). All diagnoses carry the
+  *enclosing control node's own* position (e.g. the `BEGIN`'s `pos` for both
+  its condition-flag-check and its body-net-zero-check), not a more granular
+  inner position — simple and stable, per the merge-criteria requirement to
+  check exact message + position.
+- **Diagnosis 4** (`check_exit_in_do_loops`) is a separate, purely lexical
+  recursive scan — independent of `analyze_body`'s depth tracking — because
+  `UNLOOP` is not a primitive yet (F17 adds real counted-loop machinery), so
+  there is no way to leave a `DO` loop's parameters consistent before an
+  early `EXIT` today; it fires unconditionally on any `core_exit` lexically
+  reachable while inside `>=1` enclosing `core_do_loop`, at any nesting
+  depth. **F17 should relax this** once `UNLOOP` is real (documented on the
+  function itself).
+- **Diagnosis 5** (declared-vs-computed mismatch, in `analyze_colon_effect`):
+  `has_declared_effect`/`parse_declared_effect` slice `cd.declared_effect`
+  out of `source`, strip the `(`/`)` delimiters, and count whitespace-
+  delimited tokens either side of a `--` token (reusing
+  `reader::is_word_char` for tokenization — no new char-predicate
+  invented). Comparison is full-pair equality (`inputs` and `outputs` both),
+  unlike the net-only `IF`-arm comparison — a declared effect states an
+  exact shape, not just a net change. Skipped entirely when the computed
+  effect is `unknown` (an `unknown` result cannot contradict anything; the
+  declared effect, if present, is simply trusted and stored).
+- **`EXIT` handling is a deliberate, documented simplification, not full
+  flow-sensitivity** — see **DIV-0006**
+  (`docs/divergences/DIV-0006-exit-not-flow-sensitive.md`): once a
+  `core_exit` is folded, remaining items in that same body list are treated
+  as unreachable and never visited (sound for an unconditional trailing
+  `EXIT`), but the checker does not reconcile an early-`EXIT` path's depth
+  against the fall-through depth when `EXIT` sits inside a conditional. Every
+  diagnosis the plan literally asks for is unaffected by this gap; it is
+  additional exposure the plan's own diagnosis list does not call for.
+- **`DO...LOOP` does not yet model the limit/start-index consumption** that
+  real Forth-2012 `DO` pops at entry — not a DIV, since no core node
+  represents that consumption yet (F17's `do_setup`/`I`/`J` machinery is
+  what will add it); F12's `core_do_loop` contribution to the enclosing
+  scope is purely "whatever the body needs, returned unchanged" once the
+  body's own net-zero check passes. Flagged for F17, not filed as a
+  divergence, since it directly follows the plan's own literal ordering
+  (F12's own spec text only asks for "DO body must be net-zero").
+- `machine::stack_effect` (`machine/dictionary.hpp`, F9) gained a defaulted
+  `operator==` (hidden friend) — needed for `stack_effect.test.cpp`'s own
+  assertions and the new `elaborate.test.cpp` assertion; no other change to
+  that struct.
+- **Merge criteria** (`static_assert`, immediately-invoked-lambda pattern,
+  each mirrored as a `TEST_CASE`, in `stack_effect.test.cpp`): positive —
+  `SQUARED`'s and `ABS`'s declared effects verified against their computed
+  ones; a correct multi-word program (`DOUBLE`/`QUADRUPLE`, no declared
+  effect, composed through two `core_call` lookups); `RECURSE` trusting a
+  declared effect. Negative — one failing `static_assert` per diagnosis 1-5
+  (`IF`/`ELSE` mismatch; `DO` body nonzero; `BEGIN...UNTIL` wrong flag count;
+  `BEGIN...WHILE` condition wrong flag count; return-stack imbalance both
+  across a control boundary and at a definition's end; `EXIT` inside `DO`;
+  declared-vs-computed mismatch) — each checks the exact message and
+  position. Plus pure-lattice `static_assert`s for `combine_sequential`,
+  `combine_branch`, the primitive tables, and `parse_declared_effect`,
+  independent of the full read→elaborate pipeline.
+- Updated `docs/compiler_architecture.org`'s "Phase 4: Elaboration" section
+  with the stack-effect-checking half (marked `DRAFT — pending author
+  revision`, one sentence per line): the lattice paragraph, the
+  sequential/branch composition paragraphs (including the net-effect-not-
+  full-pair design note), the `RECURSE`/`EXIT` handling notes, and three UUID
+  transclusions from `stack_effect.hpp` (the lattice + composition
+  functions, `analyze_body`, `analyze_colon_effect`).
+- Verified on both `gcc-16` and `clang-21` (both available in this worker's
+  sandbox): `make compile`, `make test` (168/168 passed, up from 155/155 at
+  F11's baseline), `make lint`, and `smoke.sh gcc-16`/`smoke.sh clang-21`
+  both green/`SMOKE OK` on each toolchain.
+- **`make lint` note:** the same recurring pre-existing `clang-format`/
+  `gersemi` tooling-version drift flagged at every step since F6
+  (`machine/{CMakeLists.txt,data_space.hpp}`, `reader/forth_chars.test.cpp`
+  in this run) reproduced again, confirmed via `git checkout --` + rerun
+  with zero F12 changes present; this step's own new/touched files
+  (`elaborator/stack_effect.{hpp,test.cpp}`, `elaborator/elaborate.hpp`,
+  `elaborator/elaborate.test.cpp`, `elaborator/CMakeLists.txt`,
+  `machine/dictionary.hpp`) were independently confirmed clean via a
+  targeted `pre-commit run clang-format --files ...`. Still an open,
+  standing environment item, not specific to F12.
+- DIV-0006 filed (see above); no other divergence from `docs/forth-plan.md`
+  or Forth-2012 semantics.

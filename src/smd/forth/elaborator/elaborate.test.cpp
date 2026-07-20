@@ -53,7 +53,7 @@ constexpr auto elaborate_source(std::string_view source) {
     auto tree = parse(source);
     return elaborate<test_max_nodes, test_max_body, test_max_name,
                      test_max_words, test_max_data, test_max_warnings>(
-        tree.value());
+        tree.value(), source);
 }
 
 } // namespace
@@ -70,7 +70,7 @@ static_assert([] {
     }
     auto unit =
         elaborate<test_max_nodes, test_max_body, test_max_name, test_max_words,
-                  test_max_data, test_max_warnings>(tree.value());
+                  test_max_data, test_max_warnings>(tree.value(), source);
     if (!unit.has_value()) {
         return false;
     }
@@ -87,7 +87,17 @@ static_assert([] {
     }
     int const squared_index = u.dictionary.lookup_index("SQUARED");
 
+    // F12: SQUARED's (and QUAD's) stack effect is now a real, analyzed
+    // (1,1) -- not the F9/F11 stack_effect{} placeholder.
+    auto const &squared_cw = std::get<colon_word>(squared_entry->binding);
     auto const &quad_cw = std::get<colon_word>(quad_entry->binding);
+    if (squared_cw.effect != smd::forth::machine::stack_effect{.inputs = 1,
+                                                               .outputs = 1,
+                                                               .known = true} ||
+        quad_cw.effect != smd::forth::machine::stack_effect{
+                              .inputs = 1, .outputs = 1, .known = true}) {
+        return false;
+    }
     auto const &quad_seq =
         std::get<test_seq>(u.arena.get(quad_cw.core_id).value);
     if (quad_seq.items.size() != 2) {

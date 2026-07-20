@@ -115,7 +115,26 @@ Elaboration does not treat redefinition as an error; it records it as a warning 
 
 #+transclude: [[file:../src/smd/forth/elaborator/elaborate.hpp::5dfe0ab6-e4f5-481b-ad89-926e077d406f]] :lines 2- :src cpp :end "5dfe0ab6-e4f5-481b-ad89-926e077d406f end"
 
-This section will transclude the stack-effect checker once step F12 lands.
+Step F12 (this section) owns stack-effect checking: it runs as part of =elaborate= itself, per D9, so a program that fails analysis fails elaboration — there is no separate "type-check" pass a caller can skip.
+The checker is an abstract interpretation over the elaborated core, computed once per colon definition, that tracks two independent quantities: a data-stack effect and a return-stack depth delta.
+The data-stack side uses a small lattice: a =known= value is a concrete =(inputs, outputs)= pair, where =inputs= doubles as the definition's minimum entry depth and =outputs= is the depth left behind measured from that same entry point; the lattice's top value, =unknown=, suppresses further depth-based checking downstream rather than erroring, and is produced only by input-dependent primitives (=?DUP= today; whatever primitive =EXECUTE= becomes once step F18a adds it).
+The return-stack side is tracked as a plain running integer, not a lattice, because none of =>R=/=R>=/=R@= are ever input-dependent — only the data-stack side can go =unknown=.
+
+#+transclude: [[file:../src/smd/forth/elaborator/stack_effect.hpp::3fd1b4b2-6cf1-4b6e-9b6b-3f2c0a8f7d21]] :lines 2- :src cpp :end "3fd1b4b2-6cf1-4b6e-9b6b-3f2c0a8f7d21 end"
+
+Composing two effects in sequence follows the standard "stack level" derivation: the combined entry requirement is whatever the first effect needs, plus however much more the second effect needs once the first has already produced its share; combining two verified-compatible =IF=/=ELSE= arms into the =IF= node's own contributed effect works the same way, using whichever arm demands more at entry.
+A subtlety worth calling out explicitly: =IF=/=ELSE= arms are compared by their *net* effect (the depth delta, =outputs - inputs=) rather than by the full pair, because two arms can have different shapes and still be safe to run interchangeably — =NEGATE= (1,1) and an implicit empty =ELSE= (0,0) both have net effect zero despite different shapes, and the canonical Forth-2012 idiom =: ABS DUP 0< IF NEGATE THEN ;= depends on exactly this reading to type-check at all.
+The main walk (=analyze_body=) recurses into every control structure's nested bodies, diagnosing four of the plan's five error shapes as it goes: unequal =IF=/=ELSE= net effect, a loop body (=DO=, =BEGIN...UNTIL=, or =BEGIN...WHILE...REPEAT=) with the wrong net effect, and a return-stack depth that fails to return to zero across any single control-structure body.
+=RECURSE= poses a real fixed-point problem — the callee's effect is exactly the thing being computed — and this step does not attempt to solve it: a definition's declared =( ... )= effect comment, when present, is trusted as the assumed effect of its own =RECURSE= call sites; when absent, a self-call is simply treated as =unknown=, exactly like =?DUP=.
+=EXIT= is handled conservatively rather than with full flow sensitivity: once encountered while folding a body's items, remaining items in that same body are unreachable and are not visited at all, which is sound for an unconditional trailing =EXIT= but does not attempt to reconcile an early-return depth against the definition's eventual fall-through depth when =EXIT= sits inside a conditional (see DIV-0006).
+
+#+transclude: [[file:../src/smd/forth/elaborator/stack_effect.hpp::7c2a9e5d-3b8f-4a1e-9d6c-8e4f1b2a6c9d]] :lines 2- :src cpp :end "7c2a9e5d-3b8f-4a1e-9d6c-8e4f1b2a6c9d end"
+
+The fifth diagnosis — an =EXIT= lexically nested inside a =DO= loop's body without an =UNLOOP= to appease first — is a separate, purely lexical scan, independent of the depth-tracking walk above; it exists because =UNLOOP= is not a primitive yet (step F17 adds real counted-loop machinery), so there is currently no way to leave a =DO= loop's parameters consistent before an early exit, and the shape is diagnosed unconditionally rather than trying to verify an =UNLOOP= that cannot exist.
+=analyze_colon_effect= is the entry point =elaborate_colon_def= calls, between building a definition's =core_seq= and installing its =colon_word=: it runs the lexical =EXIT=-in-=DO= scan, then the depth-tracking walk, then checks that the whole definition ends return-stack balanced, then — if a =( ... )= comment was written — compares the declared effect against the computed one, verbatim, field for field.
+Reading a declared effect's *text* back out of its captured span is new work this step needed that step F11 did not: =elaborate='s signature grew a =std::string_view source= parameter (the exact program text a =syntax_tree= was parsed from), threaded down to wherever a colon definition's =declared_effect= span needs re-slicing.
+
+#+transclude: [[file:../src/smd/forth/elaborator/stack_effect.hpp::f1a6c3e8-2d9b-4f5a-8c1e-6b3d9a2f7e4c]] :lines 2- :src cpp :end "f1a6c3e8-2d9b-4f5a-8c1e-6b3d9a2f7e4c end"
 
 * Phase 5: Codegen and the Three Backends
 
