@@ -6,7 +6,7 @@ target_sources(
     PUBLIC
         FILE_SET forth_forth_headers
             TYPE HEADERS
-            FILES elaborate.hpp elaborated_core.hpp
+            FILES elaborate.hpp elaborated_core.hpp stack_effect.hpp
 )
 
 if(FORTH_ENABLE_TESTING)
@@ -14,7 +14,10 @@ if(FORTH_ENABLE_TESTING)
 
     target_sources(
         elaborator_test
-        PRIVATE elaborate.test.cpp elaborated_core.test.cpp
+        PRIVATE
+            elaborate.test.cpp
+            elaborated_core.test.cpp
+            stack_effect.test.cpp
     )
 
     target_link_libraries(elaborator_test compile-time-forth.forth)
