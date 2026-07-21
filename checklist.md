@@ -16,7 +16,7 @@
 - [x] Step F11: elaborated core and resolution
 - [x] Step F12: stack-effect analysis
 - [x] Step F13: direct evaluator
-- [ ] Step F14: stack-machine codegen and VM
+- [x] Step F14: stack-machine codegen and VM
 - [ ] Step F15: public one-shot API
 - [ ] Step F16: memory words end-to-end
 - [ ] Step F17: counted loops

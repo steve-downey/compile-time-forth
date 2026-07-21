@@ -162,4 +162,36 @@ A nonterminating program (=BEGIN FALSE UNTIL= never becomes true) would otherwis
 
 This step is also the first to need `.`, `.S`, `EMIT`, and `CR` as real, runnable primitives (D10) — F8 never wired them, and one further word this step's own merge criteria need verbatim, `1-`, was missing from the language entirely (DIV-0007 records both gaps and this step's fix).
 =eval_program= is the pipeline's first true end-to-end milestone: read (F5/F7) into a syntax tree, elaborate (F11/F12) into a =compiled_unit= whose every definition has already passed stack-effect analysis, then evaluate that =compiled_unit= directly, all in one =constexpr= chain a =static_assert= can exercise at compile time.
-This section will transclude the stack machine once step F14 lands, and the sender backend once step F18 lands.
+
+** The classic stack machine (step F14)
+
+Step F14 (this section) is the second of the three backends, and the first to actually do codegen: it flattens the same elaborated core F13 walks directly into a linear array of machine instructions, then executes that array with an explicit instruction-pointer loop, rather than recursing through the core's own tree shape at every step.
+An instruction is one opcode plus a single immediate =cell= operand — about as close to a real machine's own encoding as a =constexpr=-friendly C++ type can get.
+
+#+transclude: [[file:../src/smd/forth/machine/instruction.hpp::5b9e9c1a-6b0e-4b7a-9f3a-7a5b7c9d2e1f]] :lines 2- :src cpp :end "5b9e9c1a-6b0e-4b7a-9f3a-7a5b7c9d2e1f end"
+
+Only eight of the seventeen opcodes have real codegen and VM behavior as of this step: =push=, =push_xt=, =prim=, =call=, =ret=, =branch=, =branch0=, =halt=.
+The remaining nine reserve opcode space for later steps without committing to a guessed-at design before those steps do the real work: =do_setup=, =loop_step=, =plus_loop_step=, =push_index=, =leave=, and =unloop= are all =DO ... LOOP= machinery (step F17's own deliverable), and =execute=, =catch_mark=, and =throw_op= are step F18a's (execution tokens and exceptions).
+=codegen= diagnoses a =core_do_loop= node as "not implemented until F17" rather than emitting any counted-loop opcode, mirroring F13's own identical choice for =eval_direct.hpp=; the VM diagnoses any of the nine reserved opcodes if it is ever asked to execute one, rather than treating an unimplemented opcode as undefined behavior (D7) — unreachable in practice, since this step's own codegen never emits them.
+DIV-0008 records this scope cut, along with a second one: =compiled_program='s own =required_stack_depth=/=required_return_depth= fields exist (the plan calls for "required stack capacities" alongside the word table and data-space size) but default to =-1=, "not computed" — F12's stack-effect analysis computes each definition's net effect and minimum entry depth, not a whole-program running peak, and no other analysis in the pipeline yet computes one either.
+
+#+transclude: [[file:../src/smd/forth/machine/instruction.hpp::c520a0cc-7a47-4db4-a218-617a1cfebe8d]] :lines 2- :src cpp :end "c520a0cc-7a47-4db4-a218-617a1cfebe8d end"
+
+=compiled_program= is the artifact that survives from a =constexpr= codegen call to an ordinary-runtime VM call unchanged: a literal type, trivially copyable, bundling the flat instruction array with a word table (=entry_points=, one instruction index per dictionary entry, =-1= for anything that is not a colon word — primitives, variables, and constants are inlined at each reference site instead of called), the top-level program's own starting instruction index, and the data-space size the source =compiled_unit= had already allotted.
+
+=codegen= walks =unit.dictionary= in index order, emitting each colon word's own body before moving to the next entry, and records that word's entry point *before* emitting its body rather than after.
+This ordering is what lets every =call= instruction's operand resolve to a real instruction index without any back-patching: F11's static-binding discipline guarantees a =core_call='s target is always either an earlier word (already emitted, by construction, since dictionary order is walked forward) or the very word currently being emitted (=RECURSE=, a self-call — already in the word table by the time its own body's self-reference is reached, because the entry was recorded first).
+Back-patching is reserved for what actually needs it: a control structure's own *forward* branch, whose target instruction has not been emitted yet at the point the branch itself is.
+
+#+transclude: [[file:../src/smd/forth/machine/codegen.hpp::926e480d-dcc6-4168-b263-af0c73f1a45f]] :lines 2- :src cpp :end "926e480d-dcc6-4168-b263-af0c73f1a45f end"
+
+#+transclude: [[file:../src/smd/forth/machine/codegen.hpp::ba7eecbe-a745-4d25-bf90-ffa3615efc19]] :lines 2- :src cpp :end "ba7eecbe-a745-4d25-bf90-ffa3615efc19 end"
+
+The VM's own =run= loop is the pay-off of compiling =EXIT= to a literal =ret= instruction rather than threading an =eval_signal= through nested C++ call frames the way F13's evaluator has to: the return stack (=forth_state::returns()=, already shared between calls and, later, loop parameters, per ordinary Forth convention) already holds exactly the call chain a =ret= needs to unwind, so "pop a return address, jump to it" is the whole of =EXIT='s runtime behavior — no propagation logic of its own is needed anywhere else in the loop.
+A plain decrementing =int= "fuel" counter, consumed once per instruction fetched, bounds execution exactly the way F13's own per-core-node fuel bounds a nonterminating =BEGIN ... UNTIL=; budget exhaustion is a diagnosed error at the VM level too, not a hang.
+
+#+transclude: [[file:../src/smd/forth/machine/vm.hpp::3b356d6c-c4c1-4676-b16a-48e975b5d46b]] :lines 2- :src cpp :end "3b356d6c-c4c1-4676-b16a-48e975b5d46b end"
+
+F14's own merge criterion is the "survives-to-runtime proof": every one of F13's own merge-criterion programs (=SQUARED=, =ABS=, =COUNTDOWN=, and =SPIN='s budget exhaustion) is compiled once into a =constexpr compiled_program= declared at namespace scope, then run through the VM twice against that *same* object — once inside a =static_assert= (compile time) and once inside a Catch2 =TEST_CASE= (ordinary runtime) — proving the identical compiled artifact works both ways, not merely that the same source text re-compiles identically twice (=vm.test.cpp=).
+
+This section will transclude the sender backend once step F18 lands.
