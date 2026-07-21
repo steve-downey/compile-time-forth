@@ -1601,3 +1601,173 @@ for each, wired into the existing `machine_test` executable via
   test.cpp` already covers the same source text and the VM/direct-evaluator
   agreement is exactly what `vm.test.cpp`'s shared expected values are
   checked against).
+
+## Step F15 — Public one-shot API
+
+Done in worktree `wt-f15` / branch `step/f15`. Replaces the pre-pipeline
+placeholder `src/smd/forth/forth.hpp`/`forth.cpp`/`forth.test.cpp` (a bare
+`forth::forth()` free function returning `"Steve"`, `namespace forth`, old
+`INCLUDED_FORTH` guard convention) with the project's real public entry
+point, `smd::forth::compiled_forth<Source>`. `forth.cpp` is **deleted
+outright** — the component is header-only now (every capacity is a
+compile-time template parameter, so nothing needs ahead-of-time
+translation).
+
+- **`source_literal<N>`** (`forth.hpp`): an NTTP char-array wrapper,
+  reimplemented (not imported) from `~/src/compile-time-scheme/main`'s
+  `smdscheme.hpp` pattern per `docs/forth-plan.md` section 5's own
+  "reuse as pattern only" table entry. Copies a string literal's characters
+  into a fixed `char[N]` member so the text participates in template
+  argument deduction; `.view()` returns a `std::string_view` excluding the
+  trailing null.
+- **`detail::compile_program<...>(source) -> machine::compiled_program`**
+  (`forth.hpp`): the pipeline helper — `reader::read_program` ->
+  `elaborator::elaborate` -> `machine::codegen`, `.value()` at every stage.
+  This is the exact same three-`.value()` shape `eval_direct.test.cpp`'s
+  and `vm.test.cpp`'s own local `compile()`/`run_program()` helpers already
+  used per test file; F15 makes it the one public, shared implementation.
+- **`compiled_forth_program<MaxCode, MaxWords, StackDepth, RStackDepth,
+  MaxData, MaxOut>`** (`forth.hpp`): the value `compiled_forth<Source>`
+  actually holds — a thin wrapper around `machine::compiled_program`
+  (**not** `compiled_program` itself), because `compiled_program` alone has
+  no `.run()`/`.stack()`/`.output()` of its own (F14 never gave it any —
+  those are F15's own new surface). `.run(fuel = 100000) ->
+  result<forth_state<...>>` constructs a fresh `forth_state` and calls
+  `machine::run` against it. `.stack(fuel = 100000)` and `.output(fuel =
+  100000)` are convenience wrappers around `.run()`: each does its **own
+  independent run from scratch** (a namespace-scope `compiled_forth<Source>`
+  is one immutable `compiled_program` value, not a mutable machine — there
+  is nothing to share state through between calls) and returns an **empty**
+  container if `.run()` itself diagnoses an error (call `.run()` directly to
+  see the error) — this was the "does compiled_forth cache or re-run"
+  open item from handoff-next.md's F15 briefing, resolved in favor of
+  "always re-run, document it," since nothing in the plan's own merge
+  criteria needs caching and F13/F14's own "same compiled object, fresh
+  state each time" pattern (`vm.test.cpp`) already established the
+  precedent. `.stack()` snapshots the data stack bottom to top (the same
+  order `primitive::dot_s` prints in), via `static_vector<cell,
+  StackDepth>`.
+- **`compiled_forth<Source, MaxCode = 4096, MaxNodes = 1024, MaxBody = 64,
+  MaxName = 32, MaxDepth = 32, MaxWords = 256, MaxData = 1024,
+  MaxWarnings = 64, StackDepth = 1024, RStackDepth = 1024, MaxOut =
+  4096>`** (`forth.hpp`): the public variable template. Every capacity is a
+  further template parameter with a default (per D2, "all capacities are
+  template parameters with defaults") — `compiled_forth<"...">` (one
+  argument) still matches the plan's own literal call-site wording exactly,
+  since every parameter after `Source` defaults. The first eight defaults
+  are copied verbatim from `read_program.hpp`/`elaborate.hpp`/`codegen.hpp`'s
+  own existing production defaults (not new numbers); `StackDepth =
+  RStackDepth = 1024`, `MaxOut = 4096` are new choices this step makes (no
+  existing production default to inherit — F13/F14's own tests only ever
+  used small test-scoped values) — see **DIV-0009** for the full reasoning.
+- **Negative-compile-test infrastructure is new this step** — this project
+  had none before (F4's handoff.md section already recorded that
+  `test_neg_parser_concept.cpp` was deliberately not imported, with F21
+  named as where general infrastructure would arrive). F15 needs one real,
+  automatically-checked proof for its own merge criterion ("a
+  negative-compile test proves a syntax error fails compilation"), so this
+  step adds a single `try_compile()` call to `src/smd/forth/CMakeLists.txt`
+  (placed *after* this directory's own `add_subdirectory()` calls, so every
+  header the library owns is already registered on
+  `compile-time-forth.forth`'s `FILE_SET` when the probe compile runs) that
+  compiles `src/smd/forth/neg_compile_syntax_error.cpp` — a file containing
+  `compiled_forth<": SQUARED DUP *">` (missing its closing `;`, diagnosed
+  by `read_program.hpp`'s own `parse_body_until` as "unterminated
+  definition (no ;)") — via `LINK_LIBRARIES compile-time-forth.forth` (so
+  the probe automatically inherits the real target's include directories
+  and required C++ standard) and fails the whole CMake configure step
+  (`message(FATAL_ERROR ...)`) if that probe ever compiles successfully.
+  Verified working on both `gcc-16` and `clang-21`
+  (`FORTH_NEG_COMPILE_SYNTAX_ERROR_SUCCEEDED:INTERNAL=FALSE` in both
+  `CMakeCache.txt`s after a fresh configure). This runs at CMake configure
+  time, which `make compile` re-triggers automatically whenever
+  `CMakeLists.txt` or `neg_compile_syntax_error.cpp` changes (CMake's own
+  generated rerun-cmake build rule) — enforced by the ordinary build, not a
+  separate opt-in step. It does not attempt to match a specific compiler
+  diagnostic substring (both compilers' own constexpr-failure messages for
+  this failure shape are verbose and implementation-specific); see DIV-0009
+  for why. **CMake gotcha hit and fixed**: once `forth.cpp` was deleted,
+  `compile-time-forth.forth` (a `STATIC` library) had zero compiled
+  sources, and CMake could not determine its linker language ("CMake can
+  not determine linker language for target"), breaking the whole configure
+  step — fixed with an explicit
+  `set_target_properties(compile-time-forth.forth PROPERTIES
+  LINKER_LANGUAGE CXX)` in the top-level `CMakeLists.txt`, right after
+  `add_library`. Future header-only-only components in this project will
+  hit the same thing if they are ever the *last* remaining `.cpp` in the
+  library.
+- **`src/examples/hello.cpp`**: rewritten to compile `": SQUARED DUP * ;
+  6 SQUARED . CR"` through `compiled_forth`, run it, and print
+  `state.output()` — replacing the old hardcoded `"Hello, Steve!"`. Output
+  starts with `Hello, compile-time Forth!` (still matching `smoke.sh`'s own
+  `Hello,*` prefix check, unchanged) followed by the program's actual
+  output (`36 \n` for `6 SQUARED . CR`) on the next line.
+- **`src/examples/godbolt_forth.cpp`** (new): a single self-contained
+  translation unit — `": FACTORIAL DUP 1 > IF DUP 1- RECURSE * THEN ;
+  6 FACTORIAL"`, computed entirely at compile time (two `static_assert`s
+  check `.stack()` directly), `main()` only formats the already-computed
+  result for display. Meant to be pasted into Godbolt once the project's
+  own headers are available there, following
+  `~/src/compile-time-scheme/main`'s own `scripts/deploy_godbolt_tree.py`
+  convention (package the example file plus every project header as one
+  Godbolt "tree" session) — that deploy script itself was **not** copied
+  into this project this step (out of scope; the example file is what the
+  plan literally asked for). Wired into `src/examples/CMakeLists.txt`
+  alongside `hello`, same `install(... EXCLUDE_FROM_ALL)` pattern, no
+  `add_test` (this project has no example-level ctest wiring yet, `hello`
+  didn't have one either before this step — smoke.sh's own direct binary
+  run is the existing verification path).
+- **`forth.test.cpp` is the public-API test now** — the placeholder's own
+  `TEST_CASE("forth returns Steve", ...)` is gone. New coverage: the plan's
+  own merge criterion (`SQUARED` stack `[16]`, both `static_assert` and
+  `TEST_CASE`), a `COUNTDOWN` program exercising `.output()`+`.stack()`
+  together, `.run()` returning the full `result<forth_state>` (not just the
+  convenience accessors), a *runtime* error (`1 0 /`, division by zero)
+  proven to be diagnosed through `.run()`'s result rather than a compile
+  error (the deliberate contrast with `neg_compile_syntax_error.cpp`'s
+  *compile*-time failure), and one capacity-override example
+  (`compiled_forth<"1 2 3", 4096, 1024, 64, 32, 32, 256, 1024, 64,
+  /*StackDepth=*/2>` — a 2-cell stack overflowed by three pushes) proving
+  the capacities are real, usable template parameters, not decorative
+  defaults.
+- **`compile-time-forth.org`'s four placeholder anchors were updated to
+  real anchors** (the plan's own "worker's choice" — updating chosen over a
+  deferred TODO, since `forth.cpp`'s deletion broke the old anchors either
+  way and updating was cheap). The former four-anchor "declaration /
+  definition / test / hello" shape collapses to three, since there is no
+  longer a separate `.cpp` "definition" file (header-only component now):
+  `source_literal`'s declaration (`forth.hpp`, anchor `a5ec0c45-...`), the
+  merge-criterion `static_assert` block (`forth.test.cpp`, anchor
+  `19adbd89-...`), and `hello.cpp`'s `main` (anchor `e8803c30-...`). See
+  DIV-0009.
+- **`docs/compiler_architecture.org`** gained a new "The public one-shot
+  API (step F15)" subsection under "Phase 5," after the existing F14
+  subsection (parallel structure — this section is the pipeline's own
+  capstone, so it comes last), with four new UUID transclusions:
+  `source_literal`'s declaration, `compiled_forth_program`'s own class, and
+  `compiled_forth`'s own definition (all three from `forth.hpp`), plus the
+  merge-criterion `static_assert` (`forth.test.cpp`).
+- **DIV-0009 filed**
+  (`docs/divergences/DIV-0009-f15-public-api-defaults-and-neg-compile.md`,
+  status `accepted-permanent`): records the three concrete choices the plan
+  left open — `compiled_forth`'s own default capacities (which are reused
+  production defaults vs. which are genuinely new numbers, and why),
+  the negative-compile-test mechanism's shape (a narrowly scoped
+  `try_compile()`, not a general F21-shaped harness), and the org-anchor
+  handling choice (update now, not defer to F22).
+- Verified on both `gcc-16` and `clang-21` (both available in this
+  worker's sandbox): `make compile`, `make test` (**198/198** passed, up
+  from 194/194 at F14's baseline — 4 net new tests: forth.test.cpp went
+  from 1 placeholder `TEST_CASE` to 5 real ones), `make compile-headers`
+  (interface-header verification, including `forth.hpp` itself as a
+  self-contained public header), `make lint` (one reformat on the first
+  run — clang-format normalized this step's new/changed files — a second,
+  fresh `make lint` afterward left `git status --porcelain` unchanged,
+  confirmed clean per the project's own lint-verification protocol), and
+  `smoke.sh gcc-16`/`smoke.sh clang-21` both `SMOKE OK`. All three merge
+  criteria verified directly: `compiled_forth<": SQUARED DUP * ;
+  4 SQUARED">.stack()` static-asserts to a one-cell `[16]`
+  (`forth.test.cpp`'s own merge-criterion block); `hello` prints
+  `Hello, compile-time Forth!` followed by the program's real output
+  (`36 `); `neg_compile_syntax_error.cpp` is proven, by the new
+  `try_compile()` check, to fail to compile on both compilers.

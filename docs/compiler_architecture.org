@@ -195,3 +195,31 @@ A plain decrementing =int= "fuel" counter, consumed once per instruction fetched
 F14's own merge criterion is the "survives-to-runtime proof": every one of F13's own merge-criterion programs (=SQUARED=, =ABS=, =COUNTDOWN=, and =SPIN='s budget exhaustion) is compiled once into a =constexpr compiled_program= declared at namespace scope, then run through the VM twice against that *same* object — once inside a =static_assert= (compile time) and once inside a Catch2 =TEST_CASE= (ordinary runtime) — proving the identical compiled artifact works both ways, not merely that the same source text re-compiles identically twice (=vm.test.cpp=).
 
 This section will transclude the sender backend once step F18 lands.
+
+** The public one-shot API (step F15)
+
+Every prior step's own pipeline (read, elaborate, codegen) was reachable only by calling F5/F11/F14's own entry points by hand, in order, threading the same capacity template arguments through all three — exactly what every =*.test.cpp='s own local =compile()=/=run_program()= helper (=eval_direct.test.cpp=, =vm.test.cpp=) already did, one bespoke helper per test file.
+Step F15 (this section) is the capstone that turns that repeated test-only pattern into one public, namespace-scope entry point: =smd::forth::compiled_forth<Source>=, a variable template whose single =Source= argument is a Forth program's own source text, spelled directly as a string literal at the call site.
+
+#+transclude: [[file:../src/smd/forth/forth.hpp::a5ec0c45-2cc3-4cbc-9761-05447805199d]] :lines 2- :src cpp :end "a5ec0c45-2cc3-4cbc-9761-05447805199d end"
+
+=source_literal<N>= is what makes a whole program's source text usable as a non-type template parameter (NTTP): it copies the literal's characters into a fixed-size =char= array member, which is what lets the text participate in template argument deduction and become part of a type's own identity, the same pattern this project's own plan names as its reference (=~/src/compile-time-scheme/main='s =source_literal<N>=/=compiled_closure<Source>=, reimplemented rather than imported, since Forth's own pipeline is three composed stages where Scheme's is one).
+
+#+transclude: [[file:../src/smd/forth/forth.hpp::ea5eea2a-1508-4eca-a4eb-9ded5d706801]] :lines 2- :src cpp :end "ea5eea2a-1508-4eca-a4eb-9ded5d706801 end"
+
+Every capacity above defaults to the same production default its own underlying pipeline stage header already uses (=read_program.hpp=, =elaborate.hpp=, =codegen.hpp=); =StackDepth=, =RStackDepth=, and =MaxOut= have no equivalent existing production default to inherit (F13's and F14's own tests only ever chose small test-scoped values) and are sized generously here instead (=docs/divergences/DIV-0009-*.md= records the concrete numbers and the reasoning).
+The initializer's own =.value()= calls (inside =detail::compile_program=, threaded through =read_program → elaborate → codegen=) are what make a failed parse or elaboration a *hard compile error*: =foundation::result<T>::value()= does =std::get<T>= on its backing =std::variant=, which throws when the variant instead holds a =foundation::parse_error=, and a throw during the evaluation of a =constexpr= initializer is not a core constant expression — so the whole translation unit fails to compile, not merely reports an error at runtime.
+This is exactly the same mechanism =eval_direct.test.cpp='s and =vm.test.cpp='s own namespace-scope =constexpr= programs already relied on for *known-good* inputs (a violation there would have been a worker's own bug, caught immediately at compile time rather than silently); F15 exploits the same mechanism's *failure* side on purpose, as its own public negative-compile contract (=src/smd/forth/neg_compile_syntax_error.cpp=, checked automatically at CMake configure time via a =try_compile()= call in =src/smd/forth/CMakeLists.txt= — see DIV-0009 for why this project's first negative-compile-test infrastructure took this narrow, one-file shape rather than a general harness).
+
+=compiled_forth<Source>= itself is not the compiled program directly but a thin wrapper, =compiled_forth_program=, bundling F14's =machine::compiled_program= with the =forth_state= capacities its own =.run()=/=.stack()=/=.output()= construct a fresh machine state with:
+
+#+transclude: [[file:../src/smd/forth/forth.hpp::f4cd7386-6d93-4b6b-8d91-7edf72dfcde7]] :lines 2- :src cpp :end "f4cd7386-6d93-4b6b-8d91-7edf72dfcde7 end"
+
+A namespace-scope =compiled_forth<Source>= is one immutable value (the compiled program codegen produced once), not a mutable machine — so each of =.run()=, =.stack()=, and =.output()= independently constructs a fresh =forth_state= and runs the program from scratch, exactly the "same compiled object, run twice against two different states" pattern F14's own =vm.test.cpp= already exercises (its own compile-time =static_assert= and runtime =TEST_CASE= against the same namespace-scope =constexpr= program).
+=.stack()= and =.output()= are convenience wrappers around =.run()= for the common case of "just show me the result": each returns an empty container if =.run()= itself diagnoses an error, in which case a caller who needs the error itself calls =.run()= directly and inspects its returned =foundation::result=.
+
+Step F15's own merge criterion, verbatim from the plan: =compiled_forth<": SQUARED DUP * ; 4 SQUARED">.stack()= static-asserts to a one-cell stack holding =16=.
+
+#+transclude: [[file:../src/smd/forth/forth.test.cpp::19adbd89-9edc-48c8-9244-66f20044b81c]] :lines 2- :src cpp :end "19adbd89-9edc-48c8-9244-66f20044b81c end"
+
+=src/examples/hello.cpp= runs a small program through =compiled_forth= and prints its actual output (replacing the pre-pipeline placeholder's hardcoded =Hello, Steve!=); =src/examples/godbolt_forth.cpp= is a single self-contained translation unit — a recursive =FACTORIAL= via =RECURSE=, computed entirely at compile time — meant to be pasted into Godbolt once the project's own headers are available there, following =compile-time-scheme='s own =scripts/deploy_godbolt_tree.py= convention for packaging an example alongside every project header as one Godbolt tree session.
