@@ -1423,3 +1423,181 @@ a fact just because a later step changed something adjacent.
 - DIV-0007 filed (see above); DIV-0006 unmodified but its predicted
   divergence is now directly observable at runtime (see above); no other
   divergence from `docs/forth-plan.md` or Forth-2012 semantics.
+
+## Step F14 — Stack-machine codegen and VM
+
+Done in worktree `wt-f14` / branch `step/f14`.
+Three new files under `src/smd/forth/machine/`: `instruction.hpp`
+(`op`/`instr`/`compiled_program`), `codegen.hpp` (`codegen`, flattens an
+`elaborator::compiled_unit` into a `compiled_program`), `vm.hpp` (`run`,
+executes a `compiled_program` against a `forth_state`) — plus a `.test.cpp`
+for each, wired into the existing `machine_test` executable via
+`src/smd/forth/machine/CMakeLists.txt`.
+
+- **`op`/`instr`**: `enum class op : std::uint8_t` with all seventeen
+  enumerators the plan names verbatim (`push, prim, call, ret, branch,
+  branch0, do_setup, loop_step, plus_loop_step, push_index, leave, unloop,
+  push_xt, execute, catch_mark, throw_op, halt`); `struct instr { op code;
+  cell operand; }`, a plain trivially-copyable aggregate. Only eight
+  opcodes have real codegen+VM behavior this step: `push`, `push_xt`,
+  `prim`, `call`, `ret`, `branch`, `branch0`, `halt`. The other nine
+  (six `DO...LOOP`-shaped opcodes reserved for F17; `execute`/
+  `catch_mark`/`throw_op` reserved for F18a) exist in the enum but are
+  never emitted by `codegen` and are diagnosed (a `foundation::parse_error`,
+  never UB per D7) if the VM ever encounters one — **DIV-0008** records this
+  choice (`docs/divergences/DIV-0008-f14-deferred-opcodes-and-capacity-
+  fields.md`, status `accepted-permanent`), picking option (a) from
+  handoff-next.md's F14 briefing (diagnose `core_do_loop` at codegen time,
+  the conservative F13-consistent choice) over option (b) (emit placeholder
+  semantics now). `branch0` pops a flag and branches when it is **zero**
+  (Forth false) — the natural encoding for both `IF`'s "skip THEN's arm
+  when false" and `BEGIN...UNTIL`'s "loop back while still false."
+- **`compiled_program<MaxCode, MaxWords>`**: a literal type, trivially
+  copyable and trivially destructible (checked by `static_assert` against
+  the header's own default instantiation, mirroring `elaborated_core.hpp`'s
+  and `dictionary.hpp`'s identical checks) — "THE artifact that survives to
+  runtime," per the plan's own wording. Fields: `code`
+  (`foundation::static_vector<instr, MaxCode>`, the flat program);
+  `entry_points` (`foundation::static_vector<int, MaxWords>`, one slot per
+  dictionary entry in dictionary-index order — a colon word's slot holds
+  its body's starting instruction index, every other binding kind's slot
+  holds `-1` since primitives/variables/constants are inlined at each
+  reference site rather than called); `program_entry` (instruction index
+  where the top-level program body starts, run after every colon
+  definition's own code); `data_space_size` (real, `unit.data_space.size()`
+  at codegen time — not yet consumed by the VM itself, F16 wires
+  `@`/`!`/`+!`); `required_stack_depth`/`required_return_depth` (both
+  default `-1`, "not computed" — see DIV-0008, F12 computes per-definition
+  net effect and minimum entry depth, not a whole-program peak, so this
+  step does not invent a new analysis to populate these). `MaxWords`
+  deliberately reuses the source `compiled_unit`'s own `MaxWords` template
+  parameter rather than introducing a second capacity — `entry_points`
+  needs exactly one slot per dictionary entry, and the dictionary is
+  already capped at `MaxWords`, so no extra parameter was needed.
+- **`codegen(compiled_unit) -> result<compiled_program>`**: walks
+  `unit.dictionary` in index order (not the arena/tree structure directly),
+  emitting each colon word's own body before moving to the next dictionary
+  entry, then the top-level program body, then a trailing `halt`. Recording
+  `entry_points[i]` **before** emitting word `i`'s own body (not after) is
+  what makes both ordinary calls and `RECURSE` self-calls resolve without
+  any back-patching: F11's static-binding discipline guarantees a
+  `core_call`'s `word_index` is always either an earlier dictionary entry
+  (already emitted, since dictionary order is walked forward) or the
+  current entry itself (`RECURSE` — already in the table by the time its
+  own self-reference is reached). This is a **one-pass** design: unlike
+  `eval_direct.hpp`'s lazy structural recursion (which only ever visits a
+  callee when actually called), codegen unconditionally emits code for
+  every colon word in the dictionary, reachable or not, in one linear walk.
+  Back-patching (the plan's own words: "computed by back-patching inside
+  codegen") is reserved for what genuinely needs it — a control structure's
+  own *forward* branch (`IF`'s `branch0`/skip-`ELSE` `branch`,
+  `BEGIN...WHILE`'s exit `branch0`): emit a placeholder operand of `0`,
+  remember the instruction's own index, then once the real target
+  instruction has actually been emitted, index directly into `out.code` to
+  overwrite the placeholder. Backward branches
+  (`BEGIN...UNTIL`'s/`BEGIN...WHILE`'s own jump back to the loop's start)
+  never need this, since the loop-start instruction was already emitted
+  before the branch that targets it. `core_exit` compiles straight to `ret`
+  — no signal-propagation machinery needed on the codegen side at all,
+  unlike `eval_direct.hpp`'s `eval_signal`. `core_do_loop` is diagnosed
+  ("DO...LOOP codegen is not implemented until F17"), mirroring F13's
+  identical choice for the direct evaluator.
+  `codegen_emit_body`/`codegen_emit_node` are the mutually-recursive walk
+  pair, directly modeled on `eval_direct.hpp`'s `eval_body`/`eval_node` —
+  same closed `core_node` variant, `std::visit`/`if constexpr` dispatch,
+  same defensive `core_seq`-is-unreachable arm — just emitting `instr`s
+  into a flat array instead of executing side effects immediately.
+- **`run(compiled_program const&, forth_state&, fuel) -> status`**: an
+  explicit loop over an instruction pointer (`ip`), starting at
+  `program.program_entry`, using `forth_state::returns()` as the call/return
+  stack exactly as Forth convention calls for (the same register F17 will
+  later reuse for loop parameters). `call` pushes `ip + 1` (the return
+  address) onto the return stack and jumps; `ret` pops a return address and
+  jumps to it — this is the entire runtime shape of `EXIT`, and it needed
+  **no propagation logic of its own anywhere else** in the loop, unlike
+  `eval_direct.hpp`'s `eval_signal` threading through every nested control
+  handler. This is exactly the simplification handoff-next.md's F14
+  briefing predicted ("should end up simpler than F13's eval_signal
+  propagation... not harder, since the call/return stack already does the
+  unwinding for free"). `branch`/`branch0` set `ip` directly (`branch0`
+  first popping a flag, branching only when it is zero). `push`/`push_xt`
+  both push `instr::operand` as a plain `cell` (identical runtime behavior,
+  kept as distinct opcodes per the plan's own enum, for documentation/
+  extensibility — `push_xt` is **not** one of DIV-0008's deferred opcodes;
+  it already has real behavior this step, matching `core_push_xt`'s
+  existing F11/F13 treatment of an execution token as "just a cell," with
+  `EXECUTE` itself, the opcode that actually *acts* on that cell, deferred
+  to F18a). `prim` calls `apply_primitive` exactly as `eval_direct.hpp`'s
+  `core_prim` case does. The nine reserved opcodes each return a diagnosed
+  `foundation::parse_error` if reached (unreachable in practice, since
+  codegen never emits them). **Fuel**: a single decrementing `int`
+  (`consume_vm_fuel`), consumed once per instruction *fetched* — the VM-
+  level analogue of `eval_direct.hpp`'s "once per core node visited"
+  (`instr` carries no `source_pos`, unlike a core node, so the diagnosed
+  exhaustion error carries a default/empty `source_pos` rather than a real
+  one — a real, if minor, diagnostic-quality gap relative to F13's own
+  fuel-exhaustion errors, not filed as a DIV since the plan does not
+  require positional fuel diagnostics and no merge criterion checks the
+  position). `run`'s own `fuel` parameter defaults to `100000`, matching
+  `eval_program`'s own default.
+- **The survives-to-runtime proof** (`vm.test.cpp`): every one of F13's own
+  merge-criterion programs (`SQUARED`, `ABS`, `COUNTDOWN`, `SPIN`'s budget
+  exhaustion) plus two more for parity with `eval_direct.test.cpp`'s wider
+  coverage (`UPTO3`'s `BEGIN...WHILE...REPEAT`, and the `INNER`/`OUTER`
+  EXIT-unwinds-to-its-own-call-boundary pair) is compiled once into a
+  `constexpr compiled_program` **declared at namespace scope**
+  (`squared_program`, `abs_program`, `countdown_program`, `spin_program`,
+  `upto3_program`, `exit_boundary_program`), via a local `compile(source)`
+  helper mirroring `eval_direct.test.cpp`'s `run_program` (parse → elaborate
+  → codegen, `.value()` at every stage — a hard compile error, not a
+  runtime failure, if any stage fails for one of these known-good programs).
+  Each namespace-scope program is then run through `run()` twice against
+  the *same* object: once inside a `static_assert` (an immediately-invoked
+  lambda constructing a fresh `forth_state` and calling `run`) at compile
+  time, and once inside a `TEST_CASE` at ordinary runtime — proving the
+  literal compiled artifact works both ways, not just that the same source
+  text happens to compile identically twice. This is F14's own merge
+  criterion, satisfied verbatim.
+- **`codegen.test.cpp`** additionally checks codegen's own output shape
+  directly (not just end-to-end results through the VM): a colon
+  definition's code ends with `halt` only at the very end of the whole
+  program (colon bodies end with `ret`), a `call` instruction's operand
+  equals the callee's own recorded `entry_points` slot, primitive/
+  variable/constant dictionary entries have `entry_points[i] == -1`, `IF`
+  compiles to a genuinely forward `branch0` (`operand > i`), and
+  `DO...LOOP` is diagnosed at codegen time exactly as `eval_direct.hpp`
+  diagnoses it at evaluation time.
+- **Word-table shape** (an open design call per handoff-next.md's F14
+  briefing): a plain `foundation::static_vector<int, MaxWords>` indexed by
+  dictionary `word_index`, exactly the minimal choice handoff-next.md
+  anticipated, mirroring `machine::dictionary`'s own flat, index-addressed
+  design.
+- **`required_stack_depth`/`required_return_depth` are not computed** (see
+  DIV-0008 above) — a real scope cut relative to the plan's literal "also
+  carries... required stack capacities" wording, recorded rather than
+  silently approximated. Every caller (F15's public API, F16, F17, F18a)
+  must still size its own `forth_state` generously by hand, exactly as
+  F13's own tests already do.
+- Verified on both `gcc-16` and `clang-21` (both available in this worker's
+  sandbox): `make compile`, `make test` (**194/194** passed, up from
+  178/178 at F13's baseline — 16 new tests across the three new test
+  files), `make lint` (clean on the **first** run, no reformatting, tree
+  stayed unmodified — the tooling-version-drift item first resolved at F13
+  stayed resolved), and `smoke.sh gcc-16`/`smoke.sh clang-21` both
+  `SMOKE OK`.
+- Updated `docs/compiler_architecture.org`'s "Phase 5: Codegen and the
+  Three Backends" section (F14 extends the existing section, per
+  handoff-next.md's own guidance — it does not get a new heading) with a
+  new "The classic stack machine (step F14)" subsection and five UUID
+  transclusions: the `op`/`instr` pair and `compiled_program` (both from
+  `instruction.hpp`), `codegen_emit_node` and `codegen` itself (both from
+  `codegen.hpp`), and `run` (from `vm.hpp`).
+- DIV-0008 filed (see above); no other divergence from
+  `docs/forth-plan.md` or Forth-2012 semantics. DIV-0006 and DIV-0007
+  unmodified, both still relevant background (DIV-0006's `EXIT`-inside-`IF`
+  gap is directly observable through the VM too, by construction — the VM
+  runs the same elaborated core's semantics as F13, just flattened first;
+  not re-verified by a dedicated F14 test since F13's own `eval_direct.
+  test.cpp` already covers the same source text and the VM/direct-evaluator
+  agreement is exactly what `vm.test.cpp`'s shared expected values are
+  checked against).

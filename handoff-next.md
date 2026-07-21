@@ -1,229 +1,294 @@
-# Next step: Step F14 — Stack-machine codegen and VM
+# Next step: Step F15 — Public one-shot API
 
-Step F13 (direct evaluator) is done in worktree `wt-f13` / branch
-`step/f13`. This file is a full rewrite for F14 — see `handoff.md`'s "Step
-F13 — Direct evaluator" section (and everything above it) for the complete
-historical record; this file only summarizes what F14 needs to start.
+Step F14 (stack-machine codegen and VM) is done in worktree `wt-f14` /
+branch `step/f14`. This file is a full rewrite for F15 — see `handoff.md`'s
+"Step F14 — Stack-machine codegen and VM" section (and everything above it)
+for the complete historical record; this file only summarizes what F15
+needs to start.
 
-## What F14 is
+## What F15 is
 
-Read `docs/forth-plan.md` section "Step F14 — Stack-machine codegen and VM"
-(around line 627) for the authoritative spec. In short:
-`src/smd/forth/machine/{instruction,codegen,vm}.hpp` (+ a `.test.cpp` each):
-the classic stack machine.
+Read `docs/forth-plan.md` section "Step F15 — Public one-shot API" (around
+line 661) for the authoritative spec. In short: replace the placeholder
+`src/smd/forth/forth.hpp`/`forth.cpp`/`forth.test.cpp` (currently a
+`forth::forth()` free function returning the string `"Steve"` — a bootstrap
+placeholder from before the real pipeline existed, never touched since) with
+the project's real public one-shot entry point:
 
-- **`instruction.hpp`**: `enum class op` (`push, prim, call, ret, branch,
-  branch0, do_setup, loop_step, plus_loop_step, push_index, leave, unloop,
-  push_xt, execute, catch_mark, throw_op, halt`) and `struct instr { op code;
-  cell operand; }` — one instruction, an opcode plus one immediate `cell`
-  operand. `compiled_program` bundles a flat `static_vector<instr, MaxCode>`
-  (the program itself) with the dictionary's word table (an entry-point
-  instruction index per word), the data-space size, and required stack
-  capacities. **`compiled_program` must be a literal type, trivially
-  copyable** — the plan's own words: "it is THE artifact that survives to
-  runtime." All capacities are template parameters, no hardcoded constants
-  (the standing project-wide rule, D2).
-- **`codegen.hpp`**: `codegen(compiled_unit) -> result<compiled_program>`
-  flattens the elaborated core into a flat instruction array: control
-  structures (`core_if`, `core_begin_until`, `core_begin_while`) become
-  `branch`/`branch0` with resolved instruction indices, computed by
-  back-patching inside codegen (emit a placeholder branch operand, remember
-  its instruction index, patch it once the target is known); each colon
-  definition becomes an entry point (an instruction index recorded in the
-  program's word table); `core_exit` becomes `ret`; `core_call` becomes
-  `call` with the callee's entry-point instruction index as its operand
-  (**not** the dictionary `word_index` `core_call` itself carries — codegen
-  has to translate dictionary index → instruction address via the word
-  table it is simultaneously building).
-- **`vm.hpp`**: `run(compiled_program const&, forth_state&, fuel) ->
-  result<void>` — an explicit loop over an instruction pointer (`ip`) with a
-  call/return stack (Forth convention: calls and loop parameters share the
-  return stack — F13's `forth_state::returns()` is exactly this stack
-  already), fully `constexpr`, the same code executing identically at
-  compile time and runtime.
+- A `source_literal<N>` NTTP (non-type template parameter) char-array
+  wrapper — a template parameter that can carry a whole Forth source string
+  as part of a type, so `compiled_forth<"...">` can be a variable template
+  keyed on the literal source text itself.
+- `template <source_literal Source> inline constexpr auto compiled_forth =
+  /* read -> elaborate -> codegen, .value() */;` — one `constexpr` variable
+  template that runs the *entire* pipeline (F5/F7 parse, F11/F12 elaborate,
+  F14 codegen) over `Source`'s text and stores the resulting
+  `machine::compiled_program`. A failed parse/elaboration/codegen is a
+  **hard compile error**: calling `.value()` on a `foundation::result` that
+  holds an error, inside a `constexpr` initializer, is not a core constant
+  expression (`std::get<T>` on the wrong variant alternative throws), so the
+  whole translation unit fails to compile — exactly the discipline
+  `eval_direct.test.cpp`'s and `vm.test.cpp`'s own namespace-scope
+  `constexpr` programs already rely on for their *known-good* inputs; F15's
+  own job is to make that same discipline the **public** contract, not an
+  internal test convenience.
+- `compiled_forth<Source>.run() -> result<forth_state>` — runs the compiled
+  program (at compile time via `static_assert`, or at ordinary runtime) and
+  returns the resulting machine state or the first runtime error (stack
+  underflow, division by zero, budget exhaustion, etc.) — this is `vm::run`
+  under the hood, called against `compiled_forth<Source>`'s own stored
+  `compiled_program`.
+- Convenience accessors `.stack()` and `.output()`: the plan names them but
+  does not specify their exact return shape (a full stack snapshot? just the
+  top cell? see "Known open items" below) — this step's own design call,
+  same as F14 had open design calls for `compiled_program`'s word-table
+  shape and the deferred-opcode question.
 
-Merge criteria (from the plan, verbatim): **the entire F13 test set** passes
-through codegen+VM (a) at compile time via `static_assert`, **and** (b) at
-runtime via a Catch2 `REQUIRE` on **the same program object**, declared
-`constexpr` at namespace scope — "the survives-to-runtime proof." Concretely:
-declare something like `constexpr auto squared_program =
-codegen(elaborate_source(...)).value();` at namespace scope, then both
-`static_assert(run(squared_program, ...) gives stack [16])` **and** a
-`TEST_CASE` that constructs a fresh `forth_state` at ordinary runtime, calls
-`run(squared_program, state, fuel)`, and `REQUIRE`s the identical result —
-proving the *exact same compiled object*, not just the same source text,
-works both ways. Every F13 merge-criterion program (`SQUARED`, `ABS`,
-`COUNTDOWN`, `SPIN`'s budget exhaustion) needs this treatment; `eval_direct.
-test.cpp` is the literal list to work from.
+`src/examples/hello.cpp` (currently `std::println("Hello, {}!",
+forth::forth())`, printing `"Hello, Steve!"`) gets updated to run a small
+program through `compiled_forth` and print its output instead; keep the
+example's own test green (`hello` is built and run by `smoke.sh`, see
+`.claude/skills/run-compile-time-forth/smoke.sh`). Add a Godbolt
+single-file-extraction example under `src/examples/` — check whether an
+existing single-file-extraction convention/script already exists in this
+repo or its sibling `compile-time-scheme` before inventing one from
+scratch.
 
-Deliverable: an architecture-doc section (`docs/compiler_architecture.org`'s
-existing "Phase 5" section already covers F13's reference evaluator — see
-below — F14 extends that same section, it does not get a new one) describing
-the instruction set. `docs/forth-plan.md` frames this as a normal
-incremental step, not a second "first milestone" the way F13 was.
+The old name-returning placeholder API (`forth::forth()`) is **deleted**
+outright, not deprecated alongside the new one; `forth.test.cpp` becomes the
+public-API test (its own bootstrap `TEST_CASE("forth returns Steve", ...)`
+goes away with the rest of the placeholder). `compile-time-forth.org` (the
+top-level literate-programming doc, not `docs/compiler_architecture.org`)
+has four UUID transclusions that currently point at the placeholder's own
+anchors — `44cc988c-7353-43aa-a7d3-8840f92371a6` (`forth.hpp`),
+`a66dec0e-e5cc-44b5-b9f1-bbed787c3d44` (`forth.cpp`),
+`03013d1f-bcc1-4d3e-9701-3ed1a15c6370` (`forth.test.cpp`),
+`710c39c6-c7e1-403f-a9f0-9f8ecf890dc9` (`hello.cpp`) — these all need
+updating to real anchors once the placeholder is replaced (or the org file
+gains an explicit TODO note deferring the update to F22, documentation
+consolidation — the plan explicitly leaves this choice to the worker,
+"record it in handoff" either way).
 
-## The API F14 consumes (Steps F8–F13)
+Merge criteria (from the plan, verbatim): `compiled_forth<": SQUARED DUP *
+;  4 SQUARED">.stack()` static_asserts to `[16]`; the `hello` example
+prints the program's output; a negative-compile test proves a syntax error
+fails compilation (this needs the project's existing negative-compile-test
+mechanism — check how earlier steps, if any, have proven "this does not
+compile" already, e.g. via a separate CMake target that is expected to
+fail, or a documented manual-verification note; F15 is likely the first
+step that actually needs one for real, so this may be new infrastructure).
 
-- **`elaborator::compiled_unit<...>`** (F11/F12) is codegen's own input, same
-  as F13's: `.arena` (the elaborated-core `tree_arena`), `.dictionary`
-  (`machine::dictionary`, every entry already stack-effect-analyzed),
-  `.data_space` (real F10 `allot`/`fetch`/`store`, `.size()` is the data-
-  space footprint a `compiled_program` needs to record), `.program`
-  (`core_body<...>`, the top-level executable body — codegen's own entry
-  point into the whole flattening walk, exactly like `eval_program`'s own
-  `eval_body(unit, unit.program, ...)` call in `eval_direct.hpp`).
-- **The elaborated-core node kinds** (`elaborator/elaborated_core.hpp`,
-  F11): `core_push`, `core_prim`, `core_call`, `core_var`, `core_const`,
-  `core_push_xt`, `core_exit` (leaves); `core_if`, `core_begin_until`,
-  `core_begin_while`, `core_do_loop`, `core_seq` (composites, each holding
-  one or two `core_body<MaxNodes,MaxBody>` child sequences). Codegen has to
-  walk every one of these — the same closed `std::variant` `eval_direct.hpp`
-  already pattern-matches over via `std::visit`/`if constexpr`, just
-  producing `instr`s into a flat array instead of executing side effects
-  immediately. **Read `src/smd/forth/machine/eval_direct.hpp` first** — its
-  `eval_body`/`eval_node` pair is the closest existing analogue to what
-  codegen's own recursive walk needs to do (minus the back-patching, which
-  is new to this step), and its doc comments explain each node kind's
-  runtime meaning in detail.
-- **`machine::dictionary<MaxWords,MaxName>`** (F9, extended F11): `.entry_at
-  (int) const -> dictionary_entry<MaxName> const &`, `.lookup_index(...)`.
-  `core_call`/`core_push_xt` both carry a dictionary `word_index`; codegen
-  needs its own word-index → instruction-address table (built as codegen
-  visits each colon definition and records where its entry point landed),
-  since `compiled_program`'s own `call`/`push_xt`-equivalent instructions
-  need instruction addresses, not dictionary indices, at VM-execution time.
-- **`machine::primitive`** (F8, extended F13: **42 enumerators now**, not
-  37 — F13 added `dot`, `dot_s`, `emit`, `cr`, `one_minus`; see DIV-0007) and
-  **`machine::apply_primitive(primitive, forth_state&) -> status`**: the
-  `op::prim` instruction's operand is a `primitive` enumerator value (cast
-  to/from `cell`); the VM's `op::prim` case should call `apply_primitive`
-  exactly the way `eval_direct.hpp`'s `core_prim` case does — this part is
-  nearly a direct port.
-- **`machine::forth_state<MaxDepth,MaxRDepth,MaxData,MaxOut>`** (F8, extended
-  F13's D10 output words): `.data()`/`.returns()` (the two stacks —
-  `.returns()` is the call/return stack `run`'s own signature already names
-  as shared between calls and loop parameters), `.data_space()`, `.output()`
-  (still just append-only; F16 is what wires `@`/`!`/`+!` through both
-  backends, not F14). The VM threads the *same* `forth_state` type F13
-  already uses — no new state type needed.
-- **`machine::eval_direct::eval_program`/`eval_body`/`eval_node`**
-  (`eval_direct.hpp`, F13) — not a dependency F14's own code calls, but the
-  *oracle* F14's own tests check against: every merge-criterion program's
-  expected stack/output/error, as already worked out and verified in
-  `eval_direct.test.cpp`, is the ground truth `codegen`+`run` must reproduce.
-  Consider literally reusing `eval_direct.test.cpp`'s `run_program`-style
-  helper's *expected values* (not its machinery) as the source of truth for
-  F14's own assertions, so the two backends' test expectations do not
-  quietly drift apart from hand-copying.
-- **`foundation::result<T>`/`foundation::parse_error`/`foundation::
-  source_pos`**: unchanged, same diagnosed-error discipline throughout.
-  `foundation::static_vector<T,MaxN>`/`foundation::tree_arena<T,MaxN>`/
-  `foundation::arena_box<T,MaxN>`: `compiled_program`'s own instruction array
-  is a `static_vector<instr, MaxCode>`, not a `tree_arena` — instructions
-  don't need arena-handle addressing the way tree nodes do, since the
-  program is already flat and instructions reference each other by plain
-  integer instruction index (the `branch`/`branch0`/`call` operand), not by
-  `arena_box`.
+## A close reference implementation already exists
+
+The sibling project `~/src/compile-time-scheme/main` (see `docs/forth-
+plan.md`'s own "Reuse as pattern only (reimplement, don't copy)" table,
+which names exactly this) already has a working `source_literal<N>` +
+one-shot variable-template pattern at
+`~/src/compile-time-scheme/main/src/smd/smdscheme/smdscheme.hpp`:
+
+```cpp
+template <std::size_t N>
+struct source_literal {
+    char text[N]{};
+    constexpr source_literal(char const (&input)[N]) {
+        std::copy_n(input, N, text);
+    }
+    [[nodiscard]] constexpr auto view() const -> std::string_view {
+        return {text, N - 1};
+    }
+};
+
+template <source_literal Source>
+inline constexpr auto compiled_closure =
+    closure::compile_to_closure(Source.view()).value();
+```
+
+This is explicitly a **pattern to reimplement, not copy** (`docs/forth-
+plan.md`'s own distinction between "adapt by copy" (F3/F4's parser
+foundation) and "reuse as pattern only" (this)) — F15's own `source_literal`
+should live under `smd::forth` (not import the Scheme one), follow this
+project's own file-prolog/guard/namespace conventions, and `compiled_forth`
+should compose `read_program` -> `elaborate` -> `codegen` (three stages, not
+Scheme's single `compile_to_closure`) rather than copy Scheme's own
+single-function pipeline shape. Note the Scheme version returns a reference
+into a `constinit` storage location, not a `constexpr` value directly
+(`inline constexpr auto compiled_closure = ...` — actually it *is*
+`constexpr`, matching what F15's own plan text asks for); read this file in
+full before starting, it answers most of the NTTP-mechanics questions before
+they come up (deduction guide needs, `char const (&)[N]` constructor,
+`.view()`'s `N - 1` to drop the null terminator).
+
+## The API F15 consumes (Steps F5–F14)
+
+- **`reader::read_program<MaxNodes, MaxBody, MaxName, MaxDepth>(source) ->
+  result<syntax_tree<...>>`** (F7, `src/smd/forth/reader/read_program.hpp`)
+  — stage one of the pipeline `compiled_forth` composes.
+- **`elaborator::elaborate<MaxNodes, MaxBody, MaxName, MaxWords, MaxData,
+  MaxWarnings>(tree, source) -> result<compiled_unit<...>>`** (F11/F12,
+  `src/smd/forth/elaborator/elaborate.hpp`) — stage two; note it takes
+  `source` a second time (to re-slice declared stack-effect comments, see
+  F12's own handoff section), so `compiled_forth`'s own pipeline helper
+  needs `Source.view()` twice, once for `read_program`, once for
+  `elaborate`.
+- **`machine::codegen<MaxCode, MaxNodes, MaxBody, MaxName, MaxWords,
+  MaxData, MaxWarnings>(unit) -> result<compiled_program<MaxCode,
+  MaxWords>>`** (F14, `src/smd/forth/machine/codegen.hpp`) — stage three,
+  the new stage this step's own predecessor added. Every template parameter
+  above is a capacity with a project-standard default (1024/64/32/256/1024/
+  64/4096) — `compiled_forth<Source>` will need to decide whether to expose
+  these as its own template parameters (letting a caller override
+  capacities per-program) or hardcode the defaults for the one-shot API's
+  first cut; either is defensible, but whichever is chosen should be
+  recorded in `handoff.md`, and per the project's standing rule (D2, "all
+  capacities are template parameters with defaults") the former is more in
+  keeping with everything upstream of it.
+- **`machine::run<MaxCode, MaxWords, StackDepth, RStackDepth, MaxData,
+  MaxOut>(compiled_program const&, forth_state&, fuel = 100000) -> status`**
+  (F14, `src/smd/forth/machine/vm.hpp`) — `compiled_forth<Source>.run()`'s
+  own implementation constructs a fresh `forth_state`, calls this, and
+  either returns it wrapped in a `result` or returns the propagated error;
+  `.stack()`/`.output()` most likely call `.run()` internally (or share a
+  memoized/recomputed state — see "Known open items" below on whether
+  `compiled_forth<Source>` itself is stateless, since a namespace-scope
+  `inline constexpr auto compiled_forth<Source>` is a *value* — the
+  `compiled_program`, not a `forth_state` — so `.stack()`/`.output()` must
+  each do their own fresh `run()` unless a different design is chosen).
+- **`machine::compiled_program<MaxCode, MaxWords>`** (F14,
+  `src/smd/forth/machine/instruction.hpp`) — what `compiled_forth<Source>`
+  itself stores; trivially copyable and a literal type by construction (F14's
+  own `static_assert`s already prove this), so storing one as a `constexpr`
+  variable-template value is exactly the shape F14 built it for.
+- **`machine::forth_state<StackDepth, RStackDepth, MaxData, MaxOut>`** (F8,
+  extended F13's D10 output words) — `.data()` (the data stack — note **not**
+  named `.stack()`; F15's own `.stack()` accessor is new naming at the
+  `compiled_forth` level, not a rename of `forth_state`'s own `.data()`),
+  `.returns()`, `.data_space()`, `.output()`. `.data()` returns a
+  `data_stack<MaxDepth>` (a `cell_stack` alias) with `.depth()`/`.peek(int)`
+  — there is no "give me the whole stack as a container" accessor on
+  `cell_stack` itself yet (`stacks.hpp`), so `compiled_forth<Source>.stack()`
+  returning something like `[16]` (the plan's own merge-criterion wording)
+  likely needs either a small conversion into a `static_vector<cell, N>`
+  built by looping `peek(i)` from `depth()-1` down to `0` (bottom to top,
+  matching `apply_primitive`'s own `dot_s` convention in
+  `machine/forth_state.hpp`), or a new `cell_stack` accessor — this step's
+  own call.
+- **`foundation::result<T>`/`foundation::parse_error`**: unchanged, same
+  discipline. `.value()` on an error result inside a `constexpr` initializer
+  is what makes a bad `compiled_forth<Source>` a **hard** compile error —
+  this is not new machinery, it is the same "throws in constexpr, which
+  means it isn't a constant expression, which means the initializer fails"
+  mechanism `eval_direct.test.cpp`'s and `vm.test.cpp`'s own namespace-scope
+  `constexpr` programs already exploit for known-good inputs; F15 exploits
+  the *failure* side of the same mechanism on purpose, for its own negative-
+  compile-test merge criterion.
 
 ## Standing constraints (unchanged)
 
 - The Makefile is the single build interface (`TOOLCHAIN`/`CONFIG` only).
-- Baseline is `gnu++26` on `gcc-16` primary / `clang-21` secondary — **both**
-  were available and both verified green in this worker's sandbox for F13
-  (`make compile`, `make test` at 178/178, `make lint`, and `smoke.sh` on
-  both toolchains); worth re-confirming both are still present for whoever
-  runs F14, but don't block on it if only one is.
+- Baseline is `gnu++26` on `gcc-16` primary / `clang-21` secondary — both
+  were available and both verified green in this worker's sandbox for F14
+  (`make compile`, `make test` at 194/194, `make lint` clean on the first
+  run with no reformatting, and `smoke.sh` on both toolchains ending
+  `SMOKE OK`); worth re-confirming both are still present for whoever runs
+  F15, but don't block on it if only one is.
 - Tests use Catch2; every public constexpr API needs a `static_assert`
-  (immediately-invoked-lambda pattern); add matching `TEST_CASE`s for Catch2
-  visibility. F14's own merge criterion is explicit about needing *both* a
-  compile-time `static_assert` **and** a runtime Catch2 `REQUIRE` on the
-  *same* `constexpr`-at-namespace-scope program object — this is stricter
-  than the usual "mirror every static_assert as a TEST_CASE" pattern, so
-  read the merge-criteria paragraph above carefully before structuring
-  `codegen.test.cpp`/`vm.test.cpp`.
+  (immediately-invoked-lambda pattern); add matching `TEST_CASE`s for
+  Catch2 visibility. F15's own merge criterion is explicit about a
+  **negative**-compile test this time (a syntax error must fail
+  compilation) — check whether this repository already has a documented
+  mechanism for "this file must fail to compile" as part of the normal test
+  suite (a separate CMake target expected to fail, guarded so it does not
+  break the main build) before inventing one; if none exists, this is new
+  infrastructure this step adds, worth calling out explicitly in
+  `handoff.md`.
 - Every tree is a flat `tree_arena` of trivially destructible nodes behind
-  `arena_box` handles (D3) — the elaborated core (codegen's input) still
-  follows this; the *compiled instruction program* (codegen's output) does
-  not need to, since it is already flat by construction (a `static_vector`
-  of `instr`, not a tree).
+  `arena_box` handles (D3); `compiled_program` (F14) is flat by
+  construction instead (a `static_vector<instr, MaxCode>`, not a tree) —
+  unchanged by F15, which only consumes `compiled_program`, never builds a
+  new tree type of its own.
 - All capacities are template parameters with defaults; no hardcoded
-  capacity constants — applies to `MaxCode` (`compiled_program`'s
-  instruction-array capacity) exactly as it does to every other capacity in
-  the project.
+  capacity constants — applies to whatever capacities `compiled_forth<
+  Source>` itself exposes (see "The API F15 consumes" above on whether to
+  parameterize or hardcode the pipeline's own capacities).
 - All nonlocal control (`EXIT`, `LEAVE`, `CATCH`/`THROW`) is one-shot and
-  dynamic-extent (`handoff.md`'s architectural invariants). F13 already
-  worked out `EXIT`'s runtime shape as a tagged result channel value
-  (`eval_signal`) threaded through a tree-walk; F14's VM instead gets `ret`
-  as a literal instruction — much closer to how a real machine would do it
-  (pop a return address off the call/return stack, jump to it) — which
-  should end up *simpler* than F13's `eval_signal` propagation-through-
-  nested-calls logic, not harder, since the call/return stack already does
-  the unwinding for free once `ret` is just "pop and jump."
+  dynamic-extent (`handoff.md`'s architectural invariants) — unchanged,
+  F15 does not add new control-flow machinery, only a public entry point
+  onto the existing pipeline.
 - Before handoff: `make compile`, `make test`, `make lint` green on
   `gcc-16` (and `clang-21` if available); both `smoke.sh` runs end
   `SMOKE OK`; `checklist.md` ticked; `handoff.md` appended (not rewritten);
-  `handoff-next.md` rewritten for whatever comes next (F15, public one-shot
-  API, per the plan's ordering, unless F14's own work reveals a reason to
-  reorder — record that reasoning if so); divergence docs filed for anything
-  done differently than `docs/forth-plan.md` or Forth-2012 semantics (next
-  free number: check `docs/divergences/` — **DIV-0007 is the latest**,
-  `accepted-permanent`, filed this step for two words — `.`/`.S`/`EMIT`/`CR`
-  output primitives and `1-` — the plan's own F13 merge-criterion text needed
-  but the runtime/word-table never had; DIV-0006, open, is about F12's
-  stack-effect checker not being flow-sensitive across `EXIT` — still open,
-  not F14's concern to resolve, but relevant background if F14's codegen
-  needs to reason about `EXIT` at all when emitting `ret`).
+  `handoff-next.md` rewritten for whatever comes next (F16, memory words
+  end-to-end, per the plan's own ordering — F16 and F15 are marked as
+  parallelizable with each other in the plan's "Parallelism summary," both
+  depending only on F14, so if F15 and F16 are being worked by different
+  agents concurrently, say so explicitly in whichever `handoff-next.md` is
+  written second); divergence docs filed for anything done differently than
+  `docs/forth-plan.md` or Forth-2012 semantics (next free number: check
+  `docs/divergences/` — **DIV-0008 is the latest**, `accepted-permanent`,
+  filed this step (F14) for two related scope cuts: the nine F17/F18a-
+  shaped opcodes reserved in `op` but never given real behavior, and
+  `compiled_program`'s `required_stack_depth`/`required_return_depth`
+  fields defaulting to `-1`, "not computed," rather than a real whole-
+  program peak-depth bound).
 
-## Known open items going into F14
+## Known open items going into F15
 
-- **The instruction set's F17/F18a-shaped opcodes have no real semantics
-  yet**: `do_setup`, `loop_step`, `plus_loop_step`, `push_index` (`I`/`J`),
-  `leave`, `unloop` are all `DO...LOOP`-related (F17's own deliverable —
-  F13's `core_do_loop` evaluation is itself just a diagnosed
-  "not implemented until F17" error, see `eval_direct.hpp`); `execute`
-  (`EXECUTE`), `catch_mark`, `throw_op` are all F18a's. **The plan's own
-  `op` enum names all of them now, at F14**, which reads as "reserve the
-  opcode space now, wire the behavior later" rather than "implement all of
-  this at F14." This worker needs to decide (and document the decision,
-  either inline or as a DIV if it's a real divergence from a literal plan
-  instruction) what `codegen` does when it encounters a `core_do_loop` node
-  — the two live options are (a) mirror F13's own choice and diagnose a
-  "not implemented" `foundation::parse_error` at codegen time, keeping
-  `codegen` from ever emitting `do_setup`/`loop_step`/etc. at all until F17
-  gives them real meaning, or (b) emit the opcodes now with *some*
-  placeholder semantics in the VM that F17 later replaces. Option (a) is
-  the more conservative, F13-consistent choice and is this worker's
-  suggested default, but it is genuinely this step's own call to make, not
-  a foregone conclusion — F13's own merge criteria never exercise
-  `DO...LOOP` either way, so nothing forces the answer.
-- **`compiled_program`'s word table shape is unspecified by the plan beyond
-  "entry point per word"** — this worker needs to pick a concrete
-  representation (a plain `static_vector<int, MaxWords>` indexed by
-  dictionary `word_index`, mapping to instruction address, is the obvious
-  minimal choice, mirroring how `machine::dictionary` itself is a flat,
-  index-addressed structure) and document it, since F15's `compiled_forth`
-  public API and F16's memory-word wiring will both need to know this shape.
-- **Fuel/budget at the VM level**: the plan's own `run` signature already
-  names a `fuel` parameter (`run(compiled_program const&, forth_state&,
-  fuel) -> result<void>`), so this is not an open design question the way it
-  was for F13 (there, "fuel design is entirely F13's own to invent" — see
-  `handoff.md`'s F13 section) — but the *type* of `fuel` and its exact
-  accounting (once per instruction executed? once per branch taken?) is
-  still this worker's call. F13's own `consume_fuel(int &fuel,
-  foundation::source_pos pos)` (a plain decrementing `int`, once per core
-  node visited) is a reasonable model to port directly: once per instruction
-  executed is the natural VM-level analogue of "once per core node visited."
+- **`.stack()`/`.output()`'s exact return shape is unspecified by the
+  plan** beyond the merge criterion's own worked example
+  (`compiled_forth<"...">.stack()` static-asserts to something that reads
+  as `[16]` — almost certainly a small fixed-capacity container of `cell`s,
+  not a single scalar, since a general Forth program's data stack can hold
+  more than one cell at the end of a run). This worker needs to pick a
+  concrete representation (most likely a `foundation::static_vector<cell,
+  N>` snapshot, built by draining `forth_state::data()` via repeated
+  `.peek(i)` calls bottom-to-top or top-to-bottom — pick one and document
+  it, since it is directly observable in `[16]`-style test assertions) and
+  document it here or in `docs/compiler_architecture.org`'s eventual F15
+  section.
+- **Whether `compiled_forth<Source>` re-runs the whole program on every
+  `.stack()`/`.output()` call, or runs once and caches**: since
+  `compiled_forth<Source>` itself is a `constexpr`-initialized *value* (the
+  `compiled_program`, produced once by codegen), but `.run()` needs a fresh
+  mutable `forth_state` each time it is invoked (running the same
+  `compiled_program` object twice against two different `forth_state`s is
+  exactly F14's own "survives-to-runtime proof" pattern), the natural
+  reading is that `.run()`, `.stack()`, and `.output()` are each
+  independent calls that construct a fresh `forth_state` and run the
+  program from scratch — meaning `.stack()` followed by `.output()` runs
+  the whole program *twice*. This is almost certainly fine for the plan's
+  own merge criteria (small test programs, no side effects observable
+  across runs since each run gets a fresh `forth_state`), but is worth a
+  deliberate choice and a doc comment either way, not an accidental
+  quadratic surprise for a future large program.
+- **Whether the negative-compile-test merge criterion needs new CMake/test
+  infrastructure**: see "Standing constraints" above — check first whether
+  this repository or `compile-time-scheme` already has a "must fail to
+  compile" test pattern (a `try_compile`-based CMake test, a separate
+  target excluded from `all` but built by a dedicated CI/test step, etc.)
+  before inventing one. `~/src/compile-time-scheme/main` is the same
+  sibling project the `source_literal`/`compiled_closure` pattern came
+  from, so check there first.
+- **Capacity parameterization of `compiled_forth<Source>`**: see "The API
+  F15 consumes" above — expose the pipeline's own capacities as further
+  template parameters (in keeping with D2's "all capacities are template
+  parameters, no hardcoded constants" project-wide rule) or default them
+  for a first cut and revisit later. If defaulted without a way to
+  override, that is arguably a real, if minor, divergence from D2 worth a
+  DIV entry; if parameterized, no divergence, just more verbose call
+  sites (`compiled_forth<"...">` vs. `compiled_forth<"...", 2048>`, etc.,
+  depending on parameter order/defaults chosen).
+- **The Godbolt single-file-extraction example**: the plan asks for one
+  under `src/examples/` but does not specify its shape (a script that
+  concatenates headers? a genuinely single-translation-unit example that
+  happens to need no other files because it only includes already-
+  self-contained project headers?). Check whether `compile-time-scheme`
+  already has one to use as a pattern reference, the same way
+  `smdscheme.hpp` served as the pattern reference for `source_literal`
+  above.
 - **DIV-0006's gap (F12's stack-effect checker is not flow-sensitive across
-  `EXIT`) is still open** and still not F14's responsibility to fix — flagged
-  again here only because F14's codegen is the second consumer (after F13)
-  of a `compiled_unit` that might contain a definition like `: F DUP 0< IF
-  EXIT THEN DROP ;`, and should not be surprised if such a definition's
-  `ret`-based codegen produces a VM program whose actual runtime behavior
-  (checked against F13's already-correct `eval_direct` output) differs by
-  path exactly as DIV-0006 and F13's own `EvalDirectTest -
-  ExitUnwindsOnlyToItsOwnCallBoundary`-adjacent tests already demonstrate —
-  that is expected, not a codegen bug, if the VM's numbers agree with F13's.
-- **The recurring `make lint` `clang-format`/`gersemi` tooling-version-drift
-  item, flagged at every step since F6, reported clean for the first time
-  at F13** (see `handoff.md`'s F13 section) — worth re-checking whether that
-  holds at F14 too rather than assuming it stays resolved.
+  `EXIT`) and DIV-0008's deferred-opcode/uncomputed-capacity gaps are both
+  still open** and still not F15's responsibility to fix — flagged again
+  here only because F15's `compiled_forth<Source>` is a third consumer
+  (after F13's tests and F14's tests) of the same elaborate/codegen
+  pipeline, and any F15-authored example program that happens to hit either
+  gap should not be mistaken for a new F15 bug.

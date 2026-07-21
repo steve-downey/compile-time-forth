@@ -8,11 +8,14 @@ target_sources(
             TYPE HEADERS
             FILES
                 cell.hpp
+                codegen.hpp
                 data_space.hpp
                 dictionary.hpp
                 eval_direct.hpp
                 forth_state.hpp
+                instruction.hpp
                 stacks.hpp
+                vm.hpp
 )
 
 if(FORTH_ENABLE_TESTING)
@@ -22,11 +25,14 @@ if(FORTH_ENABLE_TESTING)
         machine_test
         PRIVATE
             cell.test.cpp
+            codegen.test.cpp
             data_space.test.cpp
             dictionary.test.cpp
             eval_direct.test.cpp
             forth_state.test.cpp
+            instruction.test.cpp
             stacks.test.cpp
+            vm.test.cpp
     )
 
     target_link_libraries(machine_test compile-time-forth.forth)
