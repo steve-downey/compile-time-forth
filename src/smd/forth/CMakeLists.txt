@@ -3,7 +3,6 @@ include(GNUInstallDirs)
 target_sources(
     compile-time-forth.forth
     PUBLIC FILE_SET forth_forth_headers TYPE HEADERS FILES forth.hpp
-    PRIVATE forth.cpp
 )
 
 ## Tests
@@ -40,3 +39,35 @@ add_subdirectory(machine)
 add_subdirectory(parser)
 add_subdirectory(reader)
 add_subdirectory(sender)
+
+## Negative-compile test (Step F15, docs/forth-plan.md): a Forth program
+## with a genuine syntax error must be a hard compile error through
+## compiled_forth (see neg_compile_syntax_error.cpp), not merely a runtime
+## failure. This project has no prior negative-compile-test harness (F21 is
+## where a general one is planned); this is a narrowly scoped configure-time
+## check for this one contract, using try_compile()'s own LINK_LIBRARIES
+## target support so the probe compile picks up compile-time-forth.forth's
+## own include directories and required C++ standard automatically. Runs
+## every time CMake reconfigures (i.e. whenever this file or
+## neg_compile_syntax_error.cpp changes), which `make compile` triggers
+## through the generated build system's own rerun-cmake rule.
+if(FORTH_ENABLE_TESTING)
+    try_compile(
+        FORTH_NEG_COMPILE_SYNTAX_ERROR_SUCCEEDED
+        SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/neg_compile_syntax_error.cpp
+        LINK_LIBRARIES compile-time-forth.forth
+        CXX_STANDARD 26
+        CXX_STANDARD_REQUIRED ON
+        OUTPUT_VARIABLE FORTH_NEG_COMPILE_SYNTAX_ERROR_OUTPUT
+    )
+    if(FORTH_NEG_COMPILE_SYNTAX_ERROR_SUCCEEDED)
+        message(
+            FATAL_ERROR
+            "Step F15 negative-compile test (neg_compile_syntax_error.cpp) "
+            "was expected to FAIL to compile -- a Forth syntax error must "
+            "be a hard compile error through compiled_forth -- but it "
+            "compiled successfully. Compiler output:\n"
+            "${FORTH_NEG_COMPILE_SYNTAX_ERROR_OUTPUT}"
+        )
+    endif()
+endif()

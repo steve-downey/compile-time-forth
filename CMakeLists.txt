@@ -37,6 +37,15 @@ add_subdirectory(vendor/execution)
 # Create the library target and named header set for beman.optional
 add_library(compile-time-forth.forth STATIC "")
 
+# Step F15 (docs/forth-plan.md): the last compiled .cpp in this library
+# (src/smd/forth/forth.cpp) was deleted -- the whole component tree is
+# header-only templates now (every capacity is a compile-time template
+# parameter, so there is nothing left to translate ahead of time). A STATIC
+# library with no compiled sources can't have its linker language inferred
+# from its own sources, so it is set explicitly here rather than adding a
+# placeholder .cpp back just to satisfy CMake.
+set_target_properties(compile-time-forth.forth PROPERTIES LINKER_LANGUAGE CXX)
+
 target_sources(
     compile-time-forth.forth
     PUBLIC FILE_SET forth_forth_headers TYPE HEADERS BASE_DIRS src
