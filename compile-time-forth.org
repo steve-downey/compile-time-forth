@@ -35,23 +35,40 @@
 #+STARTUP: showall
 
 * Examples of Transclusion
-** Declaration of the ~name~ function
-#+transclude: [[file:./src/smd/forth/forth.hpp::44cc988c-7353-43aa-a7d3-8840f92371a6]]  :lines 2- :src cpp :end "44cc988c-7353-43aa-a7d3-8840f92371a6 end"
 
-** Definition of the ~name~ function
-#+transclude: [[file:src/smd/forth/forth.cpp::a66dec0e-e5cc-44b5-b9f1-bbed787c3d44]]  :lines 2- :src cpp :end "a66dec0e-e5cc-44b5-b9f1-bbed787c3d44 end"
+This file predates the real =smd::forth= compiler (docs/forth-plan.md) and
+originally transcluded a bootstrap placeholder API removed outright in
+Step F15 (see =handoff.md='s "Step F15" section): a =forth::forth()=
+free function returning the literal string "Steve", declared in
+=forth.hpp=, defined in =forth.cpp=, tested in =forth.test.cpp=, and
+printed by the =hello= example.
 
-** Testing the ~name~ function
-#+transclude: [[file:src/smd/forth/forth.test.cpp::03013d1f-bcc1-4d3e-9701-3ed1a15c6370]]  :lines 2- :src cpp :end "03013d1f-bcc1-4d3e-9701-3ed1a15c6370 end"
+Step F15 replaced that placeholder with the real public one-shot API
+(=smd::forth::compiled_forth<Source>=, =smd::forth::source_literal=,
+=smd::forth::forth_program=), which is header-only -- there is no longer a
+separate =forth.cpp= "definition" file for a second anchor to point at.
+The four anchors this section previously transcluded
+(=44cc988c-7353-43aa-a7d3-8840f92371a6=,
+=a66dec0e-e5cc-44b5-b9f1-bbed787c3d44=,
+=03013d1f-bcc1-4d3e-9701-3ed1a15c6370=,
+=710c39c6-c7e1-403f-a9f0-9f8ecf890dc9=) no longer exist in the source
+tree. Per docs/forth-plan.md Step F15's own instructions ("the org file
+gains a TODO note for F22 -- worker's choice, recorded in handoff"), this
+section is left as an explicit TODO rather than forcing the old four-anchor
+declaration/definition/test/example shape onto a design that no longer has
+a separate implementation file to transclude a "definition" from.
 
-** Saying hello with the ~name~ function
-#+transclude: [[file:src/examples/hello.cpp::710c39c6-c7e1-403f-a9f0-9f8ecf890dc9]]
-:lines 2- :src cpp :end "710c39c6-c7e1-403f-a9f0-9f8ecf890dc9 end"
+TODO(F22, documentation consolidation): rewrite this whole presentation to
+transclude the real compiler, per docs/forth-plan.md Step F22's own
+deliverable ("=compile-time-forth.org= (presentation) rewritten to
+transclude the real compiler via UUID anchors").
 
-** The Transclusion for the example above
-#+begin_src org
-#+transclude: [[file:src/examples/hello.cpp::710c39c6-c7e1-403f-a9f0-9f8ecf890dc9]] :lines 2- :src cpp :end "710c39c6-c7e1-403f-a9f0-9f8ecf890dc9 end"
-#+end_src
+One representative transclusion is kept live below, rather than described
+only in prose, so this file is not left with zero working examples until
+F22 lands.
+
+** The ~source_literal~ NTTP (step F15)
+#+transclude: [[file:./src/smd/forth/forth.hpp::18245977-b4d2-4011-bac7-a36f7680aeb4]]  :lines 2- :src cpp :end "18245977-b4d2-4011-bac7-a36f7680aeb4 end"
 
 
 # Local Variables:

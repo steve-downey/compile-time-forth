@@ -195,3 +195,28 @@ A plain decrementing =int= "fuel" counter, consumed once per instruction fetched
 F14's own merge criterion is the "survives-to-runtime proof": every one of F13's own merge-criterion programs (=SQUARED=, =ABS=, =COUNTDOWN=, and =SPIN='s budget exhaustion) is compiled once into a =constexpr compiled_program= declared at namespace scope, then run through the VM twice against that *same* object — once inside a =static_assert= (compile time) and once inside a Catch2 =TEST_CASE= (ordinary runtime) — proving the identical compiled artifact works both ways, not merely that the same source text re-compiles identically twice (=vm.test.cpp=).
 
 This section will transclude the sender backend once step F18 lands.
+
+* Phase 6: The Public One-Shot API (step F15)
+
+Every phase above this one is reachable only by naming =reader::read_program=, =elaborator::elaborate=, and =machine::codegen=/=machine::run= individually, in order, by hand — exactly the small local =compile()= helper every one of F13's and F14's own test files already builds for itself.
+Step F15 (this section) promotes that same four-call sequence to the one thing an external caller is meant to use: =compiled_forth<Source>=, a namespace-scope =constexpr= value keyed on the Forth source text itself, plus a small =forth_program= convenience surface to run it and inspect the result.
+
+=source_literal<N>= is what makes a whole Forth program's text usable as a template argument: a null-terminated =char= array copy of the literal, deduced via CTAD from a =char const (&)[N]= constructor argument, with a =.view()= accessor that drops the trailing null.
+The pattern is reused, not copied, from =~/src/compile-time-scheme/main='s own =source_literal<N>=/=compiled_closure<Source>= (docs/forth-plan.md section 5) — reimplemented here under =smd::forth= with this project's own conventions, composing three pipeline stages rather than Scheme's single =compile_to_closure= call.
+
+#+transclude: [[file:../src/smd/forth/forth.hpp::18245977-b4d2-4011-bac7-a36f7680aeb4]] :lines 2- :src cpp :end "18245977-b4d2-4011-bac7-a36f7680aeb4 end"
+
+=forth_program= bundles an already-compiled =machine::compiled_program= with the runtime capacities (=StackDepth=, =RStackDepth=, =MaxData=, =MaxOut=) a fresh =machine::forth_state= needs, and adds the three accessors the plan names: =run= returns the full =result<forth_state>= (success or the first diagnosed runtime error, e.g. budget exhaustion); =stack= and =output= are best-effort convenience snapshots — a =foundation::static_vector= built from a fresh run's own resulting state regardless of whether that run completed successfully, since =machine::run= mutates its =forth_state= argument in place even on an early error return.
+=stack='s cell order is bottom-to-top, matching =machine::primitive::dot_s='s own printed order.
+Because a namespace-scope =constexpr= value cannot carry mutable state of its own, each of =run=/=stack=/=output= reconstructs a fresh =forth_state= and re-executes the whole program from scratch — correct and cheap for programs this size, but something a caller running a large program in a hot loop should not do by accident.
+
+#+transclude: [[file:../src/smd/forth/forth.hpp::bb43d007-745e-4e1b-8057-b97766788d6b]] :lines 2- :src cpp :end "bb43d007-745e-4e1b-8057-b97766788d6b end"
+
+=compiled_forth<Source, ...>= is the public entry point itself: it runs the whole read → elaborate → codegen pipeline exactly once, at namespace-scope =constexpr= initialization, and stores the result as a ready-to-run =forth_program=.
+Every pipeline-stage capacity is its own template parameter with the same default its owning stage already uses (D2 — no divergence, since parameterizing rather than hardcoding is the D2-compliant choice); =StackDepth=/=RStackDepth=/=MaxOut= are new capacities this step introduces for the runtime state, chosen generously for a one-shot caller.
+A =Source= that fails to parse, fails elaboration, or overflows any capacity is a hard compile error: =.value()= on a failed =foundation::result= inside a =constexpr= initializer is not a core constant expression, so the whole translation unit fails to compile — the same discipline F13's and F14's own namespace-scope =constexpr= test programs already relied on for known-good inputs, now the *public* contract (=src/smd/forth/test_neg_syntax_error.cpp= exercises the failure side deliberately, as a dedicated CTest negative-compile test — new infrastructure this step introduces, ahead of its originally-planned home at step F21).
+
+#+transclude: [[file:../src/smd/forth/forth.hpp::61611656-475a-405f-a35b-179c4d88f71e]] :lines 2- :src cpp :end "61611656-475a-405f-a35b-179c4d88f71e end"
+
+F15's own merge criterion, verbatim: =compiled_forth<": SQUARED DUP * ;  4 SQUARED">.stack()= static-asserts to =[16]= — a one-element stack snapshot whose only cell is =16= (=forth.test.cpp='s =SquaredMergeCriterion=).
+The =hello= example (=src/examples/hello.cpp=) runs a small program through =compiled_forth= and prints its =.output()=; =src/examples/godbolt_forth.cpp= is the Godbolt single-file extraction example the plan asks for, modeled on =~/src/compile-time-scheme/main/src/examples/godbolt_arithmetic.cpp='s own shape — "single-file extraction" is literal here, since =forth.hpp= is header-only as of this step.
