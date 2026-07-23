@@ -128,6 +128,16 @@ sub-agents.
   - Spot-check the architecture facts in section 11 still hold (trivially
     destructible tree nodes, no heap types in the compiled program, capacities
     parameterized).
+  - Confirm `docs/compiler_architecture.org` transclusions still resolve: every
+    `#+transclude:` target file exists and its UUID `start` and `<uuid> end` anchors
+    are present. A file rename/move silently orphans a transclude, turning the living
+    doc into dead narrative. Quick check:
+
+    ```sh
+    grep -oE 'file:[^:]+::[0-9a-f-]{36}' docs/compiler_architecture.org
+    # for each: the file (relative to docs/) must exist and contain the uuid twice
+    # (the anchor and its "<uuid> end" marker).
+    ```
 - Merge to main with `--no-ff` only when all checks pass.
 - If a worker is blocked, capture the blocker in `step-brief.md` and either
   re-scope the step or file a divergence doc and move on.
