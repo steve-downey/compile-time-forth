@@ -61,23 +61,25 @@ of the analysis weight than they did for Scheme's s-expressions.
 
 # 1. Rule and style precedence
 
-Agents must read these files first, in order:
+> **This is an orchestrator/design document. Step worker agents do NOT read it.**
+> It carries the dependency DAG and per-step specifications the orchestrator draws
+> from when dispatching a worker; the worker's own runtime reading contract lives in
+> `AGENTS.md`. See `docs/history/handoff-archive.md` for the retired pre-2026-07
+> cumulative handoff log (archival, not on any read path).
+
+A worker agent reads a bounded, three-tier set — nothing that grows per step:
 
 ```txt
-docs/codestyle.org
-AGENTS.md
-docs/CODING_RULES.md
-CLAUDE.md
-docs/forth-plan.md   (this file)
-handoff.md
-handoff-next.md
-checklist.md
+Tier 1 — always (rules pack): docs/codestyle.org, AGENTS.md, docs/CODING_RULES.md
+Tier 2 — this step only:      step-brief.md, checklist.md
+Tier 3 — on demand, by anchor/section only, never wholesale:
+         docs/compiler_architecture.org, this plan (orchestrator DAG), git log
 ```
 
 Rule precedence:
 
 ```txt
-docs/codestyle.org > AGENTS.md > docs/CODING_RULES.md > CLAUDE.md > handoff/checklist files
+docs/codestyle.org > AGENTS.md > docs/CODING_RULES.md > CLAUDE.md > step-brief/checklist files
 ```
 
 Step F0 installs the governance files; until it completes, this plan plus the
@@ -118,15 +120,16 @@ sub-agents.
     (or `.claude/skills/run-compile-time-forth/smoke.sh`).
   - Review the diff; changes must be confined to the files the step declares
     plus its tests and CMake.
-  - Confirm `checklist.md` was ticked, `handoff.md` updated with durable facts
-    only, `handoff-next.md` rewritten for the next worker.
+  - Confirm `checklist.md` was ticked and `step-brief.md` rewritten for the next
+    worker per the brief contract (forward-only, bounded, no history/log). Durable
+    cross-step facts belong in `docs/compiler_architecture.org`, not a growing file.
   - Confirm any deviation from this plan or from Forth-2012 semantics has a
     divergence doc (section 3).
   - Spot-check the architecture facts in section 11 still hold (trivially
     destructible tree nodes, no heap types in the compiled program, capacities
     parameterized).
 - Merge to main with `--no-ff` only when all checks pass.
-- If a worker is blocked, capture the blocker in `handoff-next.md` and either
+- If a worker is blocked, capture the blocker in `step-brief.md` and either
   re-scope the step or file a divergence doc and move on.
 - Periodically (at least at F7, F14, F18) run the full toolchain matrix:
   `smoke.sh gcc-16` and `smoke.sh clang-21`, plus `CONFIG=RelWithDebInfo` on
@@ -138,7 +141,9 @@ sub-agents.
 - Keep the step small and mergeable; do not continue into later steps.
 - Do not leave vague TODOs.
 - Run `make compile`, `make test`, `make lint` before declaring completion.
-- Update `checklist.md`, `handoff.md`, `handoff-next.md`.
+- Update `checklist.md`; record durable cross-step facts in
+  `docs/compiler_architecture.org` (in place, by anchor); rewrite `step-brief.md`
+  for the next step per the step-brief contract in `AGENTS.md`.
 - File divergence docs for anything done differently than this plan specifies,
   and for any knowing deviation from Forth-2012 semantics beyond those already
   recorded.
@@ -399,9 +404,10 @@ Copy and adapt from `~/src/compile-time-scheme/main`: `docs/codestyle.org`,
 Scheme-specific architecture facts; namespace examples become `smd::forth`;
 required commands are this repo's `make compile/test/lint` and the smoke
 driver). Create repo `CLAUDE.md` pointing at `AGENTS.md`. Create
-`checklist.md` with the section from section 10 of this plan, `handoff.md`
-seeded from section 11, `handoff-next.md` for F1,
-`docs/divergences/TEMPLATE.md`, and `DIV-0001-structural-parse.md` recording
+`checklist.md` with the section from section 10 of this plan; place the durable
+invariants from section 11 into the stable read tier (`AGENTS.md` /
+`docs/compiler_architecture.org` once it exists), not a growing log; `step-brief.md`
+for F1; `docs/divergences/TEMPLATE.md`, and `DIV-0001-structural-parse.md` recording
 D5 as accepted-permanent.
 Merge criteria: verify passes (governance files are lint-clean; markdownlint
 and codespell run on them).
@@ -427,7 +433,7 @@ passing 42 proves the toolchain digests the vendored tree under gnu++26.
 Update `.update-submodules` flow (the Makefile already runs
 `git submodule update --init --recursive`).
 Merge criteria: verify passes on gcc-16 and clang-21; submodule documented in
-`handoff.md`.
+`docs/compiler_architecture.org`.
 Dependencies: F1.
 
 ## Step F3 — Import foundation
@@ -759,7 +765,7 @@ divergence docs):
   If expressing the trampoline over raw senders fights the type system,
   vendor Beman Task (`vendor/task`, per D4) and write the driver as a
   coroutine `task<result<forth_state>>` — that choice is pre-authorized,
-  record it in `handoff.md`, no divergence doc needed.
+  record it in `docs/compiler_architecture.org`, no divergence doc needed.
 - Channel mapping per D11: `THROW` completes the block's sender on the error
   channel with `(n, state-at-throw)`; `CATCH` runs the protected region under
   an adapter that converts an error completion back to a value completion
@@ -839,7 +845,7 @@ Dependencies: F15; best scheduled after F18a so the error space is complete.
 `compile-time-forth.org` (presentation) rewritten to transclude the real
 compiler via UUID anchors; README.md rewritten from scaffold-description to
 project-description (keep the build-workflow section, it is accurate);
-final `handoff.md` rewrite describing the finished state.
+final `docs/compiler_architecture.org` pass describing the finished state.
 Merge criteria: verify passes; every divergence doc is referenced from the
 limitations doc; `make presentation` renders if emacs is available (orchestrator
 runs it; workers must not require emacs).
@@ -893,9 +899,11 @@ Dependencies: everything else.
 
 ---
 
-# 11. `handoff.md` seed (F0 installs)
+# 11. Durable invariants (stable tier — never a growing log)
 
-Durable facts to record:
+These are project invariants, not step history. They belong in the stable read
+tier (`AGENTS.md` / `docs/compiler_architecture.org`) and are referenced by anchor,
+never re-narrated per step and never appended to a cumulative handoff:
 
 ```txt
 This is smd/forth, a compile-time and runtime Forth compiler in C++26 on GCC16; plan in docs/forth-plan.md.
@@ -916,7 +924,13 @@ Beman Execution is vendored as a git submodule at vendor/execution, integrated b
 # 12. Canonical clean-agent instruction
 
 ```txt
-Please read AGENTS.md, docs/codestyle.org, docs/CODING_RULES.md, CLAUDE.md, handoff.md, handoff-next.md, and checklist.md, then the step section of docs/forth-plan.md given below.
+Read only your bounded reading set — nothing that grows per step:
+  Tier 1 (rules pack): docs/codestyle.org, AGENTS.md, docs/CODING_RULES.md, CLAUDE.md
+  Tier 2 (this step):  step-brief.md, checklist.md
+Then read the step section pasted below (the orchestrator pastes it; do not open the full plan).
+Do NOT read docs/history/handoff-archive.md or the full plan front to back. Consult
+docs/compiler_architecture.org only by the anchor your step-brief names. If you need a
+fact you do not have, that is a defect in step-brief.md — report it; do not go spelunking.
 
 Work only the step named below, using its plan section as the specification, in the git worktree you were given.
 
@@ -932,8 +946,8 @@ make lint
 
 (.claude/skills/run-compile-time-forth/smoke.sh runs build+test+example in one command.)
 
-When everything is green, update checklist.md, update handoff.md with durable facts only, rewrite handoff-next.md for the next agent, and file docs/divergences/DIV-NNNN docs for anything done differently than the plan or Forth-2012 specifies.
+When everything is green: update checklist.md; record any durable cross-step fact in docs/compiler_architecture.org (in place, by anchor), not in a log; rewrite step-brief.md for the next agent per the brief contract in AGENTS.md (forward-only, bounded, no history); and file docs/divergences/DIV-NNNN docs for anything done differently than the plan or Forth-2012 specifies.
 
 Report: what you built, every deviation (with DIV numbers), and what the next step needs to know.
-Do not continue into the following step; if blocked, document the blocker in handoff-next.md and report it.
+Do not continue into the following step; if blocked, document the blocker in step-brief.md and report it.
 ```

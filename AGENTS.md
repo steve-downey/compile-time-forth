@@ -2,33 +2,50 @@
 
 Rules for automated coding agents working in this repository.
 
-Read these files first, in order:
+## Reading contract (three tiers — nothing an agent reads grows per step)
 
-1. `docs/codestyle.org`
-2. `AGENTS.md`
-3. `docs/CODING_RULES.md`
-4. `CLAUDE.md`
-5. `docs/forth-plan.md`
-6. `handoff.md`
-7. `handoff-next.md`
-8. `checklist.md`
+A cleared worker agent reads a bounded set. **Never read a file that accumulates
+across steps.** The failure mode this exists to prevent is a cumulative handoff or a
+full plan re-read on every turn.
+
+1. **Tier 1 — always (rules pack, stable, cached):**
+   `docs/codestyle.org`, `AGENTS.md`, `docs/CODING_RULES.md`, `CLAUDE.md`.
+2. **Tier 2 — this step only:** `step-brief.md`, `checklist.md`.
+3. **Tier 3 — on demand, by anchor/named section only, never wholesale:**
+   `docs/compiler_architecture.org` (durable cross-step facts, by UUID anchor);
+   `docs/forth-plan.md` (orchestrator dependency DAG — the orchestrator pastes the
+   one step section a worker needs; workers do not open the full plan);
+   `git log` / `docs/history/handoff-archive.md` (retired cumulative log — archival,
+   not a read path).
 
 `docs/codestyle.org` is authoritative.
 If any rule conflicts with `docs/codestyle.org`, follow `docs/codestyle.org`.
 
+## The step-brief contract
+
+`step-brief.md` is the single per-step handoff. It is **forward-only, rewritten fresh
+each step (never appended), consumed once, and bounded (≤ ~150 lines).** It contains
+only: the next step's goal and merge criterion; the exact files that step will touch;
+dependencies already satisfied, **referenced by anchor** into
+`docs/compiler_architecture.org` (not re-narrated); and what this step discovered that
+the next one needs and could not get from its own brief (a deviation, surprise, or
+gotcha). It is **not** a summary of work done (that's the commit message + checklist),
+**not** architecture (that's `compiler_architecture.org`, updated in place), and
+**not** history (that's `git log`). If it reads like a log, it has the wrong contents.
+
 ## Current task protocol
 
 - Work only the next unchecked step in `checklist.md`.
-- Read `handoff.md` before editing.
-- Read `handoff-next.md` before editing.
+- Read `step-brief.md` before editing (your Tier-2 handoff for this step).
 - Keep the step small and mergeable.
 - Do not continue into later steps unless explicitly instructed.
 - Do not leave vague TODOs.
-- Document blockers in `handoff-next.md`.
+- Document blockers in `step-brief.md`.
 - Update `checklist.md` when the step is complete.
-- Update `handoff.md` with durable facts.
-- Keep `docs/compiler_architecture.org` and its transcluded UUID code annotations up to date once it exists (from step F6 onward).
-- Rewrite `handoff-next.md` for the next clean agent.
+- Record durable cross-step facts in `docs/compiler_architecture.org` in place (by
+  UUID anchor), keeping its transcluded code annotations current — not in any growing
+  handoff or log.
+- Rewrite `step-brief.md` for the next clean agent, per the step-brief contract above.
 - File a divergence doc (`docs/divergences/DIV-NNNN-*.md`) for anything done differently than `docs/forth-plan.md` specifies, or for any knowing deviation from Forth-2012 semantics beyond the scope cuts already recorded.
 
 ## Required commands
@@ -296,8 +313,8 @@ make compile passed
 make test passed
 make lint passed
 checklist.md updated
-handoff.md updated
-handoff-next.md rewritten
+durable cross-step facts recorded in docs/compiler_architecture.org (in place, by anchor)
+step-brief.md rewritten per the step-brief contract
 no unrelated files changed
 no unexplained generated files changed
 divergence docs filed for any deviation from docs/forth-plan.md or Forth-2012
