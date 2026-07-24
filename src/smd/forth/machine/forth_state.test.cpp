@@ -10,6 +10,7 @@
 #include <limits>
 #include <string_view>
 
+using smd::forth::machine::addr;
 using smd::forth::machine::apply_primitive;
 using smd::forth::machine::cell;
 using smd::forth::machine::flag_false;
@@ -225,6 +226,10 @@ static_assert(!succeeds(primitive::plus, {}));    // underflow: empty stack
 static_assert(!succeeds(primitive::plus, {1}));   // underflow: only one operand
 static_assert(!succeeds(primitive::dup, {}));     // underflow
 static_assert(!succeeds(primitive::rot, {1, 2})); // underflow: needs three
+static_assert(!succeeds(primitive::fetch, {}));   // underflow
+static_assert(!succeeds(primitive::store, {1}));  // underflow: needs two
+static_assert(!succeeds(primitive::plus_store, {1})); // underflow: needs two
+static_assert(!succeeds(primitive::allot, {}));       // underflow
 
 static_assert([] {
     // Overflow: DUP on an already-full data stack.
@@ -320,6 +325,75 @@ static_assert([] {
     // `.` on an empty stack is a diagnosed underflow, not UB.
     small_state state;
     return !apply_primitive(primitive::dot, state).has_value();
+}());
+
+// -- Memory (D10, wired this step F16) ---------------------------------------
+
+static_assert([] {
+    // `ALLOT` reserves cells past HERE and leaves nothing on the data stack.
+    small_state state;
+    (void)state.data().push(3);
+    (void)apply_primitive(primitive::allot, state);
+    return state.data().depth() == 0 && state.data_space().size() == 3;
+}());
+
+static_assert([] {
+    // `!` then `@` round-trips a value through a freshly allotted cell.
+    small_state state;
+    auto a = state.data_space().allot(1);
+    if (!a.has_value()) {
+        return false;
+    }
+    cell const address = static_cast<cell>(a.value());
+    (void)state.data().push(99);      // value
+    (void)state.data().push(address); // a-addr
+    (void)apply_primitive(primitive::store, state);
+    (void)state.data().push(address);
+    (void)apply_primitive(primitive::fetch, state);
+    return state.data().depth() == 1 && state.data().pop().value() == 99;
+}());
+
+static_assert([] {
+    // `+!` adds to the cell in place, leaving nothing behind on the stack.
+    small_state state;
+    auto a = state.data_space().allot(1);
+    if (!a.has_value()) {
+        return false;
+    }
+    cell const address = static_cast<cell>(a.value());
+    (void)state.data().push(5);
+    (void)state.data().push(address);
+    (void)apply_primitive(primitive::store, state);
+    (void)state.data().push(3);       // delta
+    (void)state.data().push(address); // a-addr
+    (void)apply_primitive(primitive::plus_store, state);
+    (void)state.data().push(address);
+    (void)apply_primitive(primitive::fetch, state);
+    return state.data().depth() == 1 && state.data().pop().value() == 8;
+}());
+
+static_assert([] {
+    // Fetching/storing through an address ALLOT has not reserved yet is a
+    // diagnosed error, not UB (D7) -- mirrors data_space.hpp's own OOB
+    // diagnosis, exercised here through apply_primitive.
+    small_state state;
+    (void)state.data().push(0); // nothing allotted yet
+    return !apply_primitive(primitive::fetch, state).has_value();
+}());
+
+static_assert([] {
+    small_state state;
+    (void)state.data().push(1);
+    (void)state.data().push(0); // nothing allotted yet
+    return !apply_primitive(primitive::store, state).has_value();
+}());
+
+static_assert([] {
+    // ALLOT past the arena's own capacity is diagnosed, not silently
+    // truncated (small_state's MaxData is 8).
+    small_state state;
+    (void)state.data().push(100);
+    return !apply_primitive(primitive::allot, state).has_value();
 }());
 
 TEST_CASE("ForthStateTest - HeaderIsIdempotent") { REQUIRE(true); }

@@ -229,10 +229,23 @@ enum class primitive {
     dot_s, ///< `.S`  ( -- )    Prints the data stack, bottom to top,
            ///< nondestructively, one cell per @ref forth_state::emit_cell.
     emit,  ///< `EMIT` ( c -- ) Prints the character whose code is @c c.
-    cr     ///< `CR`  ( -- )    Prints a newline.
+    cr,    ///< `CR`  ( -- )    Prints a newline.
+
+    // Memory (D10): operate on @p state's own @ref data_space; step F16 is
+    // what first wires these (no runtime behavior existed for them before).
+    // `VARIABLE`/`CONSTANT`/`CREATE` addresses are cells on the data stack
+    // (D10), so @ref fetch/@ref store/@ref plus_store convert them back to
+    // @ref addr at the boundary rather than accepting an @ref addr directly.
+    fetch,      ///< `@`  ( a-addr -- x )   Reads the cell at @c a-addr.
+    store,      ///< `!`  ( x a-addr -- )   Writes @c x to the cell at
+                ///< @c a-addr.
+    plus_store, ///< `+!` ( n a-addr -- )  Adds @c n to the cell at
+                ///< @c a-addr.
+    allot       ///< `ALLOT` ( n -- ) Reserves @c n more cells past @ref
+                ///< data_space::here.
 };
 
-/// Applies a pure-stack or output @ref primitive to @p state.
+/// Applies a pure-stack, output, or memory @ref primitive to @p state.
 ///
 /// Every stack-underflow, stack-overflow, and division-by-zero condition is
 /// diagnosed through the returned @ref status rather than triggering
@@ -242,7 +255,11 @@ enum class primitive {
 /// (`.`, `.S`, `EMIT`, `CR`) append to @p state's own output buffer (D10)
 /// via @ref forth_state::emit_char / @ref forth_state::emit_cell rather than
 /// performing any direct I/O -- an output-buffer overflow is diagnosed the
-/// same way a stack overflow is.
+/// same way a stack overflow is. The four memory opcodes (`@`, `!`, `+!`,
+/// `ALLOT`, step F16) operate on @p state's own @ref data_space, converting
+/// each address cell to @ref addr at the boundary; an out-of-bounds fetch or
+/// store, or a full arena, is diagnosed through @ref status exactly like
+/// every other opcode here, never UB (D7).
 template <int MaxDepth, int MaxRDepth, int MaxData, int MaxOut>
 constexpr auto
 apply_primitive(primitive op,
@@ -518,6 +535,48 @@ apply_primitive(primitive op,
     }
     case primitive::cr:
         return state.emit_char('\n');
+    case primitive::fetch: {
+        auto a = pop_one();
+        if (!a.has_value()) {
+            return a.error();
+        }
+        auto v = state.data_space().fetch(addr{a.value()});
+        if (!v.has_value()) {
+            return v.error();
+        }
+        return push_cell(v.value());
+    }
+    case primitive::store: {
+        auto operands = pop_two();
+        if (!operands.has_value()) {
+            return operands.error();
+        }
+        auto [value, address] = operands.value();
+        return state.data_space().store(addr{address}, value);
+    }
+    case primitive::plus_store: {
+        auto operands = pop_two();
+        if (!operands.has_value()) {
+            return operands.error();
+        }
+        auto [delta, address] = operands.value();
+        auto current = state.data_space().fetch(addr{address});
+        if (!current.has_value()) {
+            return current.error();
+        }
+        return state.data_space().store(addr{address}, current.value() + delta);
+    }
+    case primitive::allot: {
+        auto count = pop_one();
+        if (!count.has_value()) {
+            return count.error();
+        }
+        auto r = state.data_space().allot(static_cast<int>(count.value()));
+        if (!r.has_value()) {
+            return r.error();
+        }
+        return std::monostate{};
+    }
     }
     return foundation::parse_error{foundation::source_pos{},
                                    "unknown primitive opcode"};

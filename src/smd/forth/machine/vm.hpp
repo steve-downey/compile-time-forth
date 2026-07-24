@@ -60,6 +60,13 @@ constexpr auto consume_vm_fuel(int &fuel) -> status {
 /// invoking undefined behavior (D7) -- unreachable in practice, since this
 /// step's own @ref codegen never emits any of them.
 ///
+/// Before the fetch-execute loop starts, @p state's own data space is seeded
+/// from @p program.data_space_size (F16, D10) -- see this function's own
+/// leading comment -- so `@`/`!`/`+!` against a `VARIABLE`/`CREATE` address
+/// codegen already inlined as a push literal, and any address a later
+/// runtime `ALLOT` extends past it, are both valid from the first
+/// instruction onward.
+///
 /// @tparam MaxCode      @p program's instruction-array capacity.
 /// @tparam MaxWords     @p program's word-table capacity.
 /// @tparam StackDepth   @p state's data stack capacity.
@@ -80,6 +87,19 @@ template <int MaxCode, int MaxWords, int StackDepth, int RStackDepth,
 constexpr auto run(compiled_program<MaxCode, MaxWords> const &program,
                    forth_state<StackDepth, RStackDepth, MaxData, MaxOut> &state,
                    int fuel = 100000) -> status {
+    // F16: seed state's own data space with program.data_space_size -- the
+    // high-water mark the source compiled_unit's data space reached during
+    // elaboration (every VARIABLE/CREATE allotment) -- so the addresses
+    // codegen already inlined as push literals are valid for @/!/+! from the
+    // first instruction onward. Reuses allot itself (discarding the
+    // returned address) rather than adding a second way to advance the
+    // high-water mark, exactly like eval_direct.hpp's eval_program does for
+    // the direct evaluator.
+    auto data_init = state.data_space().allot(program.data_space_size);
+    if (!data_init.has_value()) {
+        return data_init.error();
+    }
+
     int ip = program.program_entry;
 
     for (;;) {

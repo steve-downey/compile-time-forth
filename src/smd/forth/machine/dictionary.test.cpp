@@ -57,7 +57,7 @@ static_assert([] {
 
 TEST_CASE("DictionaryTest - DefaultDictionaryInstallsAllPrimitives") {
     auto dict = default_dictionary<>();
-    CHECK(dict.size() == 42);
+    CHECK(dict.size() == 46);
     auto const *entry = dict.lookup("SWAP");
     REQUIRE(entry != nullptr);
     REQUIRE(std::holds_alternative<primitive>(entry->binding));
@@ -76,6 +76,30 @@ TEST_CASE("DictionaryTest - F13OutputAndOneMinusPrimitivesInstalled") {
     REQUIRE(std::holds_alternative<primitive>(one_minus_entry->binding));
     CHECK(std::get<primitive>(one_minus_entry->binding) ==
           primitive::one_minus);
+}
+
+TEST_CASE("DictionaryTest - F16MemoryPrimitivesInstalled") {
+    auto dict = default_dictionary<>();
+    auto const *fetch_entry = dict.lookup("@");
+    REQUIRE(fetch_entry != nullptr);
+    REQUIRE(std::holds_alternative<primitive>(fetch_entry->binding));
+    CHECK(std::get<primitive>(fetch_entry->binding) == primitive::fetch);
+
+    auto const *store_entry = dict.lookup("!");
+    REQUIRE(store_entry != nullptr);
+    REQUIRE(std::holds_alternative<primitive>(store_entry->binding));
+    CHECK(std::get<primitive>(store_entry->binding) == primitive::store);
+
+    auto const *plus_store_entry = dict.lookup("+!");
+    REQUIRE(plus_store_entry != nullptr);
+    REQUIRE(std::holds_alternative<primitive>(plus_store_entry->binding));
+    CHECK(std::get<primitive>(plus_store_entry->binding) ==
+          primitive::plus_store);
+
+    auto const *allot_entry = dict.lookup("ALLOT");
+    REQUIRE(allot_entry != nullptr);
+    REQUIRE(std::holds_alternative<primitive>(allot_entry->binding));
+    CHECK(std::get<primitive>(allot_entry->binding) == primitive::allot);
 }
 
 TEST_CASE("DictionaryTest - CaseFoldedLookup") {

@@ -134,9 +134,9 @@ struct compiled_program {
     int program_entry = 0;
 
     /// Cells the source `compiled_unit`'s data space had actually allotted
-    /// (`VARIABLE`/`CREATE`) by the time codegen ran; not yet consumed by
-    /// this step's own VM (F16 wires `@`/`!`/`+!`), but recorded now since
-    /// it is already known and the plan calls for it.
+    /// (`VARIABLE`/`CREATE`) by the time codegen ran. F16's own @ref run
+    /// consumes this at the start of every run to seed a fresh
+    /// @ref forth_state's own data space before executing any instruction.
     int data_space_size = 0;
 
     /// See the class doc comment: not computed by this step.

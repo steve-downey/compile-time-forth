@@ -299,13 +299,16 @@ eval_body(elaborator::compiled_unit<MaxNodes, MaxBody, MaxName, MaxWords,
 
 // 4caeb07c-70eb-4256-9a53-f48d9fd89fe1
 /// Evaluates @p unit's whole top-level program body (F13's entry point):
-/// builds a fresh @ref forth_state, runs every top-level item through @ref
-/// eval_body under @p fuel, and returns the resulting state (its data stack,
-/// return stack, and output buffer all reflect the program's full run) or
-/// the first diagnosed error -- a stack/return-stack misuse, a division by
-/// zero, an output-buffer overflow, or budget exhaustion (@ref
-/// consume_fuel), any of which halts evaluation immediately rather than
-/// continuing in an inconsistent state.
+/// builds a fresh @ref forth_state, seeds its data space from @p unit's own
+/// (F16, D10 -- every `VARIABLE`/`CREATE` address elaboration already baked
+/// into `unit.program` is valid from the first instruction onward), runs
+/// every top-level item through @ref eval_body under @p fuel, and returns
+/// the resulting state (its data stack, return stack, data space, and output
+/// buffer all reflect the program's full run) or the first diagnosed error
+/// -- a stack/return-stack misuse, an out-of-bounds/exhausted data-space
+/// access, a division by zero, an output-buffer overflow, or budget
+/// exhaustion (@ref consume_fuel), any of which halts evaluation immediately
+/// rather than continuing in an inconsistent state.
 ///
 /// A bare top-level `EXIT` cannot actually reach here: elaboration itself
 /// already diagnoses `"EXIT outside a definition"` (F11's
@@ -338,6 +341,18 @@ eval_program(elaborator::compiled_unit<MaxNodes, MaxBody, MaxName, MaxWords,
     -> foundation::result<
         forth_state<StackDepth, RStackDepth, MaxData, MaxOut>> {
     forth_state<StackDepth, RStackDepth, MaxData, MaxOut> state{};
+    // F16: seed state's own data space with the same high-water mark
+    // unit.data_space reached during elaboration (every VARIABLE/CREATE
+    // allotment), so core_var addresses already baked into unit.program are
+    // valid for @/!/+! from the first instruction onward; a fresh state's
+    // data_space always starts at high-water mark 0 (data_space.hpp), and
+    // this reuses allot itself rather than adding a second way to advance
+    // it, so it can never disagree with an ordinary runtime ALLOT's own
+    // bookkeeping.
+    auto data_init = state.data_space().allot(unit.data_space.size());
+    if (!data_init.has_value()) {
+        return data_init.error();
+    }
     auto outcome = eval_body(unit, unit.program, state, fuel);
     if (!outcome.has_value()) {
         return outcome.error();

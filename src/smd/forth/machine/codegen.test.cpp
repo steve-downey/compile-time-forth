@@ -70,9 +70,9 @@ static_assert([] {
         return false;
     }
     auto const &program = result.value();
-    // SQUARED is the first colon word defined after the 42 built-in
-    // primitives, so its dictionary index is 42.
-    int const squared_index = 42;
+    // SQUARED is the first colon word defined after the 46 built-in
+    // primitives, so its dictionary index is 46.
+    int const squared_index = 46;
     int const entry = program.entry_points[squared_index];
     if (entry < 0 || entry >= program.program_entry) {
         return false;
@@ -119,7 +119,7 @@ TEST_CASE("CodegenTest - ColonWordGetsAnEntryPointCalledFromTopLevel") {
     auto result = compile(": SQUARED DUP * ;  4 SQUARED");
     REQUIRE(result.has_value());
     auto const &program = result.value();
-    int const squared_index = 42;
+    int const squared_index = 46;
     int const entry = program.entry_points[squared_index];
     REQUIRE(entry >= 0);
     REQUIRE(entry < program.program_entry);
