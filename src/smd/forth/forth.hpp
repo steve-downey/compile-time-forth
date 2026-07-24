@@ -51,6 +51,7 @@ namespace smd::forth {
 ///
 /// @tparam N The literal's length including its trailing null terminator
 ///           (deduced from the array-reference constructor argument).
+// 0f3a01ca-389f-4ca6-b09c-6b6423482246
 template <std::size_t N>
 struct source_literal {
     char text[N]{}; ///< Null-terminated copy of the source text.
@@ -67,6 +68,7 @@ struct source_literal {
         return {text, N - 1};
     }
 };
+// 0f3a01ca-389f-4ca6-b09c-6b6423482246 end
 // 18245977-b4d2-4011-bac7-a36f7680aeb4 end
 
 namespace detail {
@@ -260,6 +262,7 @@ constexpr auto forth_program<MaxCode, MaxWords, StackDepth, RStackDepth,
 /// hand.
 ///
 /// @tparam Source The Forth source text, as an NTTP (@ref source_literal).
+// 9affe4fc-3d72-4f41-8fd0-d2338f9ab603
 template <source_literal Source, int MaxCode = 4096, int MaxNodes = 1024,
           int MaxBody = 64, int MaxName = 32, int MaxDepth = 32,
           int MaxWords = 256, int MaxData = 1024, int MaxWarnings = 64,
@@ -269,6 +272,7 @@ inline constexpr auto compiled_forth =
         detail::compile_program<MaxCode, MaxNodes, MaxBody, MaxName, MaxDepth,
                                 MaxWords, MaxData, MaxWarnings>(Source.view())
             .value()};
+// 9affe4fc-3d72-4f41-8fd0-d2338f9ab603 end
 // 61611656-475a-405f-a35b-179c4d88f71e end
 
 } // namespace smd::forth

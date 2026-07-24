@@ -1,0 +1,85 @@
+#+options: ':nil *:t -:t ::t <:t H:3 \n:nil ^:nil arch:headline author:t
+#+options: broken-links:nil c:nil creator:nil d:(not "LOGBOOK") date:t e:t
+#+options: email:nil f:t inline:t num:t p:nil pri:nil prop:nil stat:t tags:t
+#+options: tasks:t tex:t timestamp:t title:t toc:t todo:t |:t
+#+options: html5-fancy:t
+#+TITLE: Building a Compile-Time Forth in C++26 — Blog Series Index
+#+AUTHOR: Steve Downey
+
+* Overview
+
+A working diary of building a Forth compiler and interpreter that runs
+entirely inside the C++26 constant evaluator. The same compiled program is
+meant to run at compile time and at runtime, and the reason I picked Forth is a
+guess I am trying to make good on: that Forth's control words --- ~EXIT~,
+~LEAVE~, ~CATCH/THROW~ --- are the one-shot, upward-only, dynamic-extent
+discipline that sender/receiver structured concurrency already enforces.
+
+These are entries, not chapters. Each was written as the work landed, so an
+earlier one does not know what a later one found out. Where the plan met the
+compiler and lost, I have left the loss in.
+
+* Blog Posts
+
+** [[file:post-0-the-pitch.org][Part 0 — The Pitch]]
+
+Why build a Forth at compile time at all, what the pipeline is meant to look
+like, and the one thing this is deliberately not: a stateful outer interpreter
+with immediate words.
+
+** [[file:post-1-standing-on-scheme.org][Part 1 — Standing on the Scheme Repo]]
+
+The C++26 baseline, vendoring Beman Execution, and importing the ~foundation~
+vocabulary by copy --- where a two-line equality fast path turned out to
+compile on GCC and not on Clang.
+
+** [[file:post-2-parser-combinators.org][Part 2 — Parser Combinators]]
+
+Applicative combinators over immutable cursors, wired into the ~foundation~
+typeclass machinery the Scheme reference left them disconnected from --- and the
+one CPO that stopped being callable as a result.
+
+** [[file:post-3-reading-forth.org][Part 3 — Reading Forth Text]]
+
+The lexical layer (~-1~ is a number, ~1-~ is a word) and an arena-backed syntax
+tree whose nodes hold each other by integer handle, closing the recursion
+without a heap.
+
+** [[file:post-4-grammar.org][Part 4 — The Grammar That Couldn't Be a Combinator]]
+
+The plan said the combinator library /was/ the parser. Nested control structures
+said otherwise, for a reason about types, not effort.
+
+** [[file:post-5-the-machine.org][Part 5 — The Machine]]
+
+Cells, two stacks, the dictionary, and the data space. Building the dictionary
+before the data space had a real address type, and paying for it with a
+placeholder.
+
+** [[file:post-6-elaboration.org][Part 6 — Elaboration and the Effect Checker]]
+
+Resolving words in program order, retyping that placeholder (and tripping a
+warning doing it), and a stack-effect checker that is honest about the one thing
+it cannot see across ~EXIT~.
+
+** [[file:post-7-the-oracle.org][Part 7 — The Oracle]]
+
+A direct evaluator to be the reference the compiled machine gets checked
+against --- and the acceptance test that could not pass until I added two words
+the plan forgot to list.
+
+** [[file:post-8-survives-to-runtime.org][Part 8 — The Program That Survives to Runtime]]
+
+Flattening the tree to a linear instruction array, back-patching branches, and
+one ~constexpr~ value that runs the same at compile time and at runtime. Eight
+opcodes of seventeen do real work; the rest are reserved on purpose.
+
+** [[file:post-9-one-shot-api.org][Part 9 — The One-Shot API, and the Summit Not Yet Reached]]
+
+~compiled_forth<"...">~ as the public surface, a hard compile error for a bad
+program, and the honest accounting: the thesis from Part 0 is still not
+executable, because the part that would prove it is not built.
+
+* Table of Contents
+
+#+toc: headlines 1

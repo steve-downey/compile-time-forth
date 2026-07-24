@@ -82,10 +82,12 @@ enum class op : std::uint8_t {
 ///
 /// A plain aggregate, trivially copyable and a literal type by construction
 /// -- there is nothing here for the compiler to have to prove trivial.
+// f42b25c1-ce56-43b1-9d4b-adecc6e3ae0b
 struct instr {
     op code{};      ///< Which operation to perform.
     cell operand{}; ///< The operation's single immediate operand.
 };
+// f42b25c1-ce56-43b1-9d4b-adecc6e3ae0b end
 // 5b9e9c1a-6b0e-4b7a-9f3a-7a5b7c9d2e1f end
 
 // c520a0cc-7a47-4db4-a218-617a1cfebe8d
@@ -120,6 +122,7 @@ struct instr {
 /// the struct shape the plan calls for, but default to `-1` ("not
 /// computed") rather than a real bound; a caller must still size its own
 /// `forth_state` generously, exactly as F13's own tests already do.
+// 7bb215b8-9ae5-42f0-90f1-dff9d46b08ab
 template <int MaxCode = 4096, int MaxWords = 256>
 struct compiled_program {
     foundation::static_vector<instr, MaxCode> code{}; ///< The flat program.
@@ -144,6 +147,7 @@ struct compiled_program {
     /// See the class doc comment: not computed by this step.
     int required_return_depth = -1;
 };
+// 7bb215b8-9ae5-42f0-90f1-dff9d46b08ab end
 // c520a0cc-7a47-4db4-a218-617a1cfebe8d end
 
 namespace detail {

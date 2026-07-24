@@ -1,0 +1,132 @@
+#+options: ':nil *:t -:t ::t <:t H:3 \n:nil ^:nil arch:headline author:t
+#+options: broken-links:nil c:nil creator:nil d:(not "LOGBOOK") date:t e:t
+#+options: email:nil f:t inline:t num:t p:nil pri:nil prop:nil stat:t tags:t
+#+options: tasks:t tex:t timestamp:t title:t toc:nil todo:t |:t
+#+options: html5-fancy:t
+#+bibliography: references.bib
+#+TITLE: Building a Compile-Time Forth in C++26: Part 9 - The One-Shot API, and the Summit Not Yet Reached
+#+AUTHOR: Steve Downey
+#+DATE: 2026-07-22
+
+#+begin_abstract
+One call now compiles a Forth program from its source text and hands back
+something ready to run: ~compiled_forth<"...">~, keyed on the text itself, with a
+malformed program rejected as a hard C++ compile error. That is a real result.
+It is also not the result I set out for. The thing that would prove the bet from
+Part 0 --- Forth control compiled into senders --- is the one part I have not
+built, and this entry is where I say so plainly instead of dressing the gap as a
+conclusion.
+#+end_abstract
+
+#+MACRO: TEASER_END
+{{TEASER_END}}
+#+html: <nav style="margin-bottom: 2em; border-bottom: 1px solid #ccc; padding-bottom: 1em">
+[[file:index.org][↑ Series Index]] | [[file:post-8-survives-to-runtime.org][Part 8 - The Program That Survives to Runtime ←]]
+#+html: </nav>
+
+
+* One call
+
+Everything up to now has been reachable only by naming the pipeline stages by
+hand: read, then elaborate, then codegen, then run. Every test wrote that
+sequence out as a little local helper. This step promotes the sequence to the one
+thing an outside caller is meant to touch.
+
+The key is that the /source text/ is a template argument. ~source_literal<N>~ is
+a struct that stores a null-terminated copy of the text in a fixed char array,
+which makes it usable as a non-type template parameter --- so a program's content,
+not just its address or length, can drive template argument deduction.
+
+#+transclude: [[orgit:~/src/compile-time-forth/main::src/smd/forth/forth.hpp::0f3a01ca-389f-4ca6-b09c-6b6423482246]] :lines 2- :src cpp :end "0f3a01ca-389f-4ca6-b09c-6b6423482246 end"
+
+That literal is the key to keying a variable template on the program's text ---
+the whole pipeline runs once, at namespace-scope ~constexpr~ initialization, and
+the result is stored in a ~forth_program~ that offers ~.run()~, ~.stack()~, and
+~.output()~:
+
+#+transclude: [[orgit:~/src/compile-time-forth/main::src/smd/forth/forth.hpp::9affe4fc-3d72-4f41-8fd0-d2338f9ab603]] :lines 2- :src cpp :end "9affe4fc-3d72-4f41-8fd0-d2338f9ab603 end"
+
+So the source text is the template argument, and using it is one line:
+
+#+begin_src c++
+inline constexpr auto sq = compiled_forth<": SQUARED DUP * ;  7 SQUARED">;
+static_assert(sq.stack().back() == 49);
+#+end_src
+
+One quirk I chose and documented rather than hid: a ~forth_program~ carries no
+mutable state --- it can't, since ~compiled_forth<Source>~ is a ~constexpr~
+value --- so ~run~, ~stack~, and ~output~ each construct a fresh state and run the
+whole program from scratch. Call all three on one object and you have run the
+program three times. For the size of program this is meant for that is the right
+trade, and it is the only option that keeps the object stateless. It is a real
+cost, stated, not an accident to trip over later.
+
+* A bad program is a compile error
+
+This is the part I find genuinely satisfying. A ~Source~ that fails to parse, or
+names a word that doesn't resolve, or fails the stack-effect check, or overruns a
+capacity, is not a runtime error you check for. It is a hard compile error in the
+translation unit that wrote it.
+
+The mechanism is almost too plain. ~compile_program~ returns a ~result~, and
+~compiled_forth~ calls ~.value()~ on it. Calling ~.value()~ on a ~result~ holding
+an error is not a core constant expression --- it reaches into the wrong variant
+alternative, which throws, and you cannot throw during constant evaluation. So a
+namespace-scope ~constexpr~ initializer that hits an error fails the whole
+compile, rather than quietly producing a runtime-checkable failure.
+
+#+begin_src c++
+// SQUARED is never defined here: elaboration diagnoses an unknown word,
+// .value() on that error is not a constant expression, the TU does not compile.
+inline constexpr auto bad = compiled_forth<"7 SQUARED">;
+#+end_src
+
+There is a negative-compile test that exercises this failing side on
+purpose. The compiler rejects a malformed Forth program at C++ compile time, with
+a diagnostic pointing at the offending line. A Forth error and a C++ error are
+now the same error.
+
+Cleaning up around this, the placeholder entry point that used to return the
+string ~"Steve"~ is gone, and the library is header-only --- nothing to link,
+just include and instantiate.
+
+* What I did not build
+
+Now the honest accounting, because the abstract promised it.
+
+Go back to Part 0. The bet was that Forth's control words --- ~EXIT~, ~LEAVE~,
+~CATCH/THROW~ --- are the one-shot, upward-only, dynamic-extent discipline that
+sender/receiver already enforces, and that I could compile Forth control /into/
+senders and let the sender machinery carry the discipline
+[cite:@p2300][cite:@kiselyov2012callcc]. That backend does not exist. The sender
+vocabulary I vendored in Part 1 is still just aliases waiting for a consumer. The
+opcodes for ~EXECUTE~, ~CATCH~, and ~THROW~ are reserved in the instruction set
+and fault if reached. ~DO~ ... ~LOOP~ is still diagnosed, not run.
+
+What is here is a Forth that reads its own source, resolves it, checks its stack
+effects, compiles it to a flat program, and runs that program both inside the
+constant evaluator and at ordinary runtime, from one call, with a malformed
+program caught at compile time. That stands on its own, and I am not going to
+pretend it is small. But it is the substrate for the bet, not the bet.
+
+What proving the bet would take, as best I can see it from here: partition the
+elaborated core into basic blocks, emit one sender per block, wire each block's
+completion into the next, and route ~THROW~ onto the sender error channel so that
+~CATCH~ is a handler with exactly the dynamic extent a receiver already has. If
+Forth's control flow really is the sender discipline, the reserved opcodes fill
+in without a fight and the sender graph enforces the one-shot rule for free. If it
+isn't, that is where I find out --- and finding out is the point.
+
+So the bet is still a bet. I have built the thing that can carry the experiment
+and not yet run the experiment. That is an unsatisfying place to stop a series,
+and it is the true one, which is the only kind of stopping place these entries
+were ever going to have. The interesting part is the part that's left.
+
+
+#+html: <nav style="margin-top: 3em; border-top: 1px solid #ccc; padding-top: 1em">
+[[file:index.org][↑ Series Index]] | [[file:post-8-survives-to-runtime.org][← Part 8 - The Program That Survives to Runtime]]
+#+html: </nav>
+
+* References
+
+#+print_bibliography:

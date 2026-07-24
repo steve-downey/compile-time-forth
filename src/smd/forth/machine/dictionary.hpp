@@ -102,9 +102,11 @@ struct colon_word {
 /// resolved in F11: D10 calls for `addr` to be its own distinct type,
 /// explicitly convertible to/from @ref cell, and F10's @ref machine::addr
 /// (`data_space.hpp`) is that type.
+// d5b20e62-4731-4fbd-ac00-3c4b435207f4
 struct variable_word {
     addr address{};
 };
+// d5b20e62-4731-4fbd-ac00-3c4b435207f4 end
 
 /// A `CONSTANT`-defined word's binding: its fixed value.
 struct constant_word {

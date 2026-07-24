@@ -18,6 +18,7 @@ struct parse_error {
     foundation::source_pos where{}; ///< Position of the failure in the input.
     char const *message{}; ///< Static description of what was expected.
 
+    // fb523d66-58d7-4ce9-bee0-44644f86c414
     friend constexpr auto operator==(foundation::parse_error const &lhs,
                                      foundation::parse_error const &rhs)
         -> bool {
@@ -41,6 +42,7 @@ struct parse_error {
         }
         return *a == *b;
     }
+    // fb523d66-58d7-4ce9-bee0-44644f86c414 end
 };
 
 } // namespace smd::forth::foundation

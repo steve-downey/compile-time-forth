@@ -43,6 +43,7 @@ namespace smd::forth::elaborator {
 /// combine_sequential and @ref combine_branch) and depth-based checking is
 /// *suppressed* for it, not diagnosed as an error -- this is what "suppresses
 /// checking downstream rather than erroring" means concretely.
+// b238e219-4650-4e62-96ff-95b16e1d08e3
 struct effect {
     bool known = true; ///< False means "unknown" (the lattice's top value).
     int inputs = 0;    ///< Cells required present at entry. Only meaningful
@@ -57,6 +58,7 @@ struct effect {
     friend constexpr auto operator==(effect const &, effect const &)
         -> bool = default;
 };
+// b238e219-4650-4e62-96ff-95b16e1d08e3 end
 
 /// The lattice's top value: an input-dependent or otherwise not-statically-
 /// determinable effect.

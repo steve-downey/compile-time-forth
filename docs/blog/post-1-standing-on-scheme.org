@@ -1,0 +1,128 @@
+#+options: ':nil *:t -:t ::t <:t H:3 \n:nil ^:nil arch:headline author:t
+#+options: broken-links:nil c:nil creator:nil d:(not "LOGBOOK") date:t e:t
+#+options: email:nil f:t inline:t num:t p:nil pri:nil prop:nil stat:t tags:t
+#+options: tasks:t tex:t timestamp:t title:t toc:nil todo:t |:t
+#+options: html5-fancy:t
+#+bibliography: references.bib
+#+TITLE: Building a Compile-Time Forth in C++26: Part 1 - Standing on the Scheme Repo
+#+AUTHOR: Steve Downey
+#+DATE: 2026-07-18
+
+#+begin_abstract
+Before any Forth exists there is a baseline to stand on: C++26 green on two
+compilers, Beman Execution vendored for the sender backend I am promising
+myself, and the ~foundation~ vocabulary copied over from the Scheme project. The
+copy is where the first surprise turned up --- a two-line equality shortcut that
+GCC accepts as a constant expression and Clang, correctly, does not.
+#+end_abstract
+
+#+MACRO: TEASER_END
+{{TEASER_END}}
+#+html: <nav style="margin-bottom: 2em; border-bottom: 1px solid #ccc; padding-bottom: 1em">
+[[file:index.org][↑ Series Index]] | [[file:post-0-the-pitch.org][Part 0 - The Pitch ←]]
+#+html: </nav>
+
+
+* The baseline
+
+The first requirement is dull and non-negotiable: the whole thing compiles as
+C++26 on both GCC 16 and Clang 21, and stays that way. Two compilers, not one,
+because the constant evaluator is exactly where they disagree, and a
+compile-time project that only ever sees one front end is a project quietly
+depending on that front end's bugs. This entry is about a case where that
+mattered on day one.
+
+Beman Execution goes in as a submodule, and a small ~sender/vocab.hpp~ aliases
+the handful of names I expect to lean on later --- ~just~, ~then~, ~let_value~,
+~when_all~, ~sync_wait~. Nothing uses them yet. They are there because Part 0
+made a promise about senders, and I would rather the dependency be wired and
+building now than discovered missing the day I need it. Vendoring it also flushed
+out one build-environment quirk worth its own note some other time; today it just
+has to build.
+
+* Importing the foundation
+
+The Scheme compiler already has the pieces every stage here will need: a
+~result<T>~ that carries either a value or a ~parse_error~, a ~static_vector~
+that never reallocates, the ~tree_arena/arena_box~ pair that makes tree-shaped
+data legal under ~constexpr~, and a small typeclass layer ---
+~functor/applicative/alternative~. I bring them across by copy, renamespaced
+into ~smd::forth::foundation~, with the fixed capacities lifted to template
+parameters so the Forth side can size them itself.
+
+Copy, renamespace, fix debt. The rule I set for imported code is that anything
+past a mechanical rename needs a reason written down. The reason turned up
+immediately.
+
+* The fast path that wasn't portable
+
+~parse_error~ compares equal to another ~parse_error~ when their positions match
+and their messages match. The imported version opened with a shortcut:
+
+#+begin_src c++
+// the imported version (smdscheme foundation)
+friend constexpr auto operator==(parse_error const& lhs,
+                                 parse_error const& rhs) -> bool {
+    if (lhs.message == rhs.message) return true;   // two char const*, compared
+    if (lhs.message == nullptr || rhs.message == nullptr) return false;
+    // ... fall through to a character-by-character scan
+}
+#+end_src
+
+That first line compares two ~char const *~ pointers. When both messages are the
+same string literal, the intent is "same pointer, obviously equal, skip the
+scan." And on GCC 16 it works: GCC pools identical string literals within a
+translation unit and hands back a stable, comparable address, so
+~lhs.message == rhs.message~ for two ~"oops"~ literals is a usable constant
+expression that evaluates to ~true~.
+
+Clang 21 rejects it. Per ~[expr.eq]~, whether two pointers into
+potentially-overlapping string-literal objects compare equal is /unspecified/,
+and an expression whose result is unspecified is not usable in a constant
+expression [cite:@cppstd]. So this test, imported unchanged, failed to compile:
+
+#+begin_src c++
+static_assert(parse_error{source_pos{1, 1, 2}, "oops"}
+           == parse_error{source_pos{1, 1, 2}, "oops"});
+#+end_src
+
+with, from Clang, /comparison of addresses of potentially overlapping literals
+has unspecified value/. The Scheme repo is green. Its own test suite never wrote
+this particular ~static_assert~ --- identical literal on both sides, forced
+through the constant evaluator --- against Clang, so the defect sat there
+undetected. It took a second compiler to see it, which is the entire argument for
+keeping the second compiler.
+
+* The fix is to compare less
+
+The shortcut was never doing anything a correct scan wouldn't. Two equal
+pointers point at equal strings, and the character scan returns ~true~ for those
+anyway --- a string equals itself. The only thing the fast path bought was
+skipping a loop, and it bought that with an unspecified comparison. So it goes.
+What stays is the comparison that is always legal: a pointer against a null
+pointer constant, which both compilers accept in a constant expression.
+
+#+transclude: [[orgit:~/src/compile-time-forth/main::src/smd/forth/foundation/parse_error.hpp::fb523d66-58d7-4ce9-bee0-44644f86c414]] :lines 2- :src cpp :end "fb523d66-58d7-4ce9-bee0-44644f86c414 end"
+
+The truth table is unchanged. Two null messages are equal, one null and one not
+is unequal, two non-null messages go to the scan they always went to. No test's
+result moved; the imported assertions all still hold, now on both toolchains.
+
+It is a small change, and I have gone on about it at length, because the shape is
+the one to watch for in everything else I copy across: an equality or ordering
+that takes a fast path through a pointer comparison where neither side is a null
+constant. GCC-only green is not portable green. Anywhere the reference code
+compares two addresses that could be distinct, the constant evaluator on the
+other compiler is entitled to refuse, and Clang does.
+
+The foundation is in and both compilers are quiet. Next I need something to parse
+with.
+
+
+#+html: <nav style="margin-top: 3em; border-top: 1px solid #ccc; padding-top: 1em">
+[[file:index.org][↑ Series Index]] | [[file:post-0-the-pitch.org][← Part 0 - The Pitch]] | [[file:post-2-parser-combinators.org][Part 2 - Parser Combinators →]]
+#+html: </nav>
+
+* References
+
+#+print_bibliography:

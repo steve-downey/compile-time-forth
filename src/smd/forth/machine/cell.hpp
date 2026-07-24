@@ -16,6 +16,7 @@ namespace smd::forth::machine {
 /// @c cell. A signed 64-bit width is generous for both compile-time and
 /// runtime evaluation while still fitting the traditional single-cell
 /// Forth model.
+// 8a026053-5555-4fac-ac06-9b82d6df3f3c
 using cell = std::int64_t;
 
 /// The Forth truth value pushed by comparison words: all bits set (D7).
@@ -23,6 +24,7 @@ inline constexpr cell flag_true = -1;
 
 /// The Forth truth value pushed by comparison words: no bits set (D7).
 inline constexpr cell flag_false = 0;
+// 8a026053-5555-4fac-ac06-9b82d6df3f3c end
 
 /// The result of an operation with no success payload.
 ///

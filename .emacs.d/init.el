@@ -168,6 +168,50 @@
   )
 
 
+(use-package ox-gfm
+  :after org)
+
 (use-package with-editor)
 
 (use-package citeproc :ensure t :after org)
+
+;; Export orgit links as GitHub source-browser URLs (GFM/HTML)
+(defvar orgit-base-url "https://github.com/steve-downey/compile-time-forth/blob/main/"
+  "Base URL for exporting orgit links.")
+
+(org-link-set-parameters
+ "orgit"
+ :export (lambda (path desc backend)
+           (let* ((parts (split-string path "::"))
+                  (filepath (if (> (length parts) 1) (cadr parts) path))
+                  (url (concat orgit-base-url filepath)))
+             (cond
+              ((or (eq 'md backend) (eq 'gfm backend))
+               (format "[`%s`](%s)" (or desc filepath) url))
+              ((eq 'html backend)
+               (format "<a href=\"%s\"><code>%s</code></a>" url (or desc filepath)))
+              (t url)))))
+
+;; Allow org-transclusion to resolve orgit links to the local file system
+(defun org-transclusion-add-orgit (link plist)
+  "Resolve orgit links into file links in-place."
+  (when (string= "orgit" (org-element-property :type link))
+    (let* ((full-path (org-element-property :path link))
+           (parts (split-string full-path "::"))
+           (repo-dir (car parts))
+           (inner-file (cadr parts))
+           (search-uuid (if (> (length parts) 2) (caddr parts) nil))
+           (actual-file (expand-file-name inner-file repo-dir))
+           (raw-link (concat "file:" actual-file)))
+      (when search-uuid
+        (setq raw-link (concat raw-link "::" search-uuid)))
+      (org-element-put-property link :type "file")
+      (org-element-put-property link :path actual-file)
+      (org-element-put-property link :raw-link raw-link)
+      (if search-uuid
+          (org-element-put-property link :search-option search-uuid)
+        (org-element-put-property link :search-option nil))))
+  nil)
+
+(require 'org-transclusion)
+(add-hook 'org-transclusion-add-functions 'org-transclusion-add-orgit)

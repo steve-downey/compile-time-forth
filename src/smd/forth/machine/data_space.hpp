@@ -21,6 +21,7 @@ namespace smd::forth::machine {
 /// carry an address on the data stack (`VARIABLE X` leaves an address that
 /// a later `X @` fetches through), and the data stack only ever holds
 /// @c cell.
+// 033d6c89-6d8a-469c-812b-5416dd6e5284
 class addr {
   public:
     constexpr addr() = default;
@@ -43,6 +44,7 @@ class addr {
 constexpr addr::addr(cell index) : index_(index) {}
 
 constexpr addr::operator cell() const { return index_; }
+// 033d6c89-6d8a-469c-812b-5416dd6e5284 end
 
 /// A bump-allocated arena of @ref cell values (D10).
 ///
