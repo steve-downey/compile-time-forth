@@ -19,7 +19,7 @@
 - [x] Step F14: stack-machine codegen and VM
 - [x] Step F15: public one-shot API
 - [x] Step F16: memory words end-to-end
-- [ ] Step F17: counted loops
+- [x] Step F17: counted loops
 - [ ] Step F18a: execution tokens and exceptions
 - [ ] Step F18: sender/receiver CPS backend
 - [ ] Step F19: foreign function interface

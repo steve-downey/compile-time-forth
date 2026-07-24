@@ -121,7 +121,7 @@ constexpr auto combine_branch(effect then_eff, effect else_eff) -> effect {
 /// it first wired their runtime behavior; none of the five touch the return
 /// stack.
 ///
-/// 45 of the 46 primitives have a fixed effect; `?DUP` is genuinely
+/// 46 of the 47 primitives have a fixed effect; `?DUP` is genuinely
 /// input-dependent (`( a -- 0 | a a )`) and maps to @ref unknown_effect.
 /// `>R`/`R>`/`R@` move cells between the data and return stacks -- this
 /// table reports only their *data*-stack view; @ref primitive_return_delta
@@ -157,6 +157,7 @@ constexpr auto primitive_data_effect(machine::primitive op) -> effect {
     case P::abs_:
     case P::invert:
     case P::one_minus:
+    case P::one_plus:
     case P::zero_equal:
     case P::zero_less:
         return known(1, 1);
@@ -360,6 +361,25 @@ constexpr auto analyze_body(compiled_unit<MaxNodes, MaxBody, MaxName, MaxWords,
                 } else if constexpr (std::is_same_v<T, core_exit>) {
                     item_eff = identity_effect;
                     stop = true;
+                } else if constexpr (std::is_same_v<T, core_loop_index>) {
+                    // `I`/`J` push one cell read from the return stack's loop
+                    // frame; the return stack itself is not disturbed.
+                    item_eff = known(0, 1);
+                } else if constexpr (std::is_same_v<T, core_leave>) {
+                    // A one-shot forward transfer out of the loop: what the
+                    // data stack looks like at the loop's exit cannot be
+                    // reconciled with the fall-through path statically, so
+                    // LEAVE poisons to unknown (like ?DUP). This is also what
+                    // lets `... IF <stuff> LEAVE THEN ...` type-check despite
+                    // the LEAVE arm and the empty else-arm differing in shape
+                    // (the unknown suppresses the IF-arm net comparison).
+                    item_eff = unknown_effect;
+                } else if constexpr (std::is_same_v<T, core_unloop>) {
+                    // Return-stack loop-frame teardown only; no data-stack
+                    // effect and no tracked return-stack delta (the loop frame
+                    // DO/LOOP manage is not part of the >R/R> delta this walk
+                    // tracks).
+                    item_eff = identity_effect;
                 } else if constexpr (std::is_same_v<
                                          T, core_if<MaxNodes, MaxBody>>) {
                     auto then_r = analyze_body(unit, alt.then_body, self_index,
@@ -469,13 +489,33 @@ constexpr auto analyze_body(compiled_unit<MaxNodes, MaxBody, MaxName, MaxWords,
                     }
                     auto const &body_eff = body_r.value().eff;
                     if (body_eff.known) {
-                        if (body_eff.net() != 0) {
+                        // A plain `LOOP` body must be net-zero; a `+LOOP` body
+                        // must leave exactly the increment `+LOOP` then
+                        // consumes (net +1).
+                        if (alt.is_plus_loop) {
+                            if (body_eff.net() != 1) {
+                                return foundation::parse_error{
+                                    alt.pos,
+                                    "+LOOP body must leave exactly the "
+                                    "increment (net +1)"};
+                            }
+                        } else if (body_eff.net() != 0) {
                             return foundation::parse_error{
                                 alt.pos,
                                 "DO loop body must have a net-zero stack "
                                 "effect"};
                         }
-                        item_eff = known(body_eff.inputs, body_eff.inputs);
+                        // `DO` itself consumes the two cells (limit start)
+                        // sitting above whatever the body needs; for `+LOOP`
+                        // the body's extra output is consumed by `+LOOP`
+                        // itself. Either way the whole `DO ... LOOP`/`+LOOP`
+                        // needs body.inputs + 2 at entry and leaves
+                        // body.inputs behind. Modelling those two consumed
+                        // cells (F12 did not) is what lets a nested counted
+                        // loop -- whose inner `limit start` are pushed inside
+                        // the outer loop's own body -- still satisfy the outer
+                        // body's net-zero requirement.
+                        item_eff = known(body_eff.inputs + 2, body_eff.inputs);
                     } else {
                         item_eff = unknown_effect;
                     }
@@ -504,14 +544,17 @@ constexpr auto analyze_body(compiled_unit<MaxNodes, MaxBody, MaxName, MaxWords,
 // 7c2a9e5d-3b8f-4a1e-9d6c-8e4f1b2a6c9d end
 
 /// Diagnosis 4: an `EXIT` lexically nested inside a `DO ... LOOP`/`+LOOP`
-/// body, at any depth, without an `UNLOOP` to appease first.
+/// body, at any depth, without a preceding `UNLOOP` on that path.
 ///
-/// `UNLOOP` is not a primitive yet (F17 adds real counted-loop machinery);
-/// until it exists there is no way to leave a `DO` loop's parameters in a
-/// consistent state before an early `EXIT`, so this diagnoses the shape
-/// unconditionally rather than trying to verify an `UNLOOP` that cannot
-/// exist. **F17 should relax this** to "an `EXIT` inside `DO` needs a
-/// preceding `UNLOOP` on that path" once `UNLOOP` is real.
+/// Leaving a definition from inside a counted loop requires the loop's return-
+/// stack parameters to be discarded first (`UNLOOP`), or `EXIT`'s own `ret`
+/// would pop a loop-frame cell as if it were a return address. F17 makes
+/// `UNLOOP` real, so this relaxes F12's earlier unconditional diagnosis: an
+/// `UNLOOP` seen earlier in the same body sequence clears the requirement for
+/// every `EXIT` after it in that sequence (and for anything it recurses into),
+/// which is exactly the canonical `... UNLOOP EXIT ...` and
+/// `... IF UNLOOP EXIT THEN ...` idioms. A bare `EXIT` inside `DO` with no
+/// such `UNLOOP` is still diagnosed.
 ///
 /// Independent of @ref analyze_body's depth/effect tracking -- this is a
 /// plain lexical scan, so it is unaffected by @ref analyze_body's
@@ -521,39 +564,48 @@ constexpr auto check_exit_in_do_loops(
     foundation::tree_arena<core_node<MaxNodes, MaxBody>, MaxNodes> const &arena,
     core_body<MaxNodes, MaxBody> const &items, bool in_do_loop)
     -> foundation::result<std::monostate> {
+    bool unloop_seen = false;
     for (int i = 0; i < items.size(); ++i) {
         auto const &node = arena.get(items[i]);
+        // Whether an EXIT reached from here still needs an UNLOOP: only when
+        // we are lexically inside a DO loop and no UNLOOP has cleared it yet
+        // earlier in this same sequence.
+        bool const active = in_do_loop && !unloop_seen;
         auto outcome = std::visit(
             [&](auto const &alt) -> foundation::result<std::monostate> {
                 using T = std::decay_t<decltype(alt)>;
-                if constexpr (std::is_same_v<T, core_exit>) {
+                if constexpr (std::is_same_v<T, core_unloop>) {
                     if (in_do_loop) {
+                        unloop_seen = true;
+                    }
+                    return std::monostate{};
+                } else if constexpr (std::is_same_v<T, core_exit>) {
+                    if (active) {
                         return foundation::parse_error{
                             alt.pos, "EXIT inside a DO loop requires UNLOOP"};
                     }
                     return std::monostate{};
                 } else if constexpr (std::is_same_v<
                                          T, core_if<MaxNodes, MaxBody>>) {
-                    auto r1 = check_exit_in_do_loops(arena, alt.then_body,
-                                                     in_do_loop);
+                    auto r1 =
+                        check_exit_in_do_loops(arena, alt.then_body, active);
                     if (!r1.has_value()) {
                         return r1;
                     }
-                    return check_exit_in_do_loops(arena, alt.else_body,
-                                                  in_do_loop);
+                    return check_exit_in_do_loops(arena, alt.else_body, active);
                 } else if constexpr (std::is_same_v<
                                          T,
                                          core_begin_until<MaxNodes, MaxBody>>) {
-                    return check_exit_in_do_loops(arena, alt.body, in_do_loop);
+                    return check_exit_in_do_loops(arena, alt.body, active);
                 } else if constexpr (std::is_same_v<
                                          T,
                                          core_begin_while<MaxNodes, MaxBody>>) {
-                    auto r1 = check_exit_in_do_loops(arena, alt.condition,
-                                                     in_do_loop);
+                    auto r1 =
+                        check_exit_in_do_loops(arena, alt.condition, active);
                     if (!r1.has_value()) {
                         return r1;
                     }
-                    return check_exit_in_do_loops(arena, alt.body, in_do_loop);
+                    return check_exit_in_do_loops(arena, alt.body, active);
                 } else if constexpr (std::is_same_v<
                                          T, core_do_loop<MaxNodes, MaxBody>>) {
                     return check_exit_in_do_loops(arena, alt.body, true);

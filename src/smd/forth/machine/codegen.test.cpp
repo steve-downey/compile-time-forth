@@ -70,9 +70,9 @@ static_assert([] {
         return false;
     }
     auto const &program = result.value();
-    // SQUARED is the first colon word defined after the 46 built-in
-    // primitives, so its dictionary index is 46.
-    int const squared_index = 46;
+    // SQUARED is the first colon word defined after the 47 built-in
+    // primitives, so its dictionary index is 47.
+    int const squared_index = 47;
     int const entry = program.entry_points[squared_index];
     if (entry < 0 || entry >= program.program_entry) {
         return false;
@@ -100,11 +100,65 @@ static_assert([] {
     return program.entry_points[0] == -1;
 }());
 
-// -- DO...LOOP is deferred to F17, mirroring F13's own choice ---------------
+// -- Counted loops emit the F17 opcodes (docs/forth-plan.md Step F17) -------
 
+// `5 0 DO LOOP` compiles to do_setup ... loop_step, and the loop_step branches
+// backward to the instruction just after do_setup.
 static_assert([] {
     auto result = compile("5 0 DO LOOP");
-    return !result.has_value();
+    if (!result.has_value()) {
+        return false;
+    }
+    auto const &program = result.value();
+    bool found_setup = false;
+    bool found_backward_loop_step = false;
+    for (int i = 0; i < program.code.size(); ++i) {
+        if (program.code[i].code == op::do_setup) {
+            found_setup = true;
+        }
+        if (program.code[i].code == op::loop_step &&
+            program.code[i].operand <= i) {
+            found_backward_loop_step = true;
+        }
+    }
+    return found_setup && found_backward_loop_step;
+}());
+
+// `+LOOP` emits plus_loop_step; `I` emits push_index; `LEAVE` emits a `leave`
+// whose back-patched operand is a real forward instruction index (never the
+// -1 codegen sentinel).
+static_assert([] {
+    auto result =
+        compile(": FIND5 10 0 DO I 5 = IF I LEAVE THEN LOOP ;  FIND5");
+    if (!result.has_value()) {
+        return false;
+    }
+    auto const &program = result.value();
+    bool found_push_index = false;
+    bool found_patched_leave = false;
+    for (int i = 0; i < program.code.size(); ++i) {
+        if (program.code[i].code == op::push_index) {
+            found_push_index = true;
+        }
+        if (program.code[i].code == op::leave && program.code[i].operand > i) {
+            found_patched_leave = true;
+        }
+    }
+    return found_push_index && found_patched_leave;
+}());
+
+static_assert([] {
+    auto result = compile(": SUMEVEN 0 10 0 DO I + 2 +LOOP ;  SUMEVEN");
+    if (!result.has_value()) {
+        return false;
+    }
+    auto const &program = result.value();
+    for (int i = 0; i < program.code.size(); ++i) {
+        if (program.code[i].code == op::plus_loop_step) {
+            return true;
+        }
+    }
+    return false;
 }());
 
 TEST_CASE("CodegenTest - SquaredEndsWithHalt") {
@@ -119,7 +173,7 @@ TEST_CASE("CodegenTest - ColonWordGetsAnEntryPointCalledFromTopLevel") {
     auto result = compile(": SQUARED DUP * ;  4 SQUARED");
     REQUIRE(result.has_value());
     auto const &program = result.value();
-    int const squared_index = 46;
+    int const squared_index = 47;
     int const entry = program.entry_points[squared_index];
     REQUIRE(entry >= 0);
     REQUIRE(entry < program.program_entry);
@@ -139,9 +193,37 @@ TEST_CASE("CodegenTest - PrimitivesHaveNoEntryPoint") {
     CHECK(result.value().entry_points[0] == -1);
 }
 
-TEST_CASE("CodegenTest - DoLoopIsDiagnosedNotImplemented") {
+TEST_CASE("CodegenTest - CountedLoopEmitsSetupAndStep") {
     auto result = compile("5 0 DO LOOP");
-    CHECK_FALSE(result.has_value());
+    REQUIRE(result.has_value());
+    auto const &program = result.value();
+    bool found_setup = false;
+    bool found_backward_loop_step = false;
+    for (int i = 0; i < program.code.size(); ++i) {
+        if (program.code[i].code == op::do_setup) {
+            found_setup = true;
+        }
+        if (program.code[i].code == op::loop_step &&
+            program.code[i].operand <= i) {
+            found_backward_loop_step = true;
+        }
+    }
+    CHECK(found_setup);
+    CHECK(found_backward_loop_step);
+}
+
+TEST_CASE("CodegenTest - LeaveIsBackPatchedToLoopExit") {
+    auto result =
+        compile(": FIND5 10 0 DO I 5 = IF I LEAVE THEN LOOP ;  FIND5");
+    REQUIRE(result.has_value());
+    auto const &program = result.value();
+    bool found_patched_leave = false;
+    for (int i = 0; i < program.code.size(); ++i) {
+        if (program.code[i].code == op::leave && program.code[i].operand > i) {
+            found_patched_leave = true;
+        }
+    }
+    CHECK(found_patched_leave);
 }
 
 TEST_CASE("CodegenTest - IfWithoutElseBranchesPastThenBody") {

@@ -45,7 +45,7 @@ struct core_push {
 };
 
 /// Invokes a primitive opcode directly -- no dictionary indirection needed at
-/// run time, since the 46 primitives never change identity once elaborated.
+/// run time, since the 47 primitives never change identity once elaborated.
 struct core_prim {
     machine::primitive op{};      ///< Which primitive to run.
     foundation::source_pos pos{}; ///< Where the reference appeared in source.
@@ -88,6 +88,35 @@ struct core_push_xt {
 /// a bare `EXIT` word inside a colon-definition body.
 struct core_exit {
     foundation::source_pos pos{}; ///< Where the `EXIT` appeared in source.
+};
+
+/// Pushes a counted-loop index onto the data stack -- the elaborated form of
+/// `I` (@ref level 0, the innermost enclosing loop) or `J` (@ref level 1, the
+/// next loop out) (F17). Recognized in `resolve_word` alongside
+/// `EXIT`/`RECURSE`, so it is never a dictionary entry or a `machine::
+/// primitive`; the index it reads lives on the return stack (the loop
+/// parameters `DO` established), not in this node.
+struct core_loop_index {
+    int level{};                  ///< 0 for `I`, 1 for `J`.
+    foundation::source_pos pos{}; ///< Where `I`/`J` appeared in source.
+};
+
+/// One-shot forward transfer to the innermost enclosing counted loop's exit
+/// -- the elaborated form of `LEAVE` (F17). Discards that loop's parameters
+/// from the return stack and continues just past its `LOOP`/`+LOOP`. Like
+/// `core_exit`, this is dynamic-extent, one-shot nonlocal control (D11),
+/// carried through the direct evaluator's own result channel and, in the VM,
+/// a back-patched forward branch -- never a C++ exception.
+struct core_leave {
+    foundation::source_pos pos{}; ///< Where `LEAVE` appeared in source.
+};
+
+/// Discards the innermost enclosing counted loop's parameters from the return
+/// stack without branching -- the elaborated form of `UNLOOP` (F17), used to
+/// leave the return stack consistent before an `EXIT` that returns from a
+/// definition out of the middle of a `DO` loop.
+struct core_unloop {
+    foundation::source_pos pos{}; ///< Where `UNLOOP` appeared in source.
 };
 // 8a9a3c73-7150-4019-97f5-0485af9c56bb end
 
@@ -150,7 +179,8 @@ struct core_seq {
 template <int MaxNodes, int MaxBody>
 struct core_node {
     std::variant<core_push, core_prim, core_call, core_var, core_const,
-                 core_push_xt, core_exit, core_if<MaxNodes, MaxBody>,
+                 core_push_xt, core_exit, core_loop_index, core_leave,
+                 core_unloop, core_if<MaxNodes, MaxBody>,
                  core_begin_until<MaxNodes, MaxBody>,
                  core_begin_while<MaxNodes, MaxBody>,
                  core_do_loop<MaxNodes, MaxBody>, core_seq<MaxNodes, MaxBody>>
@@ -210,6 +240,9 @@ static_assert(std::is_trivially_destructible_v<core_var>);
 static_assert(std::is_trivially_destructible_v<core_const>);
 static_assert(std::is_trivially_destructible_v<core_push_xt>);
 static_assert(std::is_trivially_destructible_v<core_exit>);
+static_assert(std::is_trivially_destructible_v<core_loop_index>);
+static_assert(std::is_trivially_destructible_v<core_leave>);
+static_assert(std::is_trivially_destructible_v<core_unloop>);
 static_assert(std::is_trivially_destructible_v<core_if<>>);
 static_assert(std::is_trivially_destructible_v<core_begin_until<>>);
 static_assert(std::is_trivially_destructible_v<core_begin_while<>>);

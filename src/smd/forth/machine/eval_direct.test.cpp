@@ -183,15 +183,82 @@ static_assert([] {
     return state.data().depth() == 1 && state.data().peek(0).value() == 3;
 }());
 
-// -- DO...LOOP has no loop-index machinery yet (deferred to F17) ------------
-//
-// Not elaboration-checked at the top level (F12's analyze_colon_effect only
-// runs for colon definitions), so this reaches the evaluator, which
-// diagnoses it explicitly rather than running the body some undefined
-// number of times.
+// -- Counted loops (docs/forth-plan.md Step F17) ----------------------------
+
+// `: SUMTO 0 SWAP 1+ 0 DO I + LOOP ;  5 SUMTO` -- stack [15]. Exercises DO,
+// LOOP, I, and 1+ (DIV-0010).
+static_assert([] {
+    auto result = run_program(": SUMTO 0 SWAP 1+ 0 DO I + LOOP ;  5 SUMTO");
+    if (!result.has_value()) {
+        return false;
+    }
+    auto const &state = result.value();
+    return state.data().depth() == 1 && state.data().peek(0).value() == 15;
+}());
+
+// `: FIND5 10 0 DO I 5 = IF I LEAVE THEN LOOP ;  FIND5` -- stack [5].
+// Exercises LEAVE as a one-shot forward exit out of the loop.
+static_assert([] {
+    auto result =
+        run_program(": FIND5 10 0 DO I 5 = IF I LEAVE THEN LOOP ;  FIND5");
+    if (!result.has_value()) {
+        return false;
+    }
+    auto const &state = result.value();
+    return state.data().depth() == 1 && state.data().peek(0).value() == 5;
+}());
+
+// Nested loops and `J`: sum J over 3x3 iterations = 3*(0+1+2) = 9.
+static_assert([] {
+    auto result = run_program(": TENS 0 3 0 DO 3 0 DO J + LOOP LOOP ;  TENS");
+    if (!result.has_value()) {
+        return false;
+    }
+    auto const &state = result.value();
+    return state.data().depth() == 1 && state.data().peek(0).value() == 9;
+}());
+
+// `+LOOP`: `: EVENS10 0 10 0 DO I + 2 +LOOP ;` sums 0+2+4+6+8 = 20.
+static_assert([] {
+    auto result = run_program(": SUMEVEN 0 10 0 DO I + 2 +LOOP ;  SUMEVEN");
+    if (!result.has_value()) {
+        return false;
+    }
+    auto const &state = result.value();
+    return state.data().depth() == 1 && state.data().peek(0).value() == 20;
+}());
+
+// A top-level DO...LOOP now runs (F17); the empty-body loop leaves nothing.
 static_assert([] {
     auto result = run_program("5 0 DO LOOP");
-    return !result.has_value();
+    if (!result.has_value()) {
+        return false;
+    }
+    return result.value().data().depth() == 0;
+}());
+
+// `EXIT` inside a `DO` loop without `UNLOOP` is still diagnosed at
+// elaboration (diagnosis 4), so it never reaches the evaluator.
+static_assert([] {
+    auto tree = parse(": BAD 10 0 DO I 5 = IF EXIT THEN LOOP ; BAD");
+    auto unit = elaborate<test_max_nodes, test_max_body, test_max_name,
+                          test_max_words, test_max_data, test_max_warnings>(
+        tree.value(), ": BAD 10 0 DO I 5 = IF "
+                      "EXIT THEN LOOP ; BAD");
+    return !unit.has_value();
+}());
+
+// `UNLOOP EXIT` inside a `DO` loop is accepted (the UNLOOP clears the
+// requirement) and runs: FIRST returns the first index whose square exceeds
+// 8 (i.e. 3), leaving via UNLOOP EXIT with that index already on the stack.
+static_assert([] {
+    auto result = run_program(": FIRST 10 0 DO I DUP DUP * 8 > IF UNLOOP EXIT "
+                              "THEN DROP LOOP -1 ;  FIRST");
+    if (!result.has_value()) {
+        return false;
+    }
+    auto const &state = result.value();
+    return state.data().depth() == 1 && state.data().peek(0).value() == 3;
 }());
 
 // -- Memory words (Step F16 merge criteria) ----------------------------------
@@ -312,7 +379,54 @@ TEST_CASE("EvalDirectTest - WhileLoopIsRealRepetition") {
     CHECK(state.data().peek(0).value() == 3);
 }
 
-TEST_CASE("EvalDirectTest - DoLoopIsDiagnosedNotImplemented") {
-    auto result = run_program("5 0 DO LOOP");
-    CHECK_FALSE(result.has_value());
+TEST_CASE("EvalDirectTest - SumToCountedLoop") {
+    auto result = run_program(": SUMTO 0 SWAP 1+ 0 DO I + LOOP ;  5 SUMTO");
+    REQUIRE(result.has_value());
+    auto const &state = result.value();
+    CHECK(state.data().depth() == 1);
+    CHECK(state.data().peek(0).value() == 15);
+}
+
+TEST_CASE("EvalDirectTest - Find5Leave") {
+    auto result =
+        run_program(": FIND5 10 0 DO I 5 = IF I LEAVE THEN LOOP ;  FIND5");
+    REQUIRE(result.has_value());
+    auto const &state = result.value();
+    CHECK(state.data().depth() == 1);
+    CHECK(state.data().peek(0).value() == 5);
+}
+
+TEST_CASE("EvalDirectTest - NestedLoopJ") {
+    auto result = run_program(": TENS 0 3 0 DO 3 0 DO J + LOOP LOOP ;  TENS");
+    REQUIRE(result.has_value());
+    auto const &state = result.value();
+    CHECK(state.data().depth() == 1);
+    CHECK(state.data().peek(0).value() == 9);
+}
+
+TEST_CASE("EvalDirectTest - PlusLoop") {
+    auto result = run_program(": SUMEVEN 0 10 0 DO I + 2 +LOOP ;  SUMEVEN");
+    REQUIRE(result.has_value());
+    auto const &state = result.value();
+    CHECK(state.data().depth() == 1);
+    CHECK(state.data().peek(0).value() == 20);
+}
+
+TEST_CASE("EvalDirectTest - UnloopExitAcceptedAndRuns") {
+    auto result = run_program(": FIRST 10 0 DO I DUP DUP * 8 > IF UNLOOP EXIT "
+                              "THEN DROP LOOP -1 ;  FIRST");
+    REQUIRE(result.has_value());
+    auto const &state = result.value();
+    CHECK(state.data().depth() == 1);
+    CHECK(state.data().peek(0).value() == 3);
+}
+
+TEST_CASE("EvalDirectTest - ExitInDoWithoutUnloopDiagnosed") {
+    auto tree = parse(": BAD 10 0 DO I 5 = IF EXIT THEN LOOP ; BAD");
+    auto unit = elaborate<test_max_nodes, test_max_body, test_max_name,
+                          test_max_words, test_max_data, test_max_warnings>(
+        tree.value(), ": BAD 10 0 DO I 5 = IF EXIT THEN LOOP ; BAD");
+    REQUIRE_FALSE(unit.has_value());
+    CHECK(unit.error().message ==
+          std::string_view{"EXIT inside a DO loop requires UNLOOP"});
 }

@@ -57,7 +57,7 @@ static_assert([] {
 
 TEST_CASE("DictionaryTest - DefaultDictionaryInstallsAllPrimitives") {
     auto dict = default_dictionary<>();
-    CHECK(dict.size() == 46);
+    CHECK(dict.size() == 47);
     auto const *entry = dict.lookup("SWAP");
     REQUIRE(entry != nullptr);
     REQUIRE(std::holds_alternative<primitive>(entry->binding));
@@ -76,6 +76,12 @@ TEST_CASE("DictionaryTest - F13OutputAndOneMinusPrimitivesInstalled") {
     REQUIRE(std::holds_alternative<primitive>(one_minus_entry->binding));
     CHECK(std::get<primitive>(one_minus_entry->binding) ==
           primitive::one_minus);
+
+    // 1+ (DIV-0010), installed alongside 1- for F17's counted-loop criteria.
+    auto const *one_plus_entry = dict.lookup("1+");
+    REQUIRE(one_plus_entry != nullptr);
+    REQUIRE(std::holds_alternative<primitive>(one_plus_entry->binding));
+    CHECK(std::get<primitive>(one_plus_entry->binding) == primitive::one_plus);
 }
 
 TEST_CASE("DictionaryTest - F16MemoryPrimitivesInstalled") {

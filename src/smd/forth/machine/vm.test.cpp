@@ -138,6 +138,24 @@ constexpr test_program create_allot_program = compile("CREATE BUF 4 ALLOT "
 // mark. Matches EvalDirectTest - OutOfBoundsStoreIsDiagnosed.
 constexpr test_program oob_store_program = compile("VARIABLE X  99 X 5 + !");
 
+// -- Counted loops (docs/forth-plan.md Step F17), through the VM ------------
+
+// `: SUMTO 0 SWAP 1+ 0 DO I + LOOP ;  5 SUMTO` -- stack [15].
+constexpr test_program sumto_program =
+    compile(": SUMTO 0 SWAP 1+ 0 DO I + LOOP ;  5 SUMTO");
+
+// `: FIND5 10 0 DO I 5 = IF I LEAVE THEN LOOP ;  FIND5` -- stack [5].
+constexpr test_program find5_program =
+    compile(": FIND5 10 0 DO I 5 = IF I LEAVE THEN LOOP ;  FIND5");
+
+// Nested loops + J: sum J over 3x3 iterations = 9.
+constexpr test_program tens_program =
+    compile(": TENS 0 3 0 DO 3 0 DO J + LOOP LOOP ;  TENS");
+
+// `+LOOP`: sum 0+2+4+6+8 = 20.
+constexpr test_program sumeven_program =
+    compile(": SUMEVEN 0 10 0 DO I + 2 +LOOP ;  SUMEVEN");
+
 } // namespace
 
 static_assert([] {
@@ -294,4 +312,66 @@ TEST_CASE("VmTest - OutOfBoundsStoreIsDiagnosed") {
     test_state state{};
     auto r = run(oob_store_program, state, 100000);
     CHECK_FALSE(r.has_value());
+}
+
+// -- Counted loops agree with the direct evaluator (both backends) ----------
+
+static_assert([] {
+    test_state state{};
+    auto r = run(sumto_program, state, /*fuel=*/100000);
+    return r.has_value() && state.data().depth() == 1 &&
+           state.data().peek(0).value() == 15;
+}());
+
+TEST_CASE("VmTest - SumToCountedLoop") {
+    test_state state{};
+    auto r = run(sumto_program, state, 100000);
+    REQUIRE(r.has_value());
+    CHECK(state.data().depth() == 1);
+    CHECK(state.data().peek(0).value() == 15);
+}
+
+static_assert([] {
+    test_state state{};
+    auto r = run(find5_program, state, /*fuel=*/100000);
+    return r.has_value() && state.data().depth() == 1 &&
+           state.data().peek(0).value() == 5;
+}());
+
+TEST_CASE("VmTest - Find5Leave") {
+    test_state state{};
+    auto r = run(find5_program, state, 100000);
+    REQUIRE(r.has_value());
+    CHECK(state.data().depth() == 1);
+    CHECK(state.data().peek(0).value() == 5);
+}
+
+static_assert([] {
+    test_state state{};
+    auto r = run(tens_program, state, /*fuel=*/100000);
+    return r.has_value() && state.data().depth() == 1 &&
+           state.data().peek(0).value() == 9;
+}());
+
+TEST_CASE("VmTest - NestedLoopJ") {
+    test_state state{};
+    auto r = run(tens_program, state, 100000);
+    REQUIRE(r.has_value());
+    CHECK(state.data().depth() == 1);
+    CHECK(state.data().peek(0).value() == 9);
+}
+
+static_assert([] {
+    test_state state{};
+    auto r = run(sumeven_program, state, /*fuel=*/100000);
+    return r.has_value() && state.data().depth() == 1 &&
+           state.data().peek(0).value() == 20;
+}());
+
+TEST_CASE("VmTest - PlusLoop") {
+    test_state state{};
+    auto r = run(sumeven_program, state, 100000);
+    REQUIRE(r.has_value());
+    CHECK(state.data().depth() == 1);
+    CHECK(state.data().peek(0).value() == 20);
 }
