@@ -90,9 +90,13 @@ do (same `constexpr compiled_program` at namespace scope run twice).
   top of call frames. Tests use `RStackDepth = 8`; a `CATCH` handler frame plus
   nested loops plus calls add up. Size test `forth_state` return stacks with
   headroom (still no computed bound — DIV-0008's `required_return_depth` is `-1`).
-- **`1+` now exists** as `primitive::one_plus` (DIV-0010); the default dictionary
-  has **43** primitives now (was 42) — any test asserting a dictionary size or a
-  first-colon-word index of 42 must use 43 (F17 fixed the existing ones).
+- **The default dictionary now has 47 primitives** (was 42) — F16 and F17 landed
+  together. F16 added `@`/`!`/`+!`/`ALLOT` (`primitive::fetch`/`store`/`plus_store`/
+  `allot`, DIV-0009) and F17 added `1+` (`primitive::one_plus`, DIV-0010). Any test
+  asserting a dictionary size, or the xt/index of the first colon word defined after
+  the primitives, must use **47** (both steps fixed the existing ones). Memory words
+  (`VARIABLE`/`CONSTANT`/`CREATE`/`ALLOT`/`@`/`!`/`+!`) are fully wired through both
+  backends now, so F18a tests may freely combine them with `'`/`EXECUTE`/`CATCH`.
 - **`LEAVE` poisons a definition's stack effect to `unknown`** (DIV-0010); mixing
   `EXECUTE` (also `unknown`) with loops yields an `unknown` whole-definition
   effect — that suppresses depth checking, it is not an error.
