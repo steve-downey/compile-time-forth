@@ -26,3 +26,15 @@
 - [ ] Step F20: CREATE/DOES> (optional)
 - [ ] Step F21: error-quality and negative-compile pass
 - [ ] Step F22: documentation consolidation
+
+## Blog series (docs/blog/AGENTS.md — distinct Sonnet blog agent, one post per step)
+
+- [x] Blog: F0–F15 arc (Parts 0-9)
+- [ ] Blog: F16 memory words end-to-end (Part 10)
+- [ ] Blog: F17 counted loops (Part 11)
+- [ ] Blog: F18a execution tokens and exceptions (Part 12)
+- [ ] Blog: F18 sender/receiver CPS backend (Part 13)
+- [ ] Blog: F19 foreign function interface (Part 14)
+- [ ] Blog: F20 CREATE/DOES> (Part 15)
+- [ ] Blog: F21 error-quality and negative-compile pass (Part 16)
+- [ ] Blog: F22 documentation consolidation (Part 17)

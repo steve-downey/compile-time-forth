@@ -139,6 +139,16 @@ sub-agents.
     # (the anchor and its "<uuid> end" marker).
     ```
 - Merge to main with `--no-ff` only when all checks pass.
+- After the merge, **dispatch a distinct Sonnet blog agent** to write that step's
+  public blog entry (section 8; full contract in `docs/blog/AGENTS.md`). It is
+  never the worker that implemented the step — a separate sub-agent, so the
+  builder stays on code and the writer on prose. Dispatch it *after* the worker
+  has rewritten `step-brief.md`, and hand it the step's commit range, its commit
+  message, any DIV docs it filed, and a **snapshot of that fresh `step-brief.md`**
+  (paste it — the next step's worker overwrites the file). The blog agent uses the
+  `voice` skill. Its post covers only this step, written as if in real time, so it
+  must run before later steps can leak backward into it — but it must not block
+  the next step: blog(N) and code(N+1) may run in parallel.
 - If a worker is blocked, capture the blocker in `step-brief.md` and either
   re-scope the step or file a divergence doc and move on.
 - Periodically (at least at F7, F14, F18) run the full toolchain matrix:
@@ -387,16 +397,50 @@ added with `add_subdirectory`. The existing installed target name
 
 # 8. Documentation workstream
 
-Lighter than the Scheme repo's blog pipeline; two artifacts:
+Three artifacts:
 
 - `docs/compiler_architecture.org` — created at F6, updated by every step that
   adds a pipeline stage (F7, F11, F12, F13, F14, F15, F18, F19), transcluding
   live code via UUID anchors, never hand-copied blocks.
 - `compile-time-forth.org` (repo root, the presentation) — rewritten at F22 to
   transclude the real compiler instead of the scaffold placeholder.
+- `docs/blog/` — an epistolary blog series, one post per step, produced by a
+  distinct Sonnet blog agent as each step lands (see below). The `.org` source is
+  the source of truth; `make blog-md` exports GitHub-flavored markdown.
 
-Prose is drafted by agents, one sentence per line, marked
-`DRAFT — pending author revision`; the author finalizes.
+Prose in the architecture doc and the presentation is drafted by agents, one
+sentence per line, marked `DRAFT — pending author revision`; the author
+finalizes. The blog is drafted in the author's voice (below), not one-sentence
+DRAFT prose.
+
+## Per-step blog entry (distinct Sonnet blog agent)
+
+Each step gets a blog post written by a **separate Sonnet sub-agent — never the
+worker that built the step**. The orchestrator dispatches it after the step
+merges and the worker has rewritten `step-brief.md` (section 2). The full,
+portable authoring contract is `docs/blog/AGENTS.md`; in outline:
+
+- **Inputs (the execution agent's results and notes):** the step's commit range
+  and message, its diff, any `DIV-NNNN` docs it filed, the
+  `docs/compiler_architecture.org` anchors it added or changed, and the
+  `step-brief.md` snapshot the worker just wrote — whose "what this step
+  discovered" section is the surprise/gotcha material. The orchestrator pastes
+  the snapshot, since the next worker overwrites the file.
+- **Voice:** the agent uses the `voice` skill (blog register) and passes
+  `scripts/lexcheck.py --register blog`.
+- **Real-time and non-omniscient:** the post covers only this step, written as if
+  in the moment. It never references later steps or their outcomes; a limitation
+  it predicts stays open, not resolved. Running it right after the step lands is
+  what keeps this honest.
+- **Orchestration invisible:** first-person builder voice. No worktrees, token
+  budgets, sub-agents, `DIV-NNNN` IDs, `F#` step numbers, or handoff/plan
+  machinery in the prose — divergence *content* is retold as the author's own
+  discovery.
+- **Output:** `docs/blog/post-N-<slug>.org`, continuing the existing Part-N
+  sequence (F0–F15 are Parts 0–9; F16 is Part 10, one post per step from there).
+  Verbatim code is pulled by orgit transclusion; the `#+DATE` is the step's
+  commit date. `make blog-md` regenerates the `.md`; the agent updates the prior
+  post's next-link and `index.org`, and commits the `.org` plus generated `.md`.
 
 ---
 
@@ -905,6 +949,18 @@ Dependencies: everything else.
 - [ ] Step F20: CREATE/DOES> (optional)
 - [ ] Step F21: error-quality and negative-compile pass
 - [ ] Step F22: documentation consolidation
+
+## Blog series (docs/blog/AGENTS.md — distinct Sonnet blog agent, one post per step)
+
+- [ ] Blog: F0–F15 arc (Parts 0-9)
+- [ ] Blog: F16 memory words end-to-end (Part 10)
+- [ ] Blog: F17 counted loops (Part 11)
+- [ ] Blog: F18a execution tokens and exceptions (Part 12)
+- [ ] Blog: F18 sender/receiver CPS backend (Part 13)
+- [ ] Blog: F19 foreign function interface (Part 14)
+- [ ] Blog: F20 CREATE/DOES> (Part 15)
+- [ ] Blog: F21 error-quality and negative-compile pass (Part 16)
+- [ ] Blog: F22 documentation consolidation (Part 17)
 ```
 
 ---
