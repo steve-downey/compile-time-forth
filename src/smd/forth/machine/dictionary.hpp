@@ -283,21 +283,22 @@ constexpr auto dictionary<MaxWords, MaxName>::size() const -> int {
     return entries_.size();
 }
 
-/// Builds a dictionary with every F8/F13 primitive installed under its Forth
-/// name (`+ - * / MOD NEGATE ABS MIN MAX AND OR XOR INVERT LSHIFT RSHIFT 1-
-/// 0= 0< = <> < > <= >= TRUE FALSE DUP DROP SWAP OVER ROT ?DUP NIP TUCK
-/// DEPTH >R R> R@ . .S EMIT CR`) -- 42 words, one per @ref primitive
-/// enumerator (`.`, `.S`, `EMIT`, `CR` are step F13's output words, D10;
-/// `1-` is also new this step, see DIV-0007).
+/// Builds a dictionary with every F8/F13/F16 primitive installed under its
+/// Forth name (`+ - * / MOD NEGATE ABS MIN MAX AND OR XOR INVERT LSHIFT
+/// RSHIFT 1- 0= 0< = <> < > <= >= TRUE FALSE DUP DROP SWAP OVER ROT ?DUP NIP
+/// TUCK DEPTH >R R> R@ . .S EMIT CR @ ! +! ALLOT`) -- 46 words, one per @ref
+/// primitive enumerator (`.`, `.S`, `EMIT`, `CR` are step F13's output words,
+/// D10; `1-` is also from that step, see DIV-0007; `@`, `!`, `+!`, `ALLOT`
+/// are step F16's memory words, D10).
 ///
-/// @tparam MaxWords Dictionary capacity; must be at least 42 plus whatever
+/// @tparam MaxWords Dictionary capacity; must be at least 46 plus whatever
 ///                  room the caller wants for later colon/variable/constant/
 ///                  foreign definitions.
 /// @tparam MaxName  Maximum name length.
 template <int MaxWords = 256, int MaxName = 32>
 constexpr auto default_dictionary() -> dictionary<MaxWords, MaxName> {
     dictionary<MaxWords, MaxName> dict;
-    constexpr std::array<std::pair<std::string_view, primitive>, 42> words{{
+    constexpr std::array<std::pair<std::string_view, primitive>, 46> words{{
         {"+", primitive::plus},        {"-", primitive::minus},
         {"*", primitive::star},        {"/", primitive::slash},
         {"MOD", primitive::mod_},      {"NEGATE", primitive::negate},
@@ -319,6 +320,8 @@ constexpr auto default_dictionary() -> dictionary<MaxWords, MaxName> {
         {"R>", primitive::r_from},     {"R@", primitive::r_fetch},
         {".", primitive::dot},         {".S", primitive::dot_s},
         {"EMIT", primitive::emit},     {"CR", primitive::cr},
+        {"@", primitive::fetch},       {"!", primitive::store},
+        {"+!", primitive::plus_store}, {"ALLOT", primitive::allot},
     }};
     for (auto const &[name_text, op] : words) {
         (void)dict.define_primitive(name_text, op);

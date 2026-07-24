@@ -72,6 +72,12 @@ static_assert(primitive_data_effect(primitive::to_r) == known(1, 0));
 static_assert(primitive_data_effect(primitive::r_from) == known(0, 1));
 static_assert(primitive_data_effect(primitive::r_fetch) == known(0, 1));
 
+// Memory (Step F16): none of the four are input-dependent, unlike ?DUP.
+static_assert(primitive_data_effect(primitive::fetch) == known(1, 1));
+static_assert(primitive_data_effect(primitive::store) == known(2, 0));
+static_assert(primitive_data_effect(primitive::plus_store) == known(2, 0));
+static_assert(primitive_data_effect(primitive::allot) == known(1, 0));
+
 static_assert(primitive_return_delta(primitive::to_r) == 1);
 static_assert(primitive_return_delta(primitive::r_from) == -1);
 static_assert(primitive_return_delta(primitive::r_fetch) == 0);
@@ -164,6 +170,20 @@ static_assert([] {
 // trusted as the assumed effect of the RECURSE call site.
 static_assert(effect_of(": LOOP1 ( n -- n ) RECURSE ;", "LOOP1") ==
               stack_effect{.inputs = 1, .outputs = 1, .known = true});
+
+// A colon definition using Step F16's own memory primitives: BUMP reads X,
+// adds one, and stores it back -- a net-zero effect, computed correctly only
+// if @/+/! compose through this step's own primitive_data_effect entries.
+static_assert([] {
+    auto unit = elaborate_source("VARIABLE X : BUMP X @ 1 + X ! ;");
+    if (!unit.has_value()) {
+        return false;
+    }
+    auto const &bump_cw =
+        std::get<colon_word>(unit.value().dictionary.lookup("BUMP")->binding);
+    return bump_cw.effect ==
+           stack_effect{.inputs = 0, .outputs = 0, .known = true};
+}());
 
 // -- Diagnosis 1: IF/ELSE arms with unequal net effect -----------------------
 
@@ -258,6 +278,15 @@ TEST_CASE("StackEffectTest - AbsIfNoElseTypeChecks") {
 TEST_CASE("StackEffectTest - RecurseUsesDeclaredEffect") {
     CHECK(effect_of(": LOOP1 ( n -- n ) RECURSE ;", "LOOP1") ==
           stack_effect{.inputs = 1, .outputs = 1, .known = true});
+}
+
+TEST_CASE("StackEffectTest - MemoryWordsComposeThroughEffectTable") {
+    auto unit = elaborate_source("VARIABLE X : BUMP X @ 1 + X ! ;");
+    REQUIRE(unit.has_value());
+    auto const &bump_cw =
+        std::get<colon_word>(unit.value().dictionary.lookup("BUMP")->binding);
+    CHECK(bump_cw.effect ==
+          stack_effect{.inputs = 0, .outputs = 0, .known = true});
 }
 
 TEST_CASE("StackEffectTest - IfArmsMismatchDiagnosed") {

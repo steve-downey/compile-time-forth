@@ -107,3 +107,21 @@ TEST_CASE("ForthTest - CapacitiesAreOverridable") {
     REQUIRE(s.size() == 1);
     CHECK(s[0] == 2);
 }
+
+// Step F16's own merge criterion, through the public one-shot API: no
+// forth_program/compiled_forth change was needed to support it -- data-space
+// seeding lives entirely inside machine::run (vm.hpp), which
+// forth_program::run/stack/output already call for every fresh state.
+static_assert([] {
+    auto s = compiled_forth<"VARIABLE X  5 X !  X @ 3 + X !  X @ "
+                            "7 CONSTANT LUCKY  LUCKY LUCKY +">.stack();
+    return s.size() == 2 && s[0] == 8 && s[1] == 14;
+}());
+
+TEST_CASE("ForthTest - MemoryWordsMergeCriterion") {
+    auto s = compiled_forth<"VARIABLE X  5 X !  X @ 3 + X !  X @ "
+                            "7 CONSTANT LUCKY  LUCKY LUCKY +">.stack();
+    REQUIRE(s.size() == 2);
+    CHECK(s[0] == 8);
+    CHECK(s[1] == 14);
+}

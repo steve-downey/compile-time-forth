@@ -194,6 +194,72 @@ static_assert([] {
     return !result.has_value();
 }());
 
+// -- Memory words (Step F16 merge criteria) ----------------------------------
+//
+// `VARIABLE X  5 X !  X @ 3 + X !  X @` -- stack [8], and
+// `7 CONSTANT LUCKY  LUCKY LUCKY +` -- stack [14], both in one program per
+// the plan's own combined merge criterion. `@`/`!`/`+!` round-trip through a
+// real forth_state data space seeded from unit.data_space (this step's own
+// wiring), not just literal addresses.
+static_assert([] {
+    auto result = run_program("VARIABLE X  5 X !  X @ 3 + X !  X @ "
+                              "7 CONSTANT LUCKY  LUCKY LUCKY +");
+    if (!result.has_value()) {
+        return false;
+    }
+    auto const &state = result.value();
+    return state.data().depth() == 2 && state.data().peek(0).value() == 14 &&
+           state.data().peek(1).value() == 8;
+}());
+
+// `CREATE BUF 4 ALLOT` -- BUF is usable as a base address: storing through
+// BUF and BUF+3 (the last of the four ALLOT'd cells) and reading both back
+// proves ALLOT actually extended the data space past CREATE's own address,
+// not merely recorded it (elaborate_create allots nothing itself).
+static_assert([] {
+    auto result = run_program("CREATE BUF 4 ALLOT "
+                              "10 BUF ! 20 BUF 3 + ! "
+                              "BUF @ BUF 3 + @ +");
+    if (!result.has_value()) {
+        return false;
+    }
+    auto const &state = result.value();
+    return state.data().depth() == 1 && state.data().peek(0).value() == 30;
+}());
+
+// An out-of-bounds store is a diagnosed error, never UB (D7): X is a
+// one-cell VARIABLE, so X + 5 lands past the data space's own high-water
+// mark.
+static_assert([] {
+    auto result = run_program("VARIABLE X  99 X 5 + !");
+    return !result.has_value();
+}());
+
+TEST_CASE("EvalDirectTest - MemoryWordsMergeCriterion") {
+    auto result = run_program("VARIABLE X  5 X !  X @ 3 + X !  X @ "
+                              "7 CONSTANT LUCKY  LUCKY LUCKY +");
+    REQUIRE(result.has_value());
+    auto const &state = result.value();
+    REQUIRE(state.data().depth() == 2);
+    CHECK(state.data().peek(0).value() == 14);
+    CHECK(state.data().peek(1).value() == 8);
+}
+
+TEST_CASE("EvalDirectTest - CreateAllotMergeCriterion") {
+    auto result = run_program("CREATE BUF 4 ALLOT "
+                              "10 BUF ! 20 BUF 3 + ! "
+                              "BUF @ BUF 3 + @ +");
+    REQUIRE(result.has_value());
+    auto const &state = result.value();
+    CHECK(state.data().depth() == 1);
+    CHECK(state.data().peek(0).value() == 30);
+}
+
+TEST_CASE("EvalDirectTest - OutOfBoundsStoreIsDiagnosed") {
+    auto result = run_program("VARIABLE X  99 X 5 + !");
+    CHECK_FALSE(result.has_value());
+}
+
 TEST_CASE("EvalDirectTest - SquaredMergeCriterion") {
     auto result = run_program(": SQUARED DUP * ;  4 SQUARED");
     REQUIRE(result.has_value());

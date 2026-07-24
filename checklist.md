@@ -18,7 +18,7 @@
 - [x] Step F13: direct evaluator
 - [x] Step F14: stack-machine codegen and VM
 - [x] Step F15: public one-shot API
-- [ ] Step F16: memory words end-to-end
+- [x] Step F16: memory words end-to-end
 - [ ] Step F17: counted loops
 - [ ] Step F18a: execution tokens and exceptions
 - [ ] Step F18: sender/receiver CPS backend

@@ -118,6 +118,26 @@ constexpr test_program upto3_program =
 constexpr test_program exit_boundary_program =
     compile(": INNER DUP 0< IF EXIT THEN DROP ; : OUTER INNER 99 ; -3 OUTER");
 
+// `VARIABLE X  5 X !  X @ 3 + X !  X @` -- stack [8], and
+// `7 CONSTANT LUCKY  LUCKY LUCKY +` -- stack [14], step F16's own merge
+// criterion, matching EvalDirectTest - MemoryWordsMergeCriterion.
+constexpr test_program memory_words_program =
+    compile("VARIABLE X  5 X !  X @ 3 + X !  X @ "
+            "7 CONSTANT LUCKY  LUCKY LUCKY +");
+
+// `CREATE BUF 4 ALLOT` -- BUF is usable as a base address; stack [30] once
+// both allotted cells are stored through and summed, matching
+// EvalDirectTest - CreateAllotMergeCriterion.
+constexpr test_program create_allot_program = compile("CREATE BUF 4 ALLOT "
+                                                      "10 BUF ! 20 BUF 3 + ! "
+                                                      "BUF @ BUF 3 + @ +");
+
+// `VARIABLE X  99 X 5 + !` -- codegen succeeds (an ordinary, well-formed
+// program); the store itself is what fails at runtime, since X is a
+// one-cell VARIABLE and X + 5 lands past the data space's own high-water
+// mark. Matches EvalDirectTest - OutOfBoundsStoreIsDiagnosed.
+constexpr test_program oob_store_program = compile("VARIABLE X  99 X 5 + !");
+
 } // namespace
 
 static_assert([] {
@@ -224,4 +244,54 @@ TEST_CASE("VmTest - ExitUnwindsOnlyToItsOwnCallBoundary") {
     REQUIRE(state.data().depth() == 2);
     CHECK(state.data().peek(0).value() == 99);
     CHECK(state.data().peek(1).value() == -3);
+}
+
+// -- Memory words (Step F16 merge criteria) ----------------------------------
+
+static_assert([] {
+    test_state state{};
+    auto r = run(memory_words_program, state, /*fuel=*/100000);
+    if (!r.has_value()) {
+        return false;
+    }
+    return state.data().depth() == 2 && state.data().peek(0).value() == 14 &&
+           state.data().peek(1).value() == 8;
+}());
+
+TEST_CASE("VmTest - MemoryWordsMergeCriterion") {
+    test_state state{};
+    auto r = run(memory_words_program, state, 100000);
+    REQUIRE(r.has_value());
+    REQUIRE(state.data().depth() == 2);
+    CHECK(state.data().peek(0).value() == 14);
+    CHECK(state.data().peek(1).value() == 8);
+}
+
+static_assert([] {
+    test_state state{};
+    auto r = run(create_allot_program, state, /*fuel=*/100000);
+    if (!r.has_value()) {
+        return false;
+    }
+    return state.data().depth() == 1 && state.data().peek(0).value() == 30;
+}());
+
+TEST_CASE("VmTest - CreateAllotMergeCriterion") {
+    test_state state{};
+    auto r = run(create_allot_program, state, 100000);
+    REQUIRE(r.has_value());
+    CHECK(state.data().depth() == 1);
+    CHECK(state.data().peek(0).value() == 30);
+}
+
+static_assert([] {
+    test_state state{};
+    auto r = run(oob_store_program, state, /*fuel=*/100000);
+    return !r.has_value();
+}());
+
+TEST_CASE("VmTest - OutOfBoundsStoreIsDiagnosed") {
+    test_state state{};
+    auto r = run(oob_store_program, state, 100000);
+    CHECK_FALSE(r.has_value());
 }
