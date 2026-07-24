@@ -124,6 +124,34 @@ constexpr auto elaborate_word_ref(
             core_node<MaxNodes, MaxBody>{
                 .value = core_call{.word_index = self_index, .pos = pos}});
     }
+    // Counted-loop body words (F17): recognized here, before any dictionary
+    // lookup, exactly like EXIT/RECURSE -- never installed as dictionary
+    // entries or primitives (which keeps them clear of F16's own primitive
+    // edits). Unlike EXIT/RECURSE they are *not* restricted to inside a colon
+    // definition: a top-level `DO ... LOOP` may legitimately use them, and a
+    // misuse outside any loop is diagnosed at run time (return-stack
+    // underflow) rather than here, since word resolution does not track loop
+    // nesting.
+    if (name_text == "I") {
+        return foundation::make_arena_box(
+            unit.arena, core_node<MaxNodes, MaxBody>{
+                            .value = core_loop_index{.level = 0, .pos = pos}});
+    }
+    if (name_text == "J") {
+        return foundation::make_arena_box(
+            unit.arena, core_node<MaxNodes, MaxBody>{
+                            .value = core_loop_index{.level = 1, .pos = pos}});
+    }
+    if (name_text == "LEAVE") {
+        return foundation::make_arena_box(
+            unit.arena,
+            core_node<MaxNodes, MaxBody>{.value = core_leave{.pos = pos}});
+    }
+    if (name_text == "UNLOOP") {
+        return foundation::make_arena_box(
+            unit.arena,
+            core_node<MaxNodes, MaxBody>{.value = core_unloop{.pos = pos}});
+    }
     auto const *entry = unit.dictionary.lookup(name_text);
     if (entry == nullptr) {
         return foundation::parse_error{pos, "unknown word"};

@@ -194,6 +194,7 @@ enum class primitive {
     lshift,    ///< `LSHIFT` ( a n -- a<<n )
     rshift,    ///< `RSHIFT` ( a n -- a>>n ), logical (unsigned) shift.
     one_minus, ///< `1-`     ( a -- a-1 ), see DIV-0007.
+    one_plus,  ///< `1+`     ( a -- a+1 ), see DIV-0010.
 
     // Comparison.
     zero_equal,    ///< `0=`  ( a -- flag )   a == 0
@@ -372,6 +373,8 @@ apply_primitive(primitive op,
         });
     case primitive::one_minus:
         return unary([](cell a) { return a - 1; });
+    case primitive::one_plus:
+        return unary([](cell a) { return a + 1; });
     case primitive::zero_equal:
         return unary([](cell a) { return a == 0 ? flag_true : flag_false; });
     case primitive::zero_less:

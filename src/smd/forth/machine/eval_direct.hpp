@@ -55,6 +55,11 @@ enum class eval_signal {
     normal, ///< Control reached the end of the body/node normally.
     exited, ///< A `core_exit` occurred; the caller must stop evaluating
             ///< anything else in the body currently unwinding through.
+    left,   ///< A `core_leave` (`LEAVE`) occurred; propagates upward through
+            ///< nested control bodies exactly like @ref exited, but is
+            ///< absorbed by the nearest enclosing `core_do_loop` (which tears
+            ///< down its loop frame and continues past the loop) rather than
+            ///< by a `core_call`.
 };
 
 /// Decrements @p fuel, the evaluator's step budget, diagnosing exhaustion at
@@ -187,6 +192,35 @@ eval_node(elaborator::compiled_unit<MaxNodes, MaxBody, MaxName, MaxWords,
                 return eval_signal::normal;
             } else if constexpr (std::is_same_v<T, elaborator::core_exit>) {
                 return eval_signal::exited;
+            } else if constexpr (std::is_same_v<T,
+                                                elaborator::core_loop_index>) {
+                // The loop frame DO established on the return stack is (limit
+                // index) per loop, index on top; a level-L index sits at
+                // return-stack offset 2*L (I=0, J=2). Reading it does not
+                // disturb the return stack.
+                auto v = state.returns().peek(2 * alt.level);
+                if (!v.has_value()) {
+                    return v.error();
+                }
+                auto r = state.data().push(v.value());
+                if (!r.has_value()) {
+                    return r.error();
+                }
+                return eval_signal::normal;
+            } else if constexpr (std::is_same_v<T, elaborator::core_leave>) {
+                return eval_signal::left;
+            } else if constexpr (std::is_same_v<T, elaborator::core_unloop>) {
+                // Discard the innermost loop frame (index then limit) without
+                // branching, leaving the return stack as it was before DO.
+                auto index = state.returns().pop();
+                if (!index.has_value()) {
+                    return index.error();
+                }
+                auto limit = state.returns().pop();
+                if (!limit.has_value()) {
+                    return limit.error();
+                }
+                return eval_signal::normal;
             } else if constexpr (std::is_same_v<T, elaborator::core_if<
                                                        MaxNodes, MaxBody>>) {
                 auto flag = state.data().pop();
@@ -203,8 +237,8 @@ eval_node(elaborator::compiled_unit<MaxNodes, MaxBody, MaxName, MaxWords,
                     if (!body_r.has_value()) {
                         return body_r.error();
                     }
-                    if (body_r.value() == eval_signal::exited) {
-                        return eval_signal::exited;
+                    if (body_r.value() != eval_signal::normal) {
+                        return body_r.value();
                     }
                     auto flag = state.data().pop();
                     if (!flag.has_value()) {
@@ -222,8 +256,8 @@ eval_node(elaborator::compiled_unit<MaxNodes, MaxBody, MaxName, MaxWords,
                     if (!cond_r.has_value()) {
                         return cond_r.error();
                     }
-                    if (cond_r.value() == eval_signal::exited) {
-                        return eval_signal::exited;
+                    if (cond_r.value() != eval_signal::normal) {
+                        return cond_r.value();
                     }
                     auto flag = state.data().pop();
                     if (!flag.has_value()) {
@@ -236,23 +270,100 @@ eval_node(elaborator::compiled_unit<MaxNodes, MaxBody, MaxName, MaxWords,
                     if (!body_r.has_value()) {
                         return body_r.error();
                     }
-                    if (body_r.value() == eval_signal::exited) {
-                        return eval_signal::exited;
+                    if (body_r.value() != eval_signal::normal) {
+                        return body_r.value();
                     }
                 }
                 return eval_signal::normal;
             } else if constexpr (std::is_same_v<T, elaborator::core_do_loop<
                                                        MaxNodes, MaxBody>>) {
-                // DO...LOOP has no loop-index machinery at the core level
-                // yet (no node pops the loop's (limit start) pair or exposes
-                // I/J) -- that is F17's own deliverable
-                // (do_setup/I/J/LEAVE/UNLOOP), per handoff-next.md's F13
-                // briefing. F13's own merge criteria never exercise
-                // DO...LOOP, so this is diagnosed rather than silently
-                // running the body some arbitrary number of times.
-                return foundation::parse_error{
-                    alt.pos,
-                    "DO...LOOP evaluation is not implemented until F17"};
+                // `limit start DO ... LOOP/+LOOP` (F17). The loop parameters
+                // live on the return stack as the pair (limit index), index
+                // on top, so I/J read them by offset and they nest correctly
+                // with an outer loop's own frame. `start` is the top data
+                // cell, `limit` the one below it.
+                auto start = state.data().pop();
+                if (!start.has_value()) {
+                    return start.error();
+                }
+                auto limit = state.data().pop();
+                if (!limit.has_value()) {
+                    return limit.error();
+                }
+                if (auto r = state.returns().push(limit.value());
+                    !r.has_value()) {
+                    return r.error();
+                }
+                if (auto r = state.returns().push(start.value());
+                    !r.has_value()) {
+                    return r.error();
+                }
+                for (;;) {
+                    auto step = consume_fuel(fuel, alt.pos);
+                    if (!step.has_value()) {
+                        return step.error();
+                    }
+                    auto body_r = eval_body(unit, alt.body, state, fuel);
+                    if (!body_r.has_value()) {
+                        return body_r.error();
+                    }
+                    if (body_r.value() == eval_signal::exited) {
+                        // A well-formed early EXIT out of a DO loop is preceded
+                        // by UNLOOP (diagnosis 4), which already tore down the
+                        // frame; just keep unwinding to the enclosing call.
+                        return eval_signal::exited;
+                    }
+                    if (body_r.value() == eval_signal::left) {
+                        // LEAVE: discard this loop's frame and fall out past
+                        // the loop.
+                        if (auto r = state.returns().pop(); !r.has_value()) {
+                            return r.error();
+                        }
+                        if (auto r = state.returns().pop(); !r.has_value()) {
+                            return r.error();
+                        }
+                        return eval_signal::normal;
+                    }
+                    // Advance the loop index (top of the return stack).
+                    auto index = state.returns().pop();
+                    if (!index.has_value()) {
+                        return index.error();
+                    }
+                    auto lim = state.returns().peek(0);
+                    if (!lim.has_value()) {
+                        return lim.error();
+                    }
+                    bool terminate = false;
+                    cell next{};
+                    if (alt.is_plus_loop) {
+                        // `+LOOP`: add the increment the body left on the data
+                        // stack; terminate when the index crosses the boundary
+                        // between limit-1 and limit (Forth-2012), i.e. when the
+                        // sign of (index - limit) flips.
+                        auto incr = state.data().pop();
+                        if (!incr.has_value()) {
+                            return incr.error();
+                        }
+                        cell const before = index.value() - lim.value();
+                        next = index.value() + incr.value();
+                        cell const after = next - lim.value();
+                        terminate = (before ^ after) < 0;
+                    } else {
+                        // `LOOP`: add one; terminate when the index reaches the
+                        // limit (Forth-2012 equality test).
+                        next = index.value() + 1;
+                        terminate = next == lim.value();
+                    }
+                    if (terminate) {
+                        if (auto r = state.returns().pop(); !r.has_value()) {
+                            return r.error();
+                        }
+                        return eval_signal::normal;
+                    }
+                    if (auto r = state.returns().push(next); !r.has_value()) {
+                        return r.error();
+                    }
+                }
             } else {
                 // core_seq: never visited here in practice -- a core_call's
                 // target is unwrapped directly (see above) rather than
@@ -270,11 +381,13 @@ eval_node(elaborator::compiled_unit<MaxNodes, MaxBody, MaxName, MaxWords,
 }
 
 /// Evaluates @p items in order against @p state, stopping early (without
-/// visiting the rest of @p items) the moment any item reports @ref
-/// eval_signal::exited -- code after an `EXIT` never runs, matching F12's
-/// `analyze_body` treatment of the same shape (stack_effect.hpp), except
-/// here it is a real runtime early return rather than an abstract-
-/// interpretation shortcut.
+/// visiting the rest of @p items) the moment any item reports a non-@ref
+/// eval_signal::normal signal -- code after an `EXIT` or `LEAVE` never runs,
+/// matching F12's `analyze_body` treatment of the same shape
+/// (stack_effect.hpp), except here it is a real runtime early return rather
+/// than an abstract-interpretation shortcut. Both @ref eval_signal::exited and
+/// @ref eval_signal::left propagate through unchanged; each is absorbed at its
+/// own boundary (a `core_call` for `exited`, a `core_do_loop` for `left`).
 template <int MaxNodes, int MaxBody, int MaxName, int MaxWords, int MaxData,
           int MaxWarnings, int StackDepth, int RStackDepth, int MaxOut>
 constexpr auto
@@ -289,8 +402,8 @@ eval_body(elaborator::compiled_unit<MaxNodes, MaxBody, MaxName, MaxWords,
         if (!r.has_value()) {
             return r.error();
         }
-        if (r.value() == eval_signal::exited) {
-            return eval_signal::exited;
+        if (r.value() != eval_signal::normal) {
+            return r.value();
         }
     }
     return eval_signal::normal;

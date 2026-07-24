@@ -165,15 +165,124 @@ constexpr auto run(compiled_program<MaxCode, MaxWords> const &program,
         }
         case op::halt:
             return std::monostate{};
-        case op::do_setup:
-        case op::loop_step:
-        case op::plus_loop_step:
-        case op::push_index:
-        case op::leave:
-        case op::unloop:
-            return foundation::parse_error{
-                foundation::source_pos{},
-                "counted-loop opcode not implemented until F17"};
+        case op::do_setup: {
+            // ( limit start -- ) ( R: -- limit index ); index (=start) on top
+            // so I/J read it by offset and loops nest correctly. Shares the
+            // return stack with call frames -- the frame sits above the
+            // caller's return address and is torn down before the matching
+            // ret.
+            auto start = state.data().pop();
+            if (!start.has_value()) {
+                return start.error();
+            }
+            auto limit = state.data().pop();
+            if (!limit.has_value()) {
+                return limit.error();
+            }
+            if (auto r = state.returns().push(limit.value()); !r.has_value()) {
+                return r;
+            }
+            if (auto r = state.returns().push(start.value()); !r.has_value()) {
+                return r;
+            }
+            ++ip;
+            break;
+        }
+        case op::push_index: {
+            // `I`/`J`: read the level-L loop index at return-stack offset 2*L.
+            int const level = static_cast<int>(in.operand);
+            auto v = state.returns().peek(2 * level);
+            if (!v.has_value()) {
+                return v.error();
+            }
+            auto r = state.data().push(v.value());
+            if (!r.has_value()) {
+                return r;
+            }
+            ++ip;
+            break;
+        }
+        case op::loop_step: {
+            // `LOOP`: index += 1; terminate when it reaches the limit.
+            auto index = state.returns().pop();
+            if (!index.has_value()) {
+                return index.error();
+            }
+            auto limit = state.returns().peek(0);
+            if (!limit.has_value()) {
+                return limit.error();
+            }
+            cell const next = index.value() + 1;
+            if (next == limit.value()) {
+                if (auto r = state.returns().pop(); !r.has_value()) {
+                    return r.error();
+                }
+                ++ip;
+            } else {
+                if (auto r = state.returns().push(next); !r.has_value()) {
+                    return r;
+                }
+                ip = static_cast<int>(in.operand);
+            }
+            break;
+        }
+        case op::plus_loop_step: {
+            // `+LOOP`: pop the increment; index += n; terminate when the index
+            // crosses the boundary between limit-1 and limit (Forth-2012),
+            // i.e. when the sign of (index - limit) flips.
+            auto incr = state.data().pop();
+            if (!incr.has_value()) {
+                return incr.error();
+            }
+            auto index = state.returns().pop();
+            if (!index.has_value()) {
+                return index.error();
+            }
+            auto limit = state.returns().peek(0);
+            if (!limit.has_value()) {
+                return limit.error();
+            }
+            cell const before = index.value() - limit.value();
+            cell const next = index.value() + incr.value();
+            cell const after = next - limit.value();
+            if (((before ^ after) < 0)) {
+                if (auto r = state.returns().pop(); !r.has_value()) {
+                    return r.error();
+                }
+                ++ip;
+            } else {
+                if (auto r = state.returns().push(next); !r.has_value()) {
+                    return r;
+                }
+                ip = static_cast<int>(in.operand);
+            }
+            break;
+        }
+        case op::leave: {
+            // `LEAVE`: discard this loop's frame (index then limit) and branch
+            // past the loop.
+            if (auto r = state.returns().pop(); !r.has_value()) {
+                return r.error();
+            }
+            if (auto r = state.returns().pop(); !r.has_value()) {
+                return r.error();
+            }
+            ip = static_cast<int>(in.operand);
+            break;
+        }
+        case op::unloop: {
+            // `UNLOOP`: discard this loop's frame without branching, leaving
+            // the return stack as it was before do_setup (so a following ret
+            // pops the real return address).
+            if (auto r = state.returns().pop(); !r.has_value()) {
+                return r.error();
+            }
+            if (auto r = state.returns().pop(); !r.has_value()) {
+                return r.error();
+            }
+            ++ip;
+            break;
+        }
         case op::execute:
         case op::catch_mark:
         case op::throw_op:

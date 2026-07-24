@@ -163,6 +163,35 @@ constexpr auto codegen_emit_node(
                     return r.error();
                 }
                 return std::monostate{};
+            } else if constexpr (std::is_same_v<T,
+                                                elaborator::core_loop_index>) {
+                // `I`/`J`: the level (0/1) is the operand; the VM reads the
+                // return-stack loop frame at offset 2*level.
+                auto r = emit(out, op::push_index, static_cast<cell>(alt.level),
+                              alt.pos);
+                if (!r.has_value()) {
+                    return r.error();
+                }
+                return std::monostate{};
+            } else if constexpr (std::is_same_v<T, elaborator::core_leave>) {
+                // A forward branch to the enclosing loop's exit. Its target is
+                // not known until that loop's own `loop_step` has been emitted,
+                // so it is emitted with a -1 sentinel operand and back-patched
+                // by the enclosing core_do_loop below. (-1 can never be a real
+                // instruction index, so the sentinel is unambiguous, and an
+                // inner nested loop patches its own leaves first, leaving only
+                // this loop's own leaves still at -1 for it to find.)
+                auto r = emit(out, op::leave, cell{-1}, alt.pos);
+                if (!r.has_value()) {
+                    return r.error();
+                }
+                return std::monostate{};
+            } else if constexpr (std::is_same_v<T, elaborator::core_unloop>) {
+                auto r = emit(out, op::unloop, cell{0}, alt.pos);
+                if (!r.has_value()) {
+                    return r.error();
+                }
+                return std::monostate{};
             } else if constexpr (std::is_same_v<T, elaborator::core_if<
                                                        MaxNodes, MaxBody>>) {
                 auto branch0_r = emit(out, op::branch0, cell{0}, alt.pos);
@@ -239,15 +268,43 @@ constexpr auto codegen_emit_node(
                 return std::monostate{};
             } else if constexpr (std::is_same_v<T, elaborator::core_do_loop<
                                                        MaxNodes, MaxBody>>) {
-                // DO...LOOP codegen is deferred to step F17, mirroring F13's
-                // identical choice for the direct evaluator (eval_direct.hpp)
-                // -- the opcodes DO...LOOP would need (do_setup, loop_step,
-                // plus_loop_step, push_index, leave, unloop) are reserved in
-                // op (instruction.hpp) but never emitted by this step's own
-                // codegen. See handoff-next.md's F14 briefing and
-                // docs/divergences/DIV-0008-*.md.
-                return foundation::parse_error{
-                    alt.pos, "DO...LOOP codegen is not implemented until F17"};
+                // `limit start DO <body> LOOP/+LOOP` (F17):
+                //
+                //     do_setup                  ; frame <- (limit start)
+                //   start: <body>
+                //     loop_step | plus_loop_step  operand=start
+                //   exit: ...                   ; LEAVE branches here
+                //
+                // do_setup pops (limit start) into a return-stack frame;
+                // loop_step/plus_loop_step advance the index and either branch
+                // back to `start` or fall through (tearing the frame down) to
+                // `exit`. Every LEAVE emitted inside <body> is back-patched to
+                // `exit` here.
+                auto setup_r = emit(out, op::do_setup, cell{0}, alt.pos);
+                if (!setup_r.has_value()) {
+                    return setup_r.error();
+                }
+                int const loop_start = out.code.size();
+                auto body_r = codegen_emit_body(unit, alt.body, out);
+                if (!body_r.has_value()) {
+                    return body_r;
+                }
+                auto step_r = emit(
+                    out, alt.is_plus_loop ? op::plus_loop_step : op::loop_step,
+                    static_cast<cell>(loop_start), alt.pos);
+                if (!step_r.has_value()) {
+                    return step_r.error();
+                }
+                int const loop_exit = out.code.size();
+                // Back-patch this loop's own LEAVE branches (still at the -1
+                // sentinel; any inner loop's leaves were already patched).
+                for (int k = loop_start; k < loop_exit; ++k) {
+                    if (out.code[k].code == op::leave &&
+                        out.code[k].operand == cell{-1}) {
+                        out.code[k].operand = static_cast<cell>(loop_exit);
+                    }
+                }
+                return std::monostate{};
             } else {
                 // core_seq: never visited here in practice -- a core_call's
                 // target is unwrapped directly (see above), and core_seq is
