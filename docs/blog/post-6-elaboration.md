@@ -1,4 +1,4 @@
-<div class="abstract" id="org8dbc3c8">
+<div class="abstract" id="org1cf2507">
 <p>
 Elaboration is where a tree of names becomes a tree of meanings: every word
 resolved against the dictionary in program order, the placeholder address from

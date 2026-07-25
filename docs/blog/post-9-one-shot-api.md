@@ -1,4 +1,4 @@
-<div class="abstract" id="org1754b3c">
+<div class="abstract" id="orgf9659df">
 <p>
 One call now compiles a Forth program from its source text and hands back
 something ready to run: <code>compiled_forth&lt;"..."&gt;</code>, keyed on the text itself, with a
@@ -100,7 +100,7 @@ So the bet is still a bet. I have built the thing that can carry the experiment 
 
 <nav style="margin-top: 3em; border-top: 1px solid #ccc; padding-top: 1em">
 
-[↑ Series Index](index.md) | [← Part 8 - The Program That Survives to Runtime](post-8-survives-to-runtime.md)
+[↑ Series Index](index.md) | [← Part 8 - The Program That Survives to Runtime](post-8-survives-to-runtime.md) | [Part 10 - The Address Was Always a Cell →](post-10-memory-words.md)
 
 </nav>
 

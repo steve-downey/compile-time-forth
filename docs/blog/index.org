@@ -80,6 +80,13 @@ opcodes of seventeen do real work; the rest are reserved on purpose.
 program, and the honest accounting: the thesis from Part 0 is still not
 executable, because the part that would prove it is not built.
 
+** [[file:post-10-memory-words.org][Part 10 — The Address Was Always a Cell]]
+
+~VARIABLE~/~CONSTANT~/~CREATE~ finally get something to read and write
+through, in both backends at once --- and wiring it up means admitting this
+Forth's memory was cell-granular from several steps back, with none of
+Forth-2012's ~CELLS~/~CELL+~ words to say otherwise.
+
 * Table of Contents
 
 #+toc: headlines 1

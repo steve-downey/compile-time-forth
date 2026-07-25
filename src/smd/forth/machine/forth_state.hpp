@@ -232,6 +232,7 @@ enum class primitive {
     emit,  ///< `EMIT` ( c -- ) Prints the character whose code is @c c.
     cr,    ///< `CR`  ( -- )    Prints a newline.
 
+    // d3325ebc-173e-4f4a-b51f-cb9811d2993a
     // Memory (D10): operate on @p state's own @ref data_space; step F16 is
     // what first wires these (no runtime behavior existed for them before).
     // `VARIABLE`/`CONSTANT`/`CREATE` addresses are cells on the data stack
@@ -244,6 +245,7 @@ enum class primitive {
                 ///< @c a-addr.
     allot       ///< `ALLOT` ( n -- ) Reserves @c n more cells past @ref
                 ///< data_space::here.
+    // d3325ebc-173e-4f4a-b51f-cb9811d2993a end
 };
 
 /// Applies a pure-stack, output, or memory @ref primitive to @p state.
@@ -538,6 +540,7 @@ apply_primitive(primitive op,
     }
     case primitive::cr:
         return state.emit_char('\n');
+    // 29b353a0-fc5d-46fc-98e3-b9a47b8cd691
     case primitive::fetch: {
         auto a = pop_one();
         if (!a.has_value()) {
@@ -580,6 +583,7 @@ apply_primitive(primitive op,
         }
         return std::monostate{};
     }
+    // 29b353a0-fc5d-46fc-98e3-b9a47b8cd691 end
     }
     return foundation::parse_error{foundation::source_pos{},
                                    "unknown primitive opcode"};

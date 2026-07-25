@@ -87,6 +87,7 @@ template <int MaxCode, int MaxWords, int StackDepth, int RStackDepth,
 constexpr auto run(compiled_program<MaxCode, MaxWords> const &program,
                    forth_state<StackDepth, RStackDepth, MaxData, MaxOut> &state,
                    int fuel = 100000) -> status {
+    // f1514ad1-894c-4812-9ccc-2bdecd54a986
     // F16: seed state's own data space with program.data_space_size -- the
     // high-water mark the source compiled_unit's data space reached during
     // elaboration (every VARIABLE/CREATE allotment) -- so the addresses
@@ -99,6 +100,7 @@ constexpr auto run(compiled_program<MaxCode, MaxWords> const &program,
     if (!data_init.has_value()) {
         return data_init.error();
     }
+    // f1514ad1-894c-4812-9ccc-2bdecd54a986 end
 
     int ip = program.program_entry;
 

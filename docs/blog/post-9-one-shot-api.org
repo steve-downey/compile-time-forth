@@ -124,7 +124,7 @@ were ever going to have. The interesting part is the part that's left.
 
 
 #+html: <nav style="margin-top: 3em; border-top: 1px solid #ccc; padding-top: 1em">
-[[file:index.org][↑ Series Index]] | [[file:post-8-survives-to-runtime.org][← Part 8 - The Program That Survives to Runtime]]
+[[file:index.org][↑ Series Index]] | [[file:post-8-survives-to-runtime.org][← Part 8 - The Program That Survives to Runtime]] | [[file:post-10-memory-words.org][Part 10 - The Address Was Always a Cell →]]
 #+html: </nav>
 
 * References
