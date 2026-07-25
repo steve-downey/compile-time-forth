@@ -228,6 +228,7 @@ constexpr auto run(compiled_program<MaxCode, MaxWords> const &program,
             }
             break;
         }
+        // 2d8b6f4a-7c1e-4b93-9a5d-6e0f3c8a1d54
         case op::plus_loop_step: {
             // `+LOOP`: pop the increment; index += n; terminate when the index
             // crosses the boundary between limit-1 and limit (Forth-2012),
@@ -260,6 +261,7 @@ constexpr auto run(compiled_program<MaxCode, MaxWords> const &program,
             }
             break;
         }
+        // 2d8b6f4a-7c1e-4b93-9a5d-6e0f3c8a1d54 end
         case op::leave: {
             // `LEAVE`: discard this loop's frame (index then limit) and branch
             // past the loop.

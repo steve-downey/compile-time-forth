@@ -1,4 +1,4 @@
-<div class="abstract" id="org005e43f">
+<div class="abstract" id="orgcbad85e">
 <p>
 <code>VARIABLE</code>, <code>CONSTANT</code>, and <code>CREATE</code> have named an address since elaboration
 first existed, and until now nothing ever read or wrote through one. This entry
@@ -225,7 +225,7 @@ The interesting part is smaller than the bookkeeping and more durable than the f
 
 <nav style="margin-top: 3em; border-top: 1px solid #ccc; padding-top: 1em">
 
-[↑ Series Index](index.md) | [← Part 9 - The One-Shot API, and the Summit Not Yet Reached](post-9-one-shot-api.md)
+[↑ Series Index](index.md) | [← Part 9 - The One-Shot API, and the Summit Not Yet Reached](post-9-one-shot-api.md) | [Part 11 - The Two Cells the Checker Never Saw →](post-11-counted-loops.md)
 
 </nav>
 

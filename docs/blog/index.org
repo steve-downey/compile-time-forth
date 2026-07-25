@@ -87,6 +87,12 @@ through, in both backends at once --- and wiring it up means admitting this
 Forth's memory was cell-granular from several steps back, with none of
 Forth-2012's ~CELLS~/~CELL+~ words to say otherwise.
 
+** [[file:post-11-counted-loops.org][Part 11 — The Two Cells the Checker Never Saw]]
+
+~DO LOOP +LOOP I J LEAVE UNLOOP~ land in both backends, loop parameters and
+all --- and the static checker turns out to have been wrong about ~DO~'s own
+cost since two entries back, in a way only a nested loop could ever expose.
+
 * Table of Contents
 
 #+toc: headlines 1

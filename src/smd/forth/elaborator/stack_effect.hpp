@@ -477,6 +477,7 @@ constexpr auto analyze_body(compiled_unit<MaxNodes, MaxBody, MaxName, MaxWords,
                     } else {
                         item_eff = unknown_effect;
                     }
+                // 4b7e2c9a-1d6f-4a83-b5c0-8f2e9d6a3b17
                 } else if constexpr (std::is_same_v<
                                          T, core_do_loop<MaxNodes, MaxBody>>) {
                     auto body_r =
@@ -521,6 +522,7 @@ constexpr auto analyze_body(compiled_unit<MaxNodes, MaxBody, MaxName, MaxWords,
                     } else {
                         item_eff = unknown_effect;
                     }
+                // 4b7e2c9a-1d6f-4a83-b5c0-8f2e9d6a3b17 end
                 } else {
                     // core_seq: never nested inside a body in practice --
                     // only ever the top-level wrapper a colon_word::core_id

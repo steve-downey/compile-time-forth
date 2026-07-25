@@ -192,6 +192,7 @@ eval_node(elaborator::compiled_unit<MaxNodes, MaxBody, MaxName, MaxWords,
                 return eval_signal::normal;
             } else if constexpr (std::is_same_v<T, elaborator::core_exit>) {
                 return eval_signal::exited;
+            // 1c9d7a2e-5b3f-4e91-8a6d-2f7c4b9e0d31
             } else if constexpr (std::is_same_v<T,
                                                 elaborator::core_loop_index>) {
                 // The loop frame DO established on the return stack is (limit
@@ -221,6 +222,7 @@ eval_node(elaborator::compiled_unit<MaxNodes, MaxBody, MaxName, MaxWords,
                     return limit.error();
                 }
                 return eval_signal::normal;
+            // 1c9d7a2e-5b3f-4e91-8a6d-2f7c4b9e0d31 end
             } else if constexpr (std::is_same_v<T, elaborator::core_if<
                                                        MaxNodes, MaxBody>>) {
                 auto flag = state.data().pop();
@@ -275,6 +277,7 @@ eval_node(elaborator::compiled_unit<MaxNodes, MaxBody, MaxName, MaxWords,
                     }
                 }
                 return eval_signal::normal;
+            // 9e4a1f6b-8c2d-4f57-b1a9-3d6e0c8b5a72
             } else if constexpr (std::is_same_v<T, elaborator::core_do_loop<
                                                        MaxNodes, MaxBody>>) {
                 // `limit start DO ... LOOP/+LOOP` (F17). The loop parameters
@@ -364,6 +367,7 @@ eval_node(elaborator::compiled_unit<MaxNodes, MaxBody, MaxName, MaxWords,
                         return r.error();
                     }
                 }
+            // 9e4a1f6b-8c2d-4f57-b1a9-3d6e0c8b5a72 end
             } else {
                 // core_seq: never visited here in practice -- a core_call's
                 // target is unwrapped directly (see above) rather than
