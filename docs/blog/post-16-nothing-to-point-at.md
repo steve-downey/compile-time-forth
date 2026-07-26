@@ -1,4 +1,4 @@
-<div class="abstract" id="org6a64b5a">
+<div class="abstract" id="orgcec6f76">
 <p>
 Part 15 ended with the tree gone and nothing to show for it yet: <code>IF</code>,
 <code>BEGIN</code>, and <code>DO</code> were unknown words, and every program this project has
@@ -281,7 +281,7 @@ The corpus this project has been accumulating since Part 7 &#x2014; `ABS`, `COUN
 
 <nav style="margin-top: 3em; border-top: 1px solid #ccc; padding-top: 1em">
 
-[↑ Series Index](index.md) | [← Part 15 - The Cut](post-15-the-cut.md)
+[↑ Series Index](index.md) | [← Part 15 - The Cut](post-15-the-cut.md) | [Part 17 - Something to Point At →](post-17-something-to-point-at.md)
 
 </nav>
 

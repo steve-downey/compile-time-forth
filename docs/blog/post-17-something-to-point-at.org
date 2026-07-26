@@ -1,0 +1,263 @@
+#+options: ':nil *:t -:t ::t <:t H:3 \n:nil ^:nil arch:headline author:t
+#+options: broken-links:nil c:nil creator:nil d:(not "LOGBOOK") date:t e:t
+#+options: email:nil f:t inline:t num:t p:nil pri:nil prop:nil stat:t tags:t
+#+options: tasks:t tex:t timestamp:t title:t toc:nil todo:t |:t
+#+options: html5-fancy:t
+#+bibliography: references.bib
+#+TITLE: Building a Compile-Time Forth in C++26: Part 17 - Something to Point At
+#+AUTHOR: Steve Downey
+#+DATE: 2026-07-26
+
+#+begin_abstract
+Part 16 ended on a control word with nothing to point at: ~THEN~'s whole
+action is mutating the code being built, so there is no address ~EXECUTE~
+could ever jump to for it. Tonight most other words get that address.
+~'~, ~[']~, and ~EXECUTE~ land, along with ~CREATE~, ~DOES>~, ~VALUE~ and
+~TO~, and ~DEFER~ and ~IS~ --- and getting there meant finally paying
+down a debt from Part 13: ~SOURCE~, ~>IN~, ~BASE~, and ~STATE~ move off the
+wrapper I built to hold them and onto the machine state itself, because the
+alternative was a VM that still could not see the input it needed to read.
+#+end_abstract
+
+#+MACRO: TEASER_END
+{{TEASER_END}}
+#+html: <nav style="margin-bottom: 2em; border-bottom: 1px solid #ccc; padding-bottom: 1em">
+[[file:index.org][↑ Series Index]] | [[file:post-16-nothing-to-point-at.org][Part 16 - Nothing to Point At ←]]
+#+html: </nav>
+
+
+* The debt comes due
+
+Part 13 built =interpreter::forth_state= as a wrapper: the old type,
+=machine::forth_state=, holding the two stacks and the data space, with
+=SOURCE=, =>IN=, =BASE=, and =STATE= composed on top of it in a wider type
+that exposed the old one through a =machine()= accessor. I said at the time
+that it wasn't where this ends up --- =apply_primitive= only ever sees the
+narrower type, which meant no primitive could read or write =>IN=, and the
+whole argument for =>IN= being a plain offset instead of a cursor was that a
+parsing word would eventually need to reach it exactly the way the outer
+loop does. I called that debt and left it standing, because the old R1
+pipeline still needed the narrower type to stay narrow and folding it in
+would have meant the bottom of the dependency stack depending on something
+defined above it.
+
+The old pipeline is gone --- Part 15 deleted it --- so that reason is gone
+too, and tonight's two central pieces of work both needed the fold directly.
+~EXECUTE~ can jump to any word's own code, and a defining word's body can
+run =CREATE= or =DOES>= from inside a colon definition that is now pure VM
+bytecode, with no interpreter-level loop watching it run. Both of those paths
+go through =machine::run_from=, and =run_from= only ever takes a
+=machine::forth_state=. A wrapper sitting one layer up is invisible to code
+running one layer down. So =interpreter::forth_state= is deleted outright,
+=input_source= relocates into =machine/=, and =SOURCE=, =>IN=, =BASE=, and
+=STATE= are fields on =machine::forth_state= itself now, next to the stacks
+and the data space they always should have been sitting beside.
+
+Every accessor name survived the move --- =source()=, =base()=,
+=set_base()=, =state()=, =set_state()= --- so every caller of the old
+wrapper's own spelling kept working, minus a =.machine()= that used to sit
+in the middle for no reason a caller could see. That's the entire visible
+cost of paying down a debt I named four entries ago: a rename, not a
+redesign.
+
+* An execution token is a place in the code
+
+Forth-2012 says ~'~ takes a word and produces an execution token; ~EXECUTE~
+takes that token back and runs whatever it names [cite:@forth2012]. The
+standard doesn't say what the token *is*, only what it has to do, and that
+left a real choice sitting open: tag a value with enough bits to say "this
+is a primitive, this is a colon word, run it accordingly," or make every
+resolvable word answer to one uniform representation and let the token be
+completely opaque about which kind of word it names.
+
+I took the second one, for a reason that turned out to be more concrete than
+I expected going in: a ~CONSTANT~'s value can be any 64-bit cell, and any
+tagging scheme that reserves bits for a kind discriminator loses precision
+somewhere in that range. An execution token here is a plain code-space
+instruction index, and ~EXECUTE~ pops one and jumps to it exactly the way
+~op::call~ already does --- push a return address, then jump. No dictionary
+lookup happens at the VM level, ever; by the time a token exists, the
+dictionary has already done its job.
+
+A colon word already has a real address to hand back: its own entry point,
+~ret~-terminated by construction since compilation first started emitting
+whole words. A primitive, a variable, a constant, or a ~VALUE~ has no such
+address --- nothing about them lives in code space at all --- so producing a
+token for one means building a small stub that does: push whatever the word
+would push, or run the one primitive it names, then ~ret~.
+
+#+transclude: [[orgit-file:~/src/compile-time-forth/compile-time-forth::blog/part-17::src/smd/forth/interpreter/interp.hpp::1c9e6a4f-7b3d-4e8a-9c2f-6a1d8b4e3f7c]] :lines 2- :src cpp :end "1c9e6a4f-7b3d-4e8a-9c2f-6a1d8b4e3f7c end"
+
+The branch in front of every stub is not defensive programming for its own
+sake. ~'~ and ~[']~ can both run in the middle of an unrelated definition's
+own body, through ~[ ... ]~ bracket-interpreting --- Part 13's own
+=STATE=-toggling mechanism --- which means the code space can be positioned
+*inside* a colon word that is still open when a stub needs to be built.
+Appending the stub's instructions there, unguarded, would make them part of
+that enclosing definition: its own ~ret~ would return early the first time
+it ran, and control flow would be quietly wrong in a way nothing would catch
+until much later. That is the exact hazard ~IF~ and ~WHILE~ already manage
+with their own sentinel-and-patch discipline, and the fix is the same shape:
+jump around what you just wrote. It costs one wasted instruction whenever
+the stub was going to be safe to fall into anyway, which is most of the
+time. I didn't try to detect the safe case and skip the guard. Getting that
+detection wrong once is worse than paying for it every time.
+
+~' SQUARED EXECUTE~ agrees with calling ~SQUARED~ directly, at compile time
+and at runtime both, because both roads end at the same call:
+
+#+begin_src forth
+\ (shape, not verbatim)
+: SQUARED DUP * ;  5 ' SQUARED EXECUTE
+#+end_src
+
+leaves ~25~, same as ~5 SQUARED~ would.
+
+* CREATE and DOES> need a dictionary the VM never had
+
+The classic defining-word idiom is the real target this step had to hit:
+
+#+begin_src forth
+\ (shape, not verbatim)
+: CONSTANT2 CREATE , DOES> @ ;  42 CONSTANT2 LIFE  LIFE
+#+end_src
+
+leaves ~[42]~. ~CONSTANT2~ has to scan a *new* name and install a *new*
+dictionary entry every time it runs, not once when ~CONSTANT2~ itself is
+defined --- and once ~CONSTANT2~'s body is compiled, it runs as ordinary VM
+bytecode, through ~run_from~, with no interpreter-level loop watching each
+instruction go by. Which meant the VM needed the dictionary reachable from
+inside its own fetch-execute loop, something it had never once needed
+before tonight.
+
+That's the one deliberate exception this project now has to "the VM only
+ever sees a forth_state": =run_from=, =run=, and =interpreter::call_word=
+all gained a new, nullable, non-owning dictionary pointer, defaulted to
+=nullptr= so that not one caller from before this step had to change. Two
+new opcodes consult it. ~create_word~ scans a name off the newly-folded
+=SOURCE= and =>IN= and installs a variable; ~does_enter~ attaches whatever code
+follows it to the most recently defined word and then behaves like ~ret~
+itself --- the defining word's own execution ends right there, so the code
+after ~DOES>~ never runs while ~CONSTANT2~ is being defined, only later, as
+the word it just created.
+
+#+transclude: [[orgit-file:~/src/compile-time-forth/compile-time-forth::blog/part-17::src/smd/forth/machine/vm.hpp::7f3a9c1e-4b8d-4e2a-9c6f-1d8b3a7e5f2c]] :lines 2- :src cpp :end "7f3a9c1e-4b8d-4e2a-9c6f-1d8b3a7e5f2c end"
+
+=create_here= is shared, verbatim, between the opcode above and the
+interpreting-time ~CREATE~ that runs when the text interpreter meets the
+word directly, outside any definition. Both need the identical action, and
+I wrote it down once rather than twice --- the same instinct that already
+gave ~IF~ and ~THEN~ one execute path and one compile path instead of two
+of each.
+
+The address a defining word installs still needs a does-field to point
+somewhere, and that's a small, honest addition to the binding it already
+had:
+
+#+transclude: [[orgit-file:~/src/compile-time-forth/compile-time-forth::blog/part-17::src/smd/forth/machine/dictionary.hpp::d5b20e62-4731-4fbd-ac00-3c4b435207f4]] :lines 2- :src cpp :end "d5b20e62-4731-4fbd-ac00-3c4b435207f4 end"
+
+~-1~ means an ordinary ~VARIABLE~ or bare ~CREATE~: push the address and
+stop. Anything else is an instruction index ~DOES>~ installed, and executing
+the word pushes the address, then calls straight into that code --- as if
+the address had been pushed by hand immediately before an ordinary call. Nothing about calling into a does-field is new machinery; it's
+~op::call~ again, reached from one more place.
+
+* VALUE, DEFER, and cells that don't need the dictionary at all
+
+~VALUE~ and ~DEFER~ could have used the same dictionary-threading trick
+~CREATE~ needed, and I decided against it on purpose. Both bind to one
+data-space cell instead --- a plain address, not the word itself:
+
+#+transclude: [[orgit-file:~/src/compile-time-forth/compile-time-forth::blog/part-17::src/smd/forth/machine/dictionary.hpp::9b4e6a1c-2f8d-4c3a-8e7b-5d1a9c4f6b3e]] :lines 2- :src cpp :end "9b4e6a1c-2f8d-4c3a-8e7b-5d1a9c4f6b3e end"
+
+The point of the cell is that a *compiled* reference to a ~VALUE~ or a word
+defined with ~DEFER~, from inside another word's own body, needs nothing
+new at all: push the address, ~@~, and for a deferred word, ~EXECUTE~ the
+result.
+Three opcodes that already existed, in a sequence the compiler could already
+emit. ~TO~ resolves its target's address once, at the moment it's met, and
+either stores directly while interpreting or compiles the equivalent
+push-address-and-store while compiling; ~IS~ pops an execution token and
+stores it straight into the target's cell, no dictionary touched at all.
+
+Calling a deferred word before ~IS~ has ever set it is diagnosed, not a
+silent no-op:
+
+#+begin_src forth
+\ (shape, not verbatim)
+DEFER FOO  FOO
+#+end_src
+
+fails with a message naming the deferred word as having no action yet. A
+*compiled* call to the same unset word takes a different, less specific road
+to the same conclusion --- the sentinel address reaches ~EXECUTE~ and gets
+diagnosed as an out-of-range instruction pointer instead. Same guarantee,
+worse bedside manner, and I'm leaving that asymmetry written down rather
+than pretending both paths give the same message. Neither one is undefined
+behavior; that's the part that actually matters.
+
+* The postpone boundary, pinned down
+
+Part 16 ended by naming a limit: ~POSTPONE~ of a control word worked, but
+only when the postponed word was the *entire* body of the definition, because
+a control word has no address for anything to alias. I guessed, at the time,
+that giving control words a uniform header might close that gap once this
+step's header-unification work landed. It closes for exactly three of them.
+
+~EXECUTE~, ~CREATE~, and ~DOES>~ all compile to a single, real instruction
+now --- ~op::execute~, ~op::create_word~, ~op::does_enter~ --- through the
+same =compile_entry= every primitive already goes through. Which means
+~POSTPONE~ of any of the three now composes with ordinary code in the same
+definition, not just stands alone as the whole body:
+
+#+begin_src forth
+\ (shape, not verbatim)
+: SQUARED DUP * ;  : RUN-XT DUP POSTPONE EXECUTE ;
+6 ' SQUARED RUN-XT
+#+end_src
+
+~RUN-XT~ is an ordinary compiled colon word here, not the control-word alias
+Part 16 described --- ~DUP~ sits in front of ~POSTPONE EXECUTE~ in the same
+body, which the whole-body-only version could never have allowed.
+
+The rest of the control words --- ~IF~, ~THEN~, ~DO~, ~LOOP~, and everything
+else that patches its own branch operand into place --- still can't do this,
+and won't. I want to be precise about why, because it isn't that the header
+work stopped short of reaching them. Giving ~THEN~ an execution-token slot
+wouldn't create anything for ~EXECUTE~ to invoke, because ~THEN~ doesn't
+have a runtime action separate from the mutation it performs while
+compiling. ~EXECUTE~, ~CREATE~, and ~DOES>~ always had an action a fixed
+sequence of opcodes could name --- that's what made them compilable the
+moment something bothered to write the case. ~THEN~'s entire job is
+rewriting an operand in the buffer being built, before there is a running
+program to have deferred the mutation into. There's no later moment to
+represent as bytecode, because the whole point already happened. That's a
+structural fact about what these words are, not an unfinished corner of
+this step's own work, and I'd rather say that plainly than leave it looking
+like a queue I just haven't gotten to.
+
+* What's still open
+
+Nothing about stack effects changed tonight, same as it didn't last time:
+the comment after a colon header is still captured off the source text and
+checked against nothing. ~: BAD ( -- ) DROP ;~ still compiles clean and
+still underflows the moment anything calls it. There is still no ~PARSE~,
+no ~WORD~, no ~S"~, no ~."~ --- nothing that reads a run of raw text out of
+the input stream the way a real parsing word would, even though tonight is
+the entry that finally gave the input stream a home a primitive could reach.
+No ~CATCH~, no ~THROW~. Nothing has been tested against gforth, and there is
+no Forth-2012 conformance suite anywhere near this tree. All of that was
+true when Part 16 landed and it's true again tonight; nothing in this entry
+touches any of it.
+
+What tonight did change: almost everything in this dictionary now has
+something to point at. The thing that doesn't is no longer a gap waiting to
+be closed --- it's the shape of what a control word is.
+
+#+html: <nav style="margin-top: 3em; border-top: 1px solid #ccc; padding-top: 1em">
+[[file:index.org][↑ Series Index]] | [[file:post-16-nothing-to-point-at.org][← Part 16 - Nothing to Point At]]
+#+html: </nav>
+
+* References
+
+#+print_bibliography:

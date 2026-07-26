@@ -126,6 +126,12 @@ immediate words on Forth-2012's own orig/dest discipline --- and a depth
 check that looked obviously right gets caught wrong by one of my own tests
 before it ever reached anyone else's code.
 
+** [[file:post-17-something-to-point-at.org][Part 17 — Something to Point At]]
+
+~'~, ~[']~, ~EXECUTE~, ~CREATE~, ~DOES>~, ~VALUE~/~TO~, and ~DEFER~/~IS~ all
+get a real execution token --- and paying down a debt from Part 13 turns out
+to be what makes any of it possible.
+
 * Table of Contents
 
 #+toc: headlines 1
