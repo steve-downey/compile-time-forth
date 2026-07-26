@@ -57,7 +57,7 @@
 - [x] Blog: F25 colon compiler and session image (Part 14)
 - [x] Blog: F26 the cut (Part 15)
 - [x] Blog: F27 immediacy and control flow (Part 16)
-- [ ] Blog: F28 execution tokens and defining words (Part 17)
+- [x] Blog: F28 execution tokens and defining words (Part 17)
 - [ ] Blog: F29 parsing words and strings (Part 18)
 - [ ] Blog: F30 effect lint (Part 19)
 - [ ] Blog: F31 CATCH and THROW (Part 20)
