@@ -98,8 +98,7 @@ namespace smd::forth::parser {
 ///
 /// Distinct from @ref skip_intertoken_space, which only skips plain
 /// ASCII whitespace and knows nothing about either comment form.
-[[nodiscard]] constexpr auto skip_forth_space(cursor cur)
-    -> cursor {
+[[nodiscard]] constexpr auto skip_forth_space(cursor cur) -> cursor {
     for (;;) {
         cur = skip_intertoken_space(cur);
         if (cur.empty()) {
@@ -140,8 +139,7 @@ template <parser_like P>
         }
         auto rest = skip_forth_space(r.value().rest);
         using V = decltype(r.value().value);
-        return parse_result<V>{
-            parse_state<V>{r.value().value, rest}};
+        return parse_result<V>{parse_state<V>{r.value().value, rest}};
     }};
 }
 
@@ -158,15 +156,15 @@ using token_text = foundation::static_vector<char, MaxName>;
 template <int MaxName = 32>
 [[nodiscard]] constexpr auto scan_word(cursor cur)
     -> parse_result<token_text<MaxName>> {
-    auto p = forth_lexeme(map(
-        some<MaxName>(satisfy(is_word_char, "expected word")),
-        [](token_text<MaxName> raw) {
-            token_text<MaxName> folded{};
-            for (char c : raw) {
-                folded.push_back(fold_char(c));
-            }
-            return folded;
-        }));
+    auto p =
+        forth_lexeme(map(some<MaxName>(satisfy(is_word_char, "expected word")),
+                         [](token_text<MaxName> raw) {
+                             token_text<MaxName> folded{};
+                             for (char c : raw) {
+                                 folded.push_back(fold_char(c));
+                             }
+                             return folded;
+                         }));
     return p(cur);
 }
 // d4e6f9c3-8a3b-4c9d-9e4f-5a7b9d3c2f8a end
