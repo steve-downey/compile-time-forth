@@ -266,7 +266,7 @@ constexpr auto codegen_emit_node(
                 out.code[branch0_index].operand =
                     static_cast<cell>(out.code.size());
                 return std::monostate{};
-            // 5f3a8d1c-9b6e-4a20-8d4f-1c7b2e9a6f38
+                // 5f3a8d1c-9b6e-4a20-8d4f-1c7b2e9a6f38
             } else if constexpr (std::is_same_v<T, elaborator::core_do_loop<
                                                        MaxNodes, MaxBody>>) {
                 // `limit start DO <body> LOOP/+LOOP` (F17):
@@ -306,7 +306,7 @@ constexpr auto codegen_emit_node(
                     }
                 }
                 return std::monostate{};
-            // 5f3a8d1c-9b6e-4a20-8d4f-1c7b2e9a6f38 end
+                // 5f3a8d1c-9b6e-4a20-8d4f-1c7b2e9a6f38 end
             } else {
                 // core_seq: never visited here in practice -- a core_call's
                 // target is unwrapped directly (see above), and core_seq is

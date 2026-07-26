@@ -1,6 +1,6 @@
 # DIV-0001: structural grammar, not an interpretive outer text interpreter
 
-- **Status:** accepted-permanent
+- **Status:** superseded by DIV-0011
 - **Date:** 2026-07-18
 - **Step:** plan-time (decision record D5 of docs/forth-plan.md)
 - **Authority diverged from:** Forth-2012

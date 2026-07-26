@@ -1,6 +1,6 @@
 # DIV-0005: hand-written recursive descent for nested control structures
 
-- **Status:** accepted-permanent
+- **Status:** superseded by DIV-0011 (retired with its subject at step F26)
 - **Date:** 2026-07-18
 - **Step:** F7 (grammar)
 - **Authority diverged from:** docs/forth-plan.md (D6)
