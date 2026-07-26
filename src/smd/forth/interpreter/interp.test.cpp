@@ -1486,6 +1486,7 @@ TEST_CASE("InterpTest - NestedCatchEscapesToTheRightHandler") {
 // perform_throw). FIND5B runs afterward, using DO/LEAVE normally, proving
 // ordinary DO-loop teardown is unaffected and the return stack is genuinely
 // back to depth 0, not merely "shifted but not yet crashed."
+// 7af4987c-e2e1-4efb-9dc9-9deafa1f9fd8
 TEST_CASE("InterpTest - CatchUnwindsThroughToRDoLoopAndCallFrames") {
     forth_state<64, 64, 1024, 256> st{
         ": DEEP 42 >R 10 0 DO 5 THROW LOOP R> DROP ; "
@@ -1504,6 +1505,7 @@ TEST_CASE("InterpTest - CatchUnwindsThroughToRDoLoopAndCallFrames") {
     // cells from the >R, the DO-loop frame, or CATCH's own handler frame.
     CHECK(st.returns().depth() == 0);
 }
+// 7af4987c-e2e1-4efb-9dc9-9deafa1f9fd8 end
 
 // A machine fault (division by zero) mapped to its standard THROW code
 // (-10) and caught, exactly like an explicit THROW would be (D7).

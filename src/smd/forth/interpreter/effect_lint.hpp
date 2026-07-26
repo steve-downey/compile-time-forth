@@ -122,9 +122,13 @@ constexpr auto combine_branch(effect then_eff, effect else_eff) -> effect {
 
 /// The per-primitive net data-stack effect table.
 ///
-/// 53 of the 54 primitives (step F29 added `PARSE WORD CHAR COUNT TYPE` and
-/// the runtime half of `ABORT"` to F28's own 48) have a fixed effect; `?DUP`
-/// is genuinely input-dependent (`( a -- 0 | a a )`) and maps to @ref
+/// 54 of the 55 @ref machine::primitive enumerators (step F29 added `PARSE
+/// WORD CHAR COUNT TYPE` and the runtime half of `ABORT"` to F28's own 48;
+/// step F31 added `catch_ok`; step F32 added the D21 address-unit words'
+/// one new enumerator, `identity` -- `CELL+`/`CHAR+`/`C@`/`C!` alias
+/// existing enumerators rather than adding new ones, so the six new D21
+/// dictionary names add only this one entry here) have a fixed effect;
+/// `?DUP` is genuinely input-dependent (`( a -- 0 | a a )`) and maps to @ref
 /// unknown_effect. `>R`/`R>`/`R@` move cells between the data and return
 /// stacks -- this table reports only their *data*-stack view; @ref
 /// primitive_return_delta reports the matching return-stack contribution.
@@ -223,6 +227,10 @@ constexpr auto primitive_data_effect(machine::primitive op) -> effect {
         // Consumes nothing from the *data* stack (its own 3 popped cells are
         // all on the return stack); pushes exactly one flag.
         return known(0, 1);
+    case P::identity:
+        // Step F32, D21: `CELLS`/`CHARS` ( n -- n ). Same shape as
+        // `one_plus` above -- one cell required, one left behind, net zero.
+        return known(1, 1);
     }
     // Defensive-only: every enumerator is listed above; reachable only if a
     // future step adds a primitive without updating this table.

@@ -70,6 +70,7 @@ if(FORTH_ENABLE_TESTING)
     )
 endif()
 
+add_subdirectory(conformance)
 add_subdirectory(foundation)
 add_subdirectory(interpreter)
 add_subdirectory(machine)

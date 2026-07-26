@@ -1,6 +1,7 @@
 # DIV-0009: memory words address data space in cells, not Forth-2012 address units
 
-- **Status:** accepted-permanent
+- **Status:** accepted-permanent (D21's own naming of this as a system characteristic, revisited
+  at step F32 — see the addendum at the end of this file)
 - **Date:** 2026-07-24
 - **Step:** F16 (memory words end-to-end)
 - **Authority diverged from:** Forth-2012
@@ -70,3 +71,17 @@ to byte-granular addressing and adding `CELLS`/`CELL+`/`CHARS`/`CHAR+` —
 not currently planned anywhere in `docs/forth-plan.md`. Until then this is
 accepted as a permanent, documented simplification of the Forth-2012 memory
 model.
+
+## Addendum (step F32, docs/forth-plan-2.md, D21)
+
+D21 names this file's own cell-granular design directly as a legal Forth-2012 system
+characteristic and assigns its own explicit revisit: adding `CELLS`/`CELL+`/`CHARS`/`CHAR+` (plus
+`C@`/`C!`) as words that are consistent *with* the cell-granular convention, not a switch away from
+it. Step F32 does exactly that: `CELL+`/`CHAR+` alias the existing `one_plus` enumerator, `C@`/`C!`
+alias `fetch`/`store`, and `CELLS`/`CHARS` share one new `identity` enumerator (`machine/
+forth_state.hpp`) — `1 CELLS` is `1`, not a byte count, so a Forth-2012 program written against
+byte addressing still diverges here, by design, exactly as this file's own "What diverged" section
+already described. The underlying cell-granular characteristic itself remains permanent and
+unrevisited; only the "these words don't exist yet" half of the original gap is closed. See
+`docs/compiler_architecture.org`'s own Phase 14 section and `docs/conformance-exclusions.md` for
+where this step's own tests exercise the new words.

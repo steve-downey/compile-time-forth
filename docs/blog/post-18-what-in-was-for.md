@@ -1,4 +1,4 @@
-<div class="abstract" id="orga5fc788">
+<div class="abstract" id="orgc261abb">
 <p>
 Part 13 spent most of an entry defending a choice with no payoff that night:
 <code>&gt;IN</code> as a bare integer sitting in the open on the machine state, not a
@@ -189,7 +189,7 @@ What's different is that the thing Part 0 refused to build &#x2014; a word defin
 
 <nav style="margin-top: 3em; border-top: 1px solid #ccc; padding-top: 1em">
 
-[↑ Series Index](index.md) | [← Part 17 - Something to Point At](post-17-something-to-point-at.md)
+[↑ Series Index](index.md) | [← Part 17 - Something to Point At](post-17-something-to-point-at.md) | [Next: Part 19 - The Gap That Stopped Mattering →](post-19-the-gap-that-stopped-mattering.md)
 
 </nav>
 

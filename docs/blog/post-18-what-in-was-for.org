@@ -163,7 +163,7 @@ primitive does. Part 13's bet was that keeping ~>IN~ in the open would
 matter to something that didn't exist yet. Tonight it did.
 
 #+html: <nav style="margin-top: 3em; border-top: 1px solid #ccc; padding-top: 1em">
-[[file:index.org][↑ Series Index]] | [[file:post-17-something-to-point-at.org][← Part 17 - Something to Point At]]
+[[file:index.org][↑ Series Index]] | [[file:post-17-something-to-point-at.org][← Part 17 - Something to Point At]] | [[file:post-19-the-gap-that-stopped-mattering.org][Next: Part 19 - The Gap That Stopped Mattering →]]
 #+html: </nav>
 
 * References

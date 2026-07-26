@@ -139,6 +139,14 @@ words long --- ~: ECHO-WORD 32 WORD COUNT TYPE ;~ --- reaches past its own
 call for an argument that was never inside it. Two entries' worth of debt
 about ~>IN~ finally cash out on the same example.
 
+** [[file:post-19-the-gap-that-stopped-mattering.org][Part 19 — The Gap That Stopped Mattering]]
+
+~CATCH~, ~THROW~, and ~ABORT~ land, and ~ABORT"~ stops being a hard stop and
+becomes a real ~THROW -2~ --- but the entry is about what ~THROW~ had to do
+to unwind a return stack holding an arbitrary mix of call frames, loop
+frames, and stray ~>R~ values, and how that answers, without fully closing,
+the teardown gap Part 11 admitted to eight entries back.
+
 * Table of Contents
 
 #+toc: headlines 1
