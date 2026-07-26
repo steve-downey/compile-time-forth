@@ -64,7 +64,8 @@ class forth_state {
     /// relying on point-of-declaration lookup ordering) keeps the two
     /// `machine` names from ever being a source of confusion.
     using machine_state =
-        ::smd::forth::machine::forth_state<MaxDepth, MaxRDepth, MaxData, MaxOut>;
+        ::smd::forth::machine::forth_state<MaxDepth, MaxRDepth, MaxData,
+                                           MaxOut>;
 
     constexpr forth_state() = default;
 
@@ -143,8 +144,8 @@ forth_state<MaxDepth, MaxRDepth, MaxData, MaxOut, MaxName>::base() const
 
 template <int MaxDepth, int MaxRDepth, int MaxData, int MaxOut, int MaxName>
 constexpr auto
-forth_state<MaxDepth, MaxRDepth, MaxData, MaxOut, MaxName>::set_base(
-    int value) -> void {
+forth_state<MaxDepth, MaxRDepth, MaxData, MaxOut, MaxName>::set_base(int value)
+    -> void {
     base_ = value;
 }
 
@@ -157,15 +158,14 @@ forth_state<MaxDepth, MaxRDepth, MaxData, MaxOut, MaxName>::state() const
 
 template <int MaxDepth, int MaxRDepth, int MaxData, int MaxOut, int MaxName>
 constexpr auto
-forth_state<MaxDepth, MaxRDepth, MaxData, MaxOut, MaxName>::set_state(
-    int value) -> void {
+forth_state<MaxDepth, MaxRDepth, MaxData, MaxOut, MaxName>::set_state(int value)
+    -> void {
     state_ = value;
 }
 
 namespace detail {
 
-static_assert(
-    std::is_trivially_destructible_v<forth_state<64, 64, 1024, 256>>);
+static_assert(std::is_trivially_destructible_v<forth_state<64, 64, 1024, 256>>);
 
 } // namespace detail
 
@@ -193,7 +193,7 @@ static_assert(
 /// on every input (this header's own tests check that directly), since
 /// letters are never valid decimal digits either way.
 [[nodiscard]] constexpr auto is_number_token_in_base(std::string_view text,
-                                                      int base) -> bool {
+                                                     int base) -> bool {
     std::size_t i = 0;
     if (!text.empty() && text[0] == '-') {
         i = 1;
@@ -212,7 +212,7 @@ static_assert(
 /// Converts @p text into its signed value in @p base.
 /// @pre is_number_token_in_base(text, base)
 [[nodiscard]] constexpr auto token_to_cell_in_base(std::string_view text,
-                                                    int base) -> machine::cell {
+                                                   int base) -> machine::cell {
     bool const negative = !text.empty() && text[0] == '-';
     std::size_t i = negative ? 1 : 0;
     machine::cell value = 0;
@@ -256,11 +256,11 @@ static_assert(token_to_cell_in_base("-FF", 16) == -255);
 /// processes, so a budget of @p fuel bounds the total number of tokens any
 /// one interpretation may consume.
 [[nodiscard]] constexpr auto consume_interp_fuel(int &fuel,
-                                                  foundation::source_pos pos)
+                                                 foundation::source_pos pos)
     -> machine::status {
     if (fuel <= 0) {
-        return foundation::parse_error{pos,
-                                       "interpreter execution budget exhausted"};
+        return foundation::parse_error{
+            pos, "interpreter execution budget exhausted"};
     }
     --fuel;
     return std::monostate{};
@@ -311,8 +311,8 @@ template <int MaxDepth, int MaxRDepth, int MaxData, int MaxOut, int MaxWords,
           int MaxName = 32>
 constexpr auto
 interpret(forth_state<MaxDepth, MaxRDepth, MaxData, MaxOut, MaxName> &st,
-          machine::dictionary<MaxWords, MaxName> const &dict,
-          int fuel = 100000) -> machine::status {
+          machine::dictionary<MaxWords, MaxName> const &dict, int fuel = 100000)
+    -> machine::status {
     for (;;) {
         auto pre = st.source().cursor_at_in();
         auto token_start = reader::skip_forth_space(pre);
