@@ -534,37 +534,44 @@ constexpr auto dictionary<MaxWords, MaxName>::size() const -> int {
     return entries_.size();
 }
 
-/// Builds a dictionary with every F8/F13/F16/F28/F29 primitive installed
+/// Builds a dictionary with every F8/F13/F16/F28/F29/F32 primitive installed
 /// under its Forth name (`+ - * / MOD NEGATE ABS MIN MAX AND OR XOR INVERT
 /// LSHIFT RSHIFT 1- 1+ 0= 0< = <> < > <= >= TRUE FALSE DUP DROP SWAP OVER
 /// ROT ?DUP NIP TUCK DEPTH >R R> R@ . .S EMIT CR @ ! +! ALLOT , PARSE WORD
-/// CHAR COUNT TYPE`, plus the runtime half of `ABORT"`) -- 54 words, one per
-/// @ref primitive enumerator (`.`, `.S`, `EMIT`, `CR` are step F13's output
-/// words, D10; `1-` is also from that step, see DIV-0007; `1+` is step F17,
-/// see DIV-0010; `@`, `!`, `+!`, `ALLOT` are step F16's memory words, D10;
-/// `,` is step F28's, D10/D21; `PARSE WORD CHAR COUNT TYPE` and the runtime
-/// primitive behind `ABORT"` are step F29's, D19/D21 -- see
+/// CHAR COUNT TYPE`, plus the runtime half of `ABORT"`, plus step F32's own
+/// six D21 address-unit words `CELL+ CHAR+ C@ C! CELLS CHARS`) -- 60 dictionary
+/// names over 55 distinct @ref primitive enumerators (four of the six D21
+/// words below alias an existing enumerator rather than adding one; see
+/// that group's own comment) (`.`, `.S`, `EMIT`, `CR` are step F13's
+/// output words, D10; `1-` is also from that step, see DIV-0007; `1+` is
+/// step F17, see DIV-0010; `@`, `!`, `+!`, `ALLOT` are step F16's memory
+/// words, D10; `,` is step F28's, D10/D21; `PARSE WORD CHAR COUNT TYPE` and
+/// the runtime primitive behind `ABORT"` are step F29's, D19/D21 -- see
 /// `machine/forth_state.hpp`'s own `primitive` enum for why these five are
-/// ordinary, non-immediate words rather than control words) -- plus every
-/// step F27 control word (`IF ELSE THEN BEGIN UNTIL WHILE REPEAT DO LOOP
-/// +LOOP LEAVE UNLOOP I J LITERAL POSTPONE IMMEDIATE [ ] COMPILE,`, D17), 20,
-/// every step F28 execution-token/defining-word control word (`' [' EXECUTE
-/// CREATE DOES> VALUE TO DEFER IS`, D18), 9 more, every step F29 parsing
-/// control word (`( \ S" ." [CHAR] ABORT"`, D19/D21 -- each must consume its
-/// own following source text at the moment it is met, so each is immediate;
-/// see @ref control_builtin's own doc comment), 6 more, and step F31's
-/// `CATCH THROW ABORT` (D11/D18 -- none immediate: each works identically
-/// interpreting or compiled, exactly like `EXECUTE`), 3 more, for 92 entries
-/// total.
+/// ordinary, non-immediate words rather than control words; `CELL+ CHAR+ C@
+/// C!` alias existing enumerators (`one_plus`, `one_plus`, `fetch`, `store`
+/// respectively -- D21 says one address unit already is one cell, so each
+/// is exactly its aliased operation, not a distinct opcode) and `CELLS
+/// CHARS` share step F32's own new `identity` enumerator, DIV-0009's own
+/// revisit) -- plus every step F27 control word (`IF ELSE THEN BEGIN UNTIL
+/// WHILE REPEAT DO LOOP +LOOP LEAVE UNLOOP I J LITERAL POSTPONE IMMEDIATE [
+/// ] COMPILE,`, D17), 20, every step F28 execution-token/defining-word
+/// control word (`' [' EXECUTE CREATE DOES> VALUE TO DEFER IS`, D18), 9
+/// more, every step F29 parsing control word (`( \ S" ." [CHAR] ABORT"`,
+/// D19/D21 -- each must consume its own following source text at the
+/// moment it is met, so each is immediate; see @ref control_builtin's own
+/// doc comment), 6 more, and step F31's `CATCH THROW ABORT` (D11/D18 --
+/// none immediate: each works identically interpreting or compiled,
+/// exactly like `EXECUTE`), 3 more, for 98 entries total.
 ///
-/// @tparam MaxWords Dictionary capacity; must be at least 89 plus whatever
+/// @tparam MaxWords Dictionary capacity; must be at least 98 plus whatever
 ///                  room the caller wants for later colon/variable/constant/
 ///                  foreign definitions.
 /// @tparam MaxName  Maximum name length.
 template <int MaxWords = 256, int MaxName = 32>
 constexpr auto default_dictionary() -> dictionary<MaxWords, MaxName> {
     dictionary<MaxWords, MaxName> dict;
-    constexpr std::array<std::pair<std::string_view, primitive>, 54> words{{
+    constexpr std::array<std::pair<std::string_view, primitive>, 60> words{{
         {"+", primitive::plus},
         {"-", primitive::minus},
         {"*", primitive::star},
@@ -619,6 +626,23 @@ constexpr auto default_dictionary() -> dictionary<MaxWords, MaxName> {
         {"COUNT", primitive::count},
         {"TYPE", primitive::type_},
         {"(ABORT\")", primitive::abort_quote},
+        // 2f8e4c1a-9d3b-4a7e-8c1f-6b2e9a4d7c3f
+        // Step F32 (docs/forth-plan-2.md), D21: the address-unit words,
+        // DIV-0009's own revisit. `CELL+`/`CHAR+` alias `one_plus` directly
+        // (one address unit is one cell, so advancing by one cell *is*
+        // advancing by one address unit); `C@`/`C!` alias `fetch`/`store`
+        // directly (a "character" is one cell here too). Neither pair gets
+        // a new primitive enumerator -- both dictionary names below just
+        // point at the same opcode `1+`/`@`/`!` already have.
+        {"CELL+", primitive::one_plus},
+        {"CHAR+", primitive::one_plus},
+        {"C@", primitive::fetch},
+        {"C!", primitive::store},
+        // `CELLS`/`CHARS` have no existing identity primitive to alias, so
+        // both share the one new enumerator this step adds.
+        {"CELLS", primitive::identity},
+        {"CHARS", primitive::identity},
+        // 2f8e4c1a-9d3b-4a7e-8c1f-6b2e9a4d7c3f end
     }};
     for (auto const &[name_text, op] : words) {
         (void)dict.define_primitive(name_text, op);

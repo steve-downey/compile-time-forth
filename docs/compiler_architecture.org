@@ -20,7 +20,7 @@ Steps F5 through F15 (=docs/forth-plan.md=, the superseded R1 plan) built a clas
 DIV-0011 (=docs/divergences/DIV-0011-true-forth-pivot.md=) retired that design in favor of D13: the Forth-2012 section 3.4 text interpreter, with no reader phase and no elaboration phase, is the architecture.
 Steps F24/F25 built the new front end alongside the old one; step F26 ("the cut", =docs/forth-plan-2.md=) deleted the R1 pipeline outright once the new one could stand on its own.
 Phases 2 through 5 below described the deleted pipeline (grammar, syntax tree, elaboration, and two of its three codegen backends) and have moved to =docs/history/architecture-grammar-era.org=, a frozen one-time snapshot — they are no longer part of this living document's own read path.
-As of this revision the lexical layer (Phase 1), the public one-shot API (Phase 6), the text interpreter (Phase 7), the colon compiler and session image (Phase 8), the cut itself (Phase 9), immediacy and control flow (Phase 10), execution tokens and defining words (Phase 11), and parsing words and strings (Phase 12) are current.
+As of this revision the lexical layer (Phase 1), the public one-shot API (Phase 6), the text interpreter (Phase 7), the colon compiler and session image (Phase 8), the cut itself (Phase 9), immediacy and control flow (Phase 10), execution tokens and defining words (Phase 11), parsing words and strings (Phase 12), CATCH and THROW (Phase 13), and conformance (Phase 14) are current.
 
 * Pipeline overview
 
@@ -419,3 +419,60 @@ A machine fault (division by zero) mapped to its standard code and caught like a
 `ABORT"` caught by an enclosing `CATCH` (`AbortQuoteCaughtByCatch`); `ABORT` as `-1 THROW` (`AbortIsMinusOneThrow`); `0 THROW` as a no-op (`ThrowZeroIsANoOp`); an uncaught `THROW` diagnosed carrying its own code in `foundation::parse_error::where.offset` (`UncaughtThrowWhileInterpreting`).
 
 See DIV-0018 (=docs/divergences/DIV-0018-f31-catch-throw-design.md=) for the complete record of this step's own design choices, including the ones this section only summarizes.
+
+* Phase 14: Conformance (step F32, docs/forth-plan-2.md)
+
+D14's own three legs — compile-time/runtime agreement of the same value, gforth as differential oracle, and the Forth-2012 core test suite under constant evaluation as =static_assert= gates — had only leg (a) built before this step.
+This step is where legs (b) and (c) finally exist: the adapted Hayes ttester, compiled by the session itself, gates six sharded core-word-set batteries at constant-evaluation time; a runtime harness diffs the same programs' stacks and output against real =gforth=.
+
+** The D21 address-unit words: DIV-0009's own revisit
+
+DIV-0009 (F16) declared this project's data space cell-granular — one address unit is one cell — and left =CELLS=/=CHARS=/=CELL+=/=CHAR+= unbuilt because nothing yet asked for them; this step is the revisit its own "Revisit condition" named.
+=CELL+=/=CHAR+= need no new primitive at all: both dictionary names alias the existing =one_plus= enumerator directly.
+=C@=/=C!= alias =fetch=/=store= directly, since a "character" is one cell here too.
+=CELLS=/=CHARS= have no existing identity primitive to alias, so this step adds exactly one, =primitive::identity= — a true pop/re-push of one cell (diagnosing an empty-stack call as underflow like every other primitive, D7), not a bare no-op that would skip that check.
+
+#+transclude: [[file:../src/smd/forth/machine/dictionary.hpp::2f8e4c1a-9d3b-4a7e-8c1f-6b2e9a4d7c3f]] :lines 2- :src cpp :end "2f8e4c1a-9d3b-4a7e-8c1f-6b2e9a4d7c3f end"
+
+** The Hayes ttester, compiled by the session itself
+
+=src/smd/forth/conformance/ttester_corpus.hpp= adapts (not copies verbatim) John Hayes' public-domain =TESTER.FR= (via Anton Ertl's =ttester.fs= revision) into =SMD_FORTH_TTESTER_SOURCE=, a macro (not a =constexpr= variable) so it can be pasted via adjacent string-literal concatenation directly into another translation unit's own =compiled_forth<Source>= non-type template argument.
+DIV-0020 records the adaptation in full: the whole floating-point apparatus is omitted (D12: no floating point in scope at all, and this project has neither =ENVIRONMENT?= nor =[IF]=/=[ELSE]=/=[THEN]= to select upstream's own no-op branch the way upstream itself does), the =X.../R.../...}T= combinator family is dropped (it exists solely to mix float and cell results on a shared stack), and =ERROR1= drops upstream's own =SOURCE TYPE= echo (no =SOURCE= word yet).
+Every zero-trip =DO= guard upstream itself already has (=START-DEPTH @ > IF ... DO ... LOOP THEN=, never a bare =count 0 DO=) is kept verbatim: Forth-2012's own =DO= does not skip its body when index equals limit at entry, so an unguarded zero-count loop runs until a 64-bit cell wraps around — confirmed directly against both this project's own =build_session= (fuel-exhausts under a 1000-step budget) and real =gforth 0.7.3= (does not return).
+
+** Six shards, sharded per D22
+
+=src/smd/forth/conformance/core_suite_{arithmetic,stack,memory,control,defining,strings}.test.cpp= each compile the ttester plus their own group of =T{ ... -> ... }T= assertions as one =compiled_forth<...>=, gating on a =static_assert= that the built session's own captured output is empty — the ttester itself never prints anything on a passing assertion (upstream's own convention, preserved), so an empty output *is* "every assertion in this shard passed," a real executed conformance check, not merely "this compiled."
+=core_suite_strings.test.cpp= is the one exception: =TYPE=/=."=/=ABORT"='s own condition-met path all print by design, so its own gate instead checks the ttester's own two failure strings never appear, and that each word's own expected text actually did print.
+Five shards gated this way is D22's own "sharded across translation units so per-TU evaluation cost stays bounded" directly: each =.cpp= is its own independently-compiled translation unit regardless of which test executable links it, so no single TU pays for the whole battery.
+GCC's/Clang's own default =constexpr= operation/step ceiling (2^25 ops for GCC) is not this project's own Fuel budget (D22) — it is the *compiler's* unrelated safety net against runaway template metaprogramming, and this step's own ttester-plus-assertions workload genuinely needs more of it; =conformance/CMakeLists.txt= raises it explicitly (=-fconstexpr-ops-limit==, =-fconstexpr-steps==) rather than shrinking the battery to fit an unrelated ceiling.
+
+** The gforth differential harness
+
+=src/smd/forth/conformance/gforth_diff.{hpp,cpp}= is this project's first compiled (non-header-only) library source since step F15's own =forth.cpp= placeholder was deleted: shelling out to a =gforth= subprocess is ordinary runtime code, not compile-time machinery, so D3's "heap-backed fix/Box types are barred from the compiled pipeline" does not apply to it.
+=run_via_gforth= invokes =gforth -e '<program> .s bye'= and splits its own captured stdout at the *last* =<n> ...= marker (=.s='s own output, always the last thing printed) into the program's own ordinary output and its final stack.
+=gforth_diff.test.cpp='s own differential battery (=GforthDiffTest - AgreesWithGforthOnTheCoveredWordBattery=) runs identical programs through this project's own =build_session= (at ordinary runtime, not =constexpr=) and through real =gforth=, comparing both stacks and output; it records =gforth --version= first (a stray divergence should be attributable to a specific oracle build, since gforth may change under this project mid-flight) and reports itself loudly, via =WARN=, rather than silently doing nothing, if =gforth= is not reachable on =PATH= — =conformance/CMakeLists.txt='s own =find_program(gforth)= at configure time is the first, louder line of the same defense.
+D21's own address-unit words and DIV-0022's own negative-operand division are deliberately excluded from this battery's own program list: both are *known*, already-declared divergences from byte-addressed/floored-division gforth, and diffing them here would report an accepted characteristic as a fresh failure.
+
+** Three gaps this step's own conformance work discovered, not designed in
+
+D14 leg (b)/(c) exist to surface exactly this kind of thing.
+None is fixed here — each is out of this step's own scope (conformance testing, not colon-compiler or VM redesign) — but each is filed:
+
+- DIV-0022: this project's own =/=/=MOD= are symmetric (truncating); gforth's are floored, for a negative operand with an inexact result. Forth-2012 leaves plain =/=/=MOD='s own rounding implementation-defined, so neither side is wrong — but it is a real, previously-unrecorded divergence from the D23 oracle specifically.
+- DIV-0023: =COMPILE,= has no currently-reachable valid usage. Forth-2012's own textbook idiom (an immediate helper word whose own body is =['] TARGET COMPILE,=, used inside a third definition) needs =COMPILE,= itself to be non-immediate, deferring its own append until the helper actually runs; this project's own =COMPILE,= is installed immediate instead (step F27), so the append happens while the helper is still being defined — before =[']='s own deferred literal-push has ever taken effect — and underflows. Confirmed directly against real gforth that the textbook idiom does work there.
+- DIV-0024: =CATCH= cannot restore =i*x= if the caught word itself popped below it before throwing. =cell_stack::truncate='s own shrink-only guard (F31, DIV-0018) refuses to grow the stack back up, so a caught word that legitimately consumes part of its own caller's pre-existing stack before throwing (a common, standard-legal shape) fails to build here instead of restoring =i*x= per Forth-2012's own =CATCH= contract.
+
+** The exclusion list
+
+=docs/conformance-exclusions.md= is D23's own "written exclusion list with a standard citation or DIV per exclusion," in full: every Forth-2012 core (or core-ext) word this battery does not cover, sorted into out-of-scope-by-design (D12), deferred (=EVALUATE=, DIV-0021), not-yet-implemented (a real gap, not a scope cut — =BASE=/=DECIMAL=, introspection words, console I/O, remaining arithmetic, =FILL=/=MOVE=/=ALIGN=/=ALIGNED=), and known divergences affecting what a covered word's own test can assert (DIV-0009/D21, DIV-0017, DIV-0022, DIV-0023, DIV-0024).
+
+** Merge criteria
+
+Core suite green minus the exclusion list: all six =core_suite_*.test.cpp= shards' own =static_assert= gates pass (=make TOOLCHAIN=gcc-16 compile=), meaning every covered word's own battery of =T{ ... -> ... }T= assertions genuinely ran and genuinely passed, at constant-evaluation time.
+The gforth differential harness runs in CI (=conformance_test='s own =GforthDiffTest - AgreesWithGforthOnTheCoveredWordBattery=, discovered by =make TOOLCHAIN=gcc-16 test=) and every currently-known divergence is listed (=docs/conformance-exclusions.md=, DIV-0022/0023/0024).
+Step-count telemetry: D22's own "CI records step counts so cost regressions are visible before they are failures" is realized two ways here.
+First, structurally: the raised, but still finite, =-fconstexpr-ops-limit=/=-fconstexpr-steps= ceiling in =conformance/CMakeLists.txt= itself means a future regression that meaningfully increases this step's own per-shard interpreter cost fails the build against that ceiling rather than silently eating an unbounded budget.
+Second, concretely: measured single-TU =g++-16= compile times for each shard (ttester text plus that shard's own assertions, =-O0=, this raised ops-limit, wall clock) were =ttester_corpus= 7.7s, =core_suite_arithmetic= 17.3s (39 assertions, the largest shard), =core_suite_stack= 5.9s, =core_suite_memory= 5.0s, =core_suite_control= 6.5s, =core_suite_defining= 4.7s, =core_suite_strings= 4.0s — recorded here as the baseline a future regression would show up against, not re-measured by the build itself every run.
+
+See DIV-0020 through DIV-0024 (=docs/divergences/=) for the complete record of this step's own design choices and discoveries.
