@@ -144,6 +144,31 @@ to invent a THROW-shaped one for it too).
   this step; DIV-0017's own status line is updated in place to record it, rather than duplicating
   the record here.
 
+## Orchestrator amendment: the F17 teardown gap is narrowed, and its residual has an owner
+
+F31 was the step the plan named for paying Part 11's recorded unverified-teardown gap ("the gap
+does not survive F31 unexamined"). It has been examined, and this step's design genuinely narrows
+it: `THROW` no longer depends on the assumption at all, because it discards everything above a
+recorded depth without inspecting any of it. That is a better outcome than verifying the
+assumption would have been, and the interaction battery
+(`CatchUnwindsThroughToRDoLoopAndCallFrames`, throwing from inside a `DO` loop nested inside a
+`>R` and asserting the return stack returns to depth 0) is the stress test the merge criterion
+asked for.
+
+What remains is narrower and must not be dropped: **`LOOP`/`+LOOP`/`UNLOOP` teardown still assumes
+its own two-cell frame sits at the top of the return stack.** Nothing in F31 changed that path.
+A definition that pushes an unbalanced `>R` across a loop boundary — `: BAD 10 0 DO 5 >R LOOP ;` —
+would tear down the wrong cells silently rather than diagnosing, which is in tension with D7 ("all
+misuse is a diagnosed error, never UB"). Forth-2012 requires the return stack to be balanced before
+`LOOP`, so this is a program error rather than a system bug; the objection is that the system does
+not *say so*.
+
+**Owner: F30.** D20's diagnosis list for the effect lint already names `>R`/`R>` imbalance and
+loop-body net-effect violations, and F30 runs next against the now-final opcode set. A static lint
+that rejects an unbalanced `>R` across a loop boundary is exactly the shape this residual needs,
+and closes it at compile time rather than by adding a runtime check to the hot loop path. If F30
+finds it cannot diagnose this case, it must say so explicitly rather than let the residual lapse.
+
 ## Revisit condition
 
 None. This is accepted-permanent: the scalar handler-depth register is a strictly better fit for

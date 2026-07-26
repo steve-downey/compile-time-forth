@@ -60,6 +60,22 @@ any source below wholesale.
 
 ## Gotchas F30 needs and cannot get from its own pasted section
 
+- **You inherit a residual F31 narrowed but did not close, and it is assigned
+  to you.** Since F17, `LOOP`/`+LOOP`/`UNLOOP` teardown has assumed — without
+  checking — that its own two-cell loop frame sits at the top of the return
+  stack. F31 removed `THROW`'s dependence on that assumption entirely (it
+  discards everything above a recorded depth without inspecting it), but did
+  not touch the loop path. So a definition with an unbalanced `>R` across a
+  loop boundary — `: BAD 10 0 DO 5 >R LOOP ;` — still tears down the wrong
+  cells *silently*, which sits badly with D7 ("all misuse is a diagnosed
+  error, never UB"). Forth-2012 requires the return stack balanced before
+  `LOOP`, so this is a program error; the objection is that nothing says so.
+  **D20's diagnosis list already names `>R`/`R>` imbalance and loop-body
+  net-effect violations, which makes this yours**: catching it statically at
+  `;` closes it without putting a runtime check in the loop's hot path. If you
+  find you cannot diagnose this case, say so explicitly in your report and in
+  a DIV — do not let it lapse silently. See DIV-0018's orchestrator amendment
+  for the full record.
 - **`machine::forth_state::handler_depth()`/`set_handler_depth`** (a new
   scalar register alongside `BASE`/`STATE`) is *runtime* state — how far a
   `CATCH` handler's own frame sits on the return stack, at the moment code
