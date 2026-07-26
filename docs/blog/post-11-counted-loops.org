@@ -45,7 +45,7 @@ further down. The frame sits directly above whatever call frame is already
 there, and it has to be gone --- popped back off --- before that call's own
 ~ret~ runs, or the return address underneath it is not what comes back.
 
-#+transclude: [[orgit:~/src/compile-time-forth/main::src/smd/forth/machine/eval_direct.hpp::1c9d7a2e-5b3f-4e91-8a6d-2f7c4b9e0d31]] :lines 2- :src cpp :end "1c9d7a2e-5b3f-4e91-8a6d-2f7c4b9e0d31 end"
+#+transclude: [[orgit-file:~/src/compile-time-forth/compile-time-forth::blog/part-11::src/smd/forth/machine/eval_direct.hpp::1c9d7a2e-5b3f-4e91-8a6d-2f7c4b9e0d31]] :lines 2- :src cpp :end "1c9d7a2e-5b3f-4e91-8a6d-2f7c4b9e0d31 end"
 
 ~I~ and ~J~ and ~LEAVE~ and ~UNLOOP~ are not primitives. There was a temptation
 to make them entries in ~machine::primitive~ the way ~+~ or ~DUP~ are, since
@@ -64,7 +64,7 @@ The loop body itself runs the ordinary way --- ~eval_body~ over whatever's
 inside ~DO ... LOOP~ --- and then the frame's index gets advanced and
 checked:
 
-#+transclude: [[orgit:~/src/compile-time-forth/main::src/smd/forth/machine/eval_direct.hpp::9e4a1f6b-8c2d-4f57-b1a9-3d6e0c8b5a72]] :lines 2- :src cpp :end "9e4a1f6b-8c2d-4f57-b1a9-3d6e0c8b5a72 end"
+#+transclude: [[orgit-file:~/src/compile-time-forth/compile-time-forth::blog/part-11::src/smd/forth/machine/eval_direct.hpp::9e4a1f6b-8c2d-4f57-b1a9-3d6e0c8b5a72]] :lines 2- :src cpp :end "9e4a1f6b-8c2d-4f57-b1a9-3d6e0c8b5a72 end"
 
 * Two termination rules, not one
 
@@ -84,7 +84,7 @@ crossed the boundary between one cell below the limit and the limit itself
 [cite:@forth2012]. Concretely: take =index - limit= before adding the
 increment and after, and check whether the sign flipped.
 
-#+transclude: [[orgit:~/src/compile-time-forth/main::src/smd/forth/machine/vm.hpp::2d8b6f4a-7c1e-4b93-9a5d-6e0f3c8a1d54]] :lines 2- :src cpp :end "2d8b6f4a-7c1e-4b93-9a5d-6e0f3c8a1d54 end"
+#+transclude: [[orgit-file:~/src/compile-time-forth/compile-time-forth::blog/part-11::src/smd/forth/machine/vm.hpp::2d8b6f4a-7c1e-4b93-9a5d-6e0f3c8a1d54]] :lines 2- :src cpp :end "2d8b6f4a-7c1e-4b93-9a5d-6e0f3c8a1d54 end"
 
 Plain ~LOOP~ keeps the simple equality test, which is correct for it because
 its increment is always exactly 1 and an index counting up by ones cannot
@@ -115,7 +115,7 @@ instruction index, and comes back to patch it once the loop's own
 ~loop_step~ or ~plus_loop_step~ has been emitted and the real exit address is
 known:
 
-#+transclude: [[orgit:~/src/compile-time-forth/main::src/smd/forth/machine/codegen.hpp::5f3a8d1c-9b6e-4a20-8d4f-1c7b2e9a6f38]] :lines 2- :src cpp :end "5f3a8d1c-9b6e-4a20-8d4f-1c7b2e9a6f38 end"
+#+transclude: [[orgit-file:~/src/compile-time-forth/compile-time-forth::blog/part-11::src/smd/forth/machine/codegen.hpp::5f3a8d1c-9b6e-4a20-8d4f-1c7b2e9a6f38]] :lines 2- :src cpp :end "5f3a8d1c-9b6e-4a20-8d4f-1c7b2e9a6f38 end"
 
 The back-patch scans the instructions belonging to one loop and only patches
 the ~-1~ sentinels still sitting there. An inner loop's own ~LEAVE~ branches
@@ -187,7 +187,7 @@ I found this by writing the merge criterion for ~J~, which needs two loops,
 one inside the other, to mean anything at all --- and watching a completely
 ordinary loop-summing-a-loop program fail to compile.
 
-#+transclude: [[orgit:~/src/compile-time-forth/main::src/smd/forth/elaborator/stack_effect.hpp::4b7e2c9a-1d6f-4a83-b5c0-8f2e9d6a3b17]] :lines 2- :src cpp :end "4b7e2c9a-1d6f-4a83-b5c0-8f2e9d6a3b17 end"
+#+transclude: [[orgit-file:~/src/compile-time-forth/compile-time-forth::blog/part-11::src/smd/forth/elaborator/stack_effect.hpp::4b7e2c9a-1d6f-4a83-b5c0-8f2e9d6a3b17]] :lines 2- :src cpp :end "4b7e2c9a-1d6f-4a83-b5c0-8f2e9d6a3b17 end"
 
 The fix is to model what ~DO~ actually consumes: the whole ~DO...LOOP~ needs
 the body's own inputs plus two, and gives back the body's own outputs, full

@@ -67,7 +67,7 @@ the type name to finish. GCC calls it ~-Wchanges-meaning~: the name ~addr~
 changes meaning midway through its own declaration. The field simply cannot keep
 its old spelling once its type becomes ~addr~. So it is renamed:
 
-#+transclude: [[orgit:~/src/compile-time-forth/main::src/smd/forth/machine/dictionary.hpp::d5b20e62-4731-4fbd-ac00-3c4b435207f4]] :lines 2- :src cpp :end "d5b20e62-4731-4fbd-ac00-3c4b435207f4 end"
+#+transclude: [[orgit-file:~/src/compile-time-forth/compile-time-forth::blog/part-06::src/smd/forth/machine/dictionary.hpp::d5b20e62-4731-4fbd-ac00-3c4b435207f4]] :lines 2- :src cpp :end "d5b20e62-4731-4fbd-ac00-3c4b435207f4 end"
 
 The construction sites move to ~variable_word{addr{3}}~ --- explicit, matching
 ~addr~'s explicit constructor --- and read back ~.address~. It is a trivial
@@ -87,7 +87,7 @@ The effect checker computes the effect of each definition and checks it.
 The lattice is small. An effect is either ~known~ with a specific input and
 output count, or ~unknown~ when something in the body defeats the analysis.
 
-#+transclude: [[orgit:~/src/compile-time-forth/main::src/smd/forth/elaborator/stack_effect.hpp::b238e219-4650-4e62-96ff-95b16e1d08e3]] :lines 2- :src cpp :end "b238e219-4650-4e62-96ff-95b16e1d08e3 end"
+#+transclude: [[orgit-file:~/src/compile-time-forth/compile-time-forth::blog/part-06::src/smd/forth/elaborator/stack_effect.hpp::b238e219-4650-4e62-96ff-95b16e1d08e3]] :lines 2- :src cpp :end "b238e219-4650-4e62-96ff-95b16e1d08e3 end"
 
 On top of it, the five diagnoses the checker actually issues: an ~IF~ and ~ELSE~
 arm whose /net/ effects differ; a loop body with a nonzero net effect (it would

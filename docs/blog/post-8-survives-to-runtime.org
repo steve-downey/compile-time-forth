@@ -57,11 +57,11 @@ opcode, both jobs, because the two constructs want the same test.
 
 Here is the artifact. One instruction:
 
-#+transclude: [[orgit:~/src/compile-time-forth/main::src/smd/forth/machine/instruction.hpp::f42b25c1-ce56-43b1-9d4b-adecc6e3ae0b]] :lines 2- :src cpp :end "f42b25c1-ce56-43b1-9d4b-adecc6e3ae0b end"
+#+transclude: [[orgit-file:~/src/compile-time-forth/compile-time-forth::blog/part-08::src/smd/forth/machine/instruction.hpp::f42b25c1-ce56-43b1-9d4b-adecc6e3ae0b]] :lines 2- :src cpp :end "f42b25c1-ce56-43b1-9d4b-adecc6e3ae0b end"
 
 and the compiled program it lives in:
 
-#+transclude: [[orgit:~/src/compile-time-forth/main::src/smd/forth/machine/instruction.hpp::7bb215b8-9ae5-42f0-90f1-dff9d46b08ab]] :lines 2- :src cpp :end "7bb215b8-9ae5-42f0-90f1-dff9d46b08ab end"
+#+transclude: [[orgit-file:~/src/compile-time-forth/compile-time-forth::blog/part-08::src/smd/forth/machine/instruction.hpp::7bb215b8-9ae5-42f0-90f1-dff9d46b08ab]] :lines 2- :src cpp :end "7bb215b8-9ae5-42f0-90f1-dff9d46b08ab end"
 
 That it is trivially copyable is the crux of the entire project, and the header
 ~static_assert~-s exactly that. ~compiled_program~ is a literal type --- there is

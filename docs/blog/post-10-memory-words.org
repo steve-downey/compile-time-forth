@@ -48,14 +48,14 @@ plain. ~@~, ~!~, and ~+!~ are three new entries in ~machine::primitive~ ---
 primitive already is, plus ~allot~ for the fourth. All four dispatch through
 ~apply_primitive~ exactly like ~+~ or ~DUP~ always have:
 
-#+transclude: [[orgit:~/src/compile-time-forth/main::src/smd/forth/machine/forth_state.hpp::d3325ebc-173e-4f4a-b51f-cb9811d2993a]] :lines 2- :src cpp :end "d3325ebc-173e-4f4a-b51f-cb9811d2993a end"
+#+transclude: [[orgit-file:~/src/compile-time-forth/compile-time-forth::blog/part-10::src/smd/forth/machine/forth_state.hpp::d3325ebc-173e-4f4a-b51f-cb9811d2993a]] :lines 2- :src cpp :end "d3325ebc-173e-4f4a-b51f-cb9811d2993a end"
 
 There is no new node kind in the elaborated core for any of this and no new
 opcode in the instruction set. A memory access is, mechanically, just another
 primitive that happens to touch the data space instead of only the data
 stack:
 
-#+transclude: [[orgit:~/src/compile-time-forth/main::src/smd/forth/machine/forth_state.hpp::29b353a0-fc5d-46fc-98e3-b9a47b8cd691]] :lines 2- :src cpp :end "29b353a0-fc5d-46fc-98e3-b9a47b8cd691 end"
+#+transclude: [[orgit-file:~/src/compile-time-forth/compile-time-forth::blog/part-10::src/smd/forth/machine/forth_state.hpp::29b353a0-fc5d-46fc-98e3-b9a47b8cd691]] :lines 2- :src cpp :end "29b353a0-fc5d-46fc-98e3-b9a47b8cd691 end"
 
 ~fetch~ and ~store~ take a cell off the data stack and convert it to an
 ~addr~ right at the boundary, because that is what an address has always
@@ -94,12 +94,12 @@ is not yet.
 Both backends close that gap the same way, and it is one line each. The
 direct evaluator seeds its state before it evaluates a single node:
 
-#+transclude: [[orgit:~/src/compile-time-forth/main::src/smd/forth/machine/eval_direct.hpp::4caeb07c-70eb-4256-9a53-f48d9fd89fe1]] :lines 2- :src cpp :end "4caeb07c-70eb-4256-9a53-f48d9fd89fe1 end"
+#+transclude: [[orgit-file:~/src/compile-time-forth/compile-time-forth::blog/part-10::src/smd/forth/machine/eval_direct.hpp::4caeb07c-70eb-4256-9a53-f48d9fd89fe1]] :lines 2- :src cpp :end "4caeb07c-70eb-4256-9a53-f48d9fd89fe1 end"
 
 The VM does the same thing before its fetch-execute loop takes its first
 step:
 
-#+transclude: [[orgit:~/src/compile-time-forth/main::src/smd/forth/machine/vm.hpp::f1514ad1-894c-4812-9ccc-2bdecd54a986]] :lines 2- :src cpp :end "f1514ad1-894c-4812-9ccc-2bdecd54a986 end"
+#+transclude: [[orgit-file:~/src/compile-time-forth/compile-time-forth::blog/part-10::src/smd/forth/machine/vm.hpp::f1514ad1-894c-4812-9ccc-2bdecd54a986]] :lines 2- :src cpp :end "f1514ad1-894c-4812-9ccc-2bdecd54a986 end"
 
 Both calls reuse ~allot~ itself, throwing away the address it returns and
 keeping only the side effect of moving the high-water mark. I could have
