@@ -20,7 +20,7 @@ Steps F5 through F15 (=docs/forth-plan.md=, the superseded R1 plan) built a clas
 DIV-0011 (=docs/divergences/DIV-0011-true-forth-pivot.md=) retired that design in favor of D13: the Forth-2012 section 3.4 text interpreter, with no reader phase and no elaboration phase, is the architecture.
 Steps F24/F25 built the new front end alongside the old one; step F26 ("the cut", =docs/forth-plan-2.md=) deleted the R1 pipeline outright once the new one could stand on its own.
 Phases 2 through 5 below described the deleted pipeline (grammar, syntax tree, elaboration, and two of its three codegen backends) and have moved to =docs/history/architecture-grammar-era.org=, a frozen one-time snapshot — they are no longer part of this living document's own read path.
-As of this revision the lexical layer (Phase 1), the public one-shot API (Phase 6), the text interpreter (Phase 7), the colon compiler and session image (Phase 8), the cut itself (Phase 9), and immediacy and control flow (Phase 10) are current.
+As of this revision the lexical layer (Phase 1), the public one-shot API (Phase 6), the text interpreter (Phase 7), the colon compiler and session image (Phase 8), the cut itself (Phase 9), immediacy and control flow (Phase 10), and execution tokens and defining words (Phase 11) are current.
 
 * Pipeline overview
 
@@ -97,10 +97,12 @@ Everything above this section describes the R1 pipeline (source text → structu
 That pipeline, its tree, and its elaborator are untouched by step F24 and remain fully buildable and tested — the cut that removes them is step F26 — but they are no longer where new front-end work lands.
 D13 makes the Forth-2012 section 3.4 outer text interpreter the architecture: parse a word, find it, execute it (interpret state only, as of this step — compiling arrives at F25), else try it as a number per =BASE=, else a positioned diagnosed error; =STATE=, =SOURCE=, =>IN=, and =BASE= are ordinary machine state, not hidden inside any parser.
 
-=smd::forth::interpreter::forth_state= is what "machine state grows =SOURCE=/=>IN=/=BASE=/=STATE=" means concretely: it wraps a =machine::forth_state= (the stacks, data space, and output buffer, all unchanged since F8/F10) by composition rather than by editing that type in place, and adds an =input_source= plus =BASE= (default 10) and =STATE= (0 = interpreting; F25 is the first step that ever writes a nonzero value).
-Composition, not an in-place edit, is what keeps every existing consumer of the narrower =machine::forth_state= — =machine::run=, =machine::eval_program=, =forth.hpp='s own =forth_program= — working unchanged; the wider type stays a literal, trivially destructible aggregate exactly like its inner =machine::forth_state= already was (D3).
+At the time F24 landed, "machine state grows =SOURCE=/=>IN=/=BASE=/=STATE=" meant a new, composed =smd::forth::interpreter::forth_state=: it wrapped a =machine::forth_state= (the stacks, data space, and output buffer, all unchanged since F8/F10) by composition rather than by editing that type in place, and added an =input_source= plus =BASE= (default 10) and =STATE= (0 = interpreting; F25 is the first step that ever writes a nonzero value).
+Composition, not an in-place edit, is what kept every existing consumer of the narrower =machine::forth_state= — =machine::run=, =machine::eval_program=, =forth.hpp='s own =forth_program= — working unchanged while the R1 pipeline those consumers belonged to was still alive.
+Step F28 folds this wrapper away (DIV-0012's own deferred half, closed — see Phase 9's own subsection below and Phase 11): =input_source=, =BASE=, and =STATE= are now fields directly on =machine::forth_state= itself (=machine/forth_state.hpp=, relocated from =interpreter/input_source.hpp= to =machine/input_source.hpp= in the same step, re-namespaced =smd::forth::machine=), and =interpreter::forth_state= no longer exists.
+This section keeps its own historical framing (composition was the correct, narrower move for F24's own scope, with the R1 pipeline still standing) but every code sample below reflects where those fields live today.
 
-#+transclude: [[file:../src/smd/forth/interpreter/input_source.hpp::6a8b2e4f-1c9d-4a3e-8f5b-2d7c9e1a4b6f]] :lines 2- :src cpp :end "6a8b2e4f-1c9d-4a3e-8f5b-2d7c9e1a4b6f end"
+#+transclude: [[file:../src/smd/forth/machine/input_source.hpp::6a8b2e4f-1c9d-4a3e-8f5b-2d7c9e1a4b6f]] :lines 2- :src cpp :end "6a8b2e4f-1c9d-4a3e-8f5b-2d7c9e1a4b6f end"
 
 =>IN= is stored as a bare byte offset, not as a =parser::cursor=, per D19's own instruction that it be ordinary, inspectable machine state rather than a cursor buried inside a scanner's local variables — the property F29's user-defined parsing words will depend on, since a Forth-level word like =PARSE= has to be able to read and write =>IN= through the same interface the outer loop itself uses.
 =input_source::cursor_at_in= is the bridge back to the combinator library: it rebuilds a =parser::cursor= by replaying =parser::cursor::bump= from the start of the source text, which is what keeps line/column diagnostics correct without =input_source= maintaining a second, parallel line/column tracker of its own.
@@ -141,10 +143,10 @@ Instruction 0 is reserved at construction as a permanent =halt= landing pad.
 =run= itself is implemented in terms of =run_from= (seed, then delegate to =run_from(program, state, program.program_entry, fuel)=); DIV-0013 records why an earlier draft that instead pointed =compile_buffer='s own =compiled_program::program_entry= at the word being called and reused =machine::run= unmodified was rejected on review (mutating shared, conceptually-const program state to fake an entry point, correct only by an incidental invariant rather than by construction).
 
 =interpret= itself branches on =st.state()=: interpreting (0) runs a primitive, calls a =compiled_colon_word=, or pushes a =variable_word=/=constant_word='s address/value (both against the same live =st=, D14 — there is no second evaluator); compiling (1, entered by `:`) emits =op::prim=/=op::call=/=op::push= into the =compile_buffer= instead of running/pushing.
-`:`, `;`, `EXIT`, `RECURSE` (step F25), and `VARIABLE`/`CREATE`/`CONSTANT` (step F26) are all recognized by direct name comparison before any dictionary lookup; step F27 (Phase 10) generalizes this into real immediate-word dispatch through the dictionary for every control word, `IMMEDIATE`, `POSTPONE`, `LITERAL`, `[`, `]`, and `COMPILE,`, without touching this handful of direct-name special cases (they stay exactly as described here).
+`:`, `;`, `EXIT`, `RECURSE` (step F25), and `VARIABLE`/`CREATE`/`CONSTANT` (step F26) are all recognized by direct name comparison before any dictionary lookup; step F27 (Phase 10) generalizes this into real immediate-word dispatch through the dictionary for every control word, `IMMEDIATE`, `POSTPONE`, `LITERAL`, `[`, `]`, and `COMPILE,`, without touching this handful of direct-name special cases (they stay exactly as described here). Step F28 (Phase 11) later moves `CREATE` specifically off this list, onto that same generalized dictionary dispatch — required so `CREATE` can also run from *inside* another word's own compiled body — while leaving `VARIABLE`/`CONSTANT` on it, since nothing needs either to work that way yet.
 `:` records the entry point (=compile_buffer::here()=) *before* compiling the body, so `RECURSE` (a self-`call` to that same entry point) resolves without any back-patching — F14's discipline, carried forward unchanged.
 A declared `( ... -- ... )` effect comment immediately after the name is captured as a =foundation::source_span= (=scan_colon_header=, D20: stored, unverified until F30) rather than silently vanishing as ordinary intertoken space the way any other comment does — capturing it needs its own name scan that skips =parser::scan_word='s usual trailing comment-swallow, since the comment must still be visible afterward to capture.
-=VARIABLE=/=CREATE= (step F26) allot one cell or zero, respectively, from =st.machine().data_space()= directly (no elaboration-time data space to coordinate with any more — Phase 4's old =elaborate_variable=/=elaborate_create= are history) and install a =machine::variable_word=; =CONSTANT= pops the data stack's own top cell — ordinary Forth-2012 semantics, not R1's own elaboration-time constant-folding, which required a syntactically preceding literal token.
+=VARIABLE=/=CREATE= (step F26; =CREATE= relocated at step F28, Phase 11) allot one cell or zero, respectively, from the data space directly (no elaboration-time data space to coordinate with any more — Phase 4's old =elaborate_variable=/=elaborate_create= are history) and install a =machine::variable_word=; =CONSTANT= pops the data stack's own top cell — ordinary Forth-2012 semantics, not R1's own elaboration-time constant-folding, which required a syntactically preceding literal token.
 
 #+transclude: [[file:../src/smd/forth/interpreter/interp.hpp::aa1d6f83-9b3c-4e2a-8d5f-3c7b1e9a4f62]] :lines 2- :src cpp :end "aa1d6f83-9b3c-4e2a-8d5f-3c7b1e9a4f62 end"
 
@@ -199,7 +201,7 @@ DIV-0013 named this step as where its own binding-shape question closes: once =c
 Phase 8's own section above records the closure directly; DIV-0013 and DIV-0014 both carry it for the historical record.
 (Step F27, Phase 10 below, adds a sixth alternative back, =control_word= — a different binding kind for a different reason, not a reopening of this closure: colon definitions still have exactly one binding kind between them.)
 
-** DIV-0012's fold: closed in one half, deferred in the other
+** DIV-0012's fold: closed in one half at this step, closed in the other at F28
 
 DIV-0012 asked this step to close two things: relocate =reader/forth_chars.hpp= (done — Phase 1, now =parser/forth_chars.hpp=), and fold =interpreter::forth_state='s own =input_source=/=BASE=/=STATE= directly into =machine::forth_state=, collapsing the composed wrapper.
 This step does *not* do the second fold.
@@ -207,6 +209,7 @@ DIV-0012's own orchestrator amendment names F28 (uniform execution tokens) and F
 F26 itself has no merge criterion that needs the fold, and this step's own scope — the deletion itself, the =forth.hpp= retarget, and the =VARIABLE=/=CREATE=/=CONSTANT= addition the F16 memory-word merge criteria require — is already at the edge of one mergeable change; folding =machine::forth_state= touches every one of its remaining consumers (=machine::run=/=run_from=, every =machine/*.test.cpp=, =forth.hpp=, all of =interpreter/=) on top of that.
 This is filed as a concrete reason against D13 per DIV-0012's own instruction, not settled silently: see DIV-0014's own record, and DIV-0012's revisit condition, updated in place to point at F28 rather than F26.
 Step F27 did not need the fold either, and leaves it exactly where DIV-0012 pointed it: F28.
+**Step F28 closes the deferred half.** =interpreter::forth_state= is deleted; =input_source=, =BASE=, and =STATE= are fields on =machine::forth_state= itself, and every consumer that used to write =st.machine().foo()= now writes =st.foo()=. See Phase 11 below for the reason this specific step could not defer it any further (=CREATE=/=DOES>=, invoked from inside another word's own compiled body, need the input stream reachable from whatever =machine::run_from= runs against) and DIV-0012's own F28 addendum for the complete record.
 
 ** DIV-0014
 
@@ -252,3 +255,69 @@ The complete F13/F16/F17 program battery (=interpreter/control_flow_corpus.hpp=,
 =: ENDIF POSTPONE THEN ; IMMEDIATE= followed by =: ABS2 DUP 0< IF NEGATE ENDIF ;  -7 ABS2= leaves =[7]=, proving the alias genuinely behaves like `THEN` (=interp.test.cpp='s =PostponeAliasesAControlWord=); a mismatched `THEN` with no matching `IF` is diagnosed (=MismatchedThenWithoutIfIsDiagnosed=).
 
 See DIV-0015 (=docs/divergences/DIV-0015-f27-control-word-design.md=) for the full record of this step's own design choices: the =control_word= binding shape and why it carries no VM entry point, the =execute_entry=/=compile_entry= split, the =POSTPONE=-of-a-control-word alias mechanism and its scope cut, and the reverted data-stack-depth balance check.
+
+* Phase 11: Execution Tokens and Defining Words (step F28, docs/forth-plan-2.md)
+
+D18's header unification reaches its first real payoff here: `'`, `[']`, `EXECUTE`, `CREATE`, `DOES>`, `VALUE`, `TO`, `DEFER`, and `IS` all land as ordinary =machine::dictionary= entries — either a new =control_word= tag (D18's own "F9 variant-of-kinds dissolves into the header" direction) or, for `VALUE`/`DEFER`, two small new binding kinds that reuse the =variable_word= shape's own idea (a data-space cell) rather than growing the header further.
+`,` lands as the 48th primitive.
+
+** DIV-0012's fold, closed
+
+This step is where DIV-0012's own deferred half stops being deferrable: =interpreter::forth_state=, the composed wrapper Phase 7 introduced, is deleted, and =input_source=/=BASE=/=STATE= move onto =machine::forth_state= directly (=machine/forth_state.hpp=; =input_source= itself relocates from =interpreter/input_source.hpp= to =machine/input_source.hpp=, re-namespaced).
+The reason is concrete, not procedural: =machine::apply_primitive= and =machine::run_from= only ever see a =machine::forth_state=, and this step's own two central deliverables — `EXECUTE` (D18) and `CREATE`/`DOES>` (D10) invoked from *inside* another word's own compiled body — both need the input stream reachable from exactly that type, with no interpreter-level wrapper in between.
+Every function that used to take the wrapper now takes =machine::forth_state= directly; every =st.machine().foo()= call site becomes plain =st.foo()=.
+
+#+transclude: [[file:../src/smd/forth/machine/dictionary.hpp::d5b20e62-4731-4fbd-ac00-3c4b435207f4]] :lines 2- :src cpp :end "d5b20e62-4731-4fbd-ac00-3c4b435207f4 end"
+
+=variable_word= gains a does-field (D18's own "and a does-field"), read literally: =-1= means an ordinary =VARIABLE=/=CREATE= (push the address and stop), a nonnegative value is an instruction index =DOES>= installed, and executing such a word pushes the address *then* calls into that code — exactly as if the address had been pushed by hand immediately before an ordinary call.
+
+** The primitive-XT encoding decision (D18)
+
+D18 leaves the actual encoding open between two options: "a one-instruction stub in code space, or a tagged XT naming the primitive."
+This step picks the first: an execution token is a plain code-space instruction index that @ref op::execute jumps to exactly like @ref op::call would (push a return address, then jump) — no dictionary lookup at the VM level at all, ever.
+A =compiled_colon_word='s own entry point already qualifies (it is `ret`-terminated by construction, F14's discipline); every other resolvable kind (a primitive, a =variable_word=, a =constant_word=, a =value_word=) has no standing code-space location of its own, so =interpreter::resolve_execution_token= builds one — guarded by a leading unconditional branch that jumps past it, patched to land just after.
+
+#+transclude: [[file:../src/smd/forth/interpreter/interp.hpp::1c9e6a4f-7b3d-4e8a-9c2f-6a1d8b4e3f7c]] :lines 2- :src cpp :end "1c9e6a4f-7b3d-4e8a-9c2f-6a1d8b4e3f7c end"
+
+The guard exists because =resolve_execution_token= can be called with the code space positioned *inside* a still-open colon definition's own body — `'`/`[']` used inside a `[ ... ]` bracket while compiling something else, D13's own bracket-interpreting state — where appending a stub's instructions inline, unguarded, would be silently executed as part of the enclosing definition's own body the next time it runs (its own `ret` would return early, corrupting control flow).
+This is the same hazard =apply_control_word='s own `IF`/`WHILE` sentinel-and-patch discipline (Phase 10) already exists to avoid, generalized to a second kind of code-space mutation.
+`'` (interpreting only, per Forth-2012) calls this directly and pushes the result; `[']` (compile-only, immediate) calls it and compiles a literal push of the result (=op::push_xt=) into the definition being built instead.
+A =control_word=, =foreign_word=, or =defer_word= target has no execution token this function can produce (a control word's whole point is that it has no VM-representable form at all; a not-yet-`IS`sed deferred word's target does not exist yet either) — diagnosed, a documented narrower scope than full Forth-2012 (DIV-0016).
+
+** `CREATE`/`DOES>`: reaching the dictionary from inside a compiled body
+
+The classic test, `: CONSTANT2 CREATE , DOES> @ ;  42 CONSTANT2 LIFE  LIFE`, needs `CREATE` to scan a *new* name and install a *new* dictionary entry each time =CONSTANT2= runs — not once, at =CONSTANT2='s own definition time.
+Since a colon word's body, once compiled, runs as pure VM bytecode (=machine::run_from=, no interpreter-level re-entry), `CREATE`/`DOES>` need the dictionary reachable from *inside* that bytecode loop — the one deliberate exception to "the VM only ever sees a forth_state" this project has, and the reason =run_from=/=run=/=call_word= all gain a new, nullable, non-owning dictionary pointer parameter (default `nullptr`, exactly what every caller before this step already implicitly assumed).
+
+#+transclude: [[file:../src/smd/forth/machine/vm.hpp::7f3a9c1e-4b8d-4e2a-9c6f-1d8b3a7e5f2c]] :lines 2- :src cpp :end "7f3a9c1e-4b8d-4e2a-9c6f-1d8b3a7e5f2c end"
+
+=create_here= is shared, verbatim, between two call sites: =run_from='s own =op::create_word= case (compiled `CREATE`, reached from inside a running colon word) and =interpreter::apply_control_word='s own `create_` case (interpreted `CREATE`, met directly by the text interpreter) — the same action either way, since both ultimately need to scan =state.source()= and mutate the same =dict=.
+`,` (the 48th primitive) fills the cell `CREATE` leaves empty; it needs nothing beyond the ordinary data space, since `CREATE` already advanced nothing (it allots zero cells) and `,` is exactly "allot one, store."
+`DOES>` compiles to a single =op::does_enter=, with no operand: at *runtime*, the instruction right after it (its own index +1) is always the code =DOES>= should attach, since compilation is sequential — no compile-time capture needed.
+Executing =op::does_enter= calls =dictionary::attach_does= (the most recently defined entry's own does-field, diagnosing an empty dictionary or a most-recent entry that was not `CREATE`d) and then behaves exactly like =op::ret=: the *defining* word's own execution ends right there, per Forth-2012, so the code after `DOES>` never runs as part of defining the new word, only later, as that new word's own action.
+This is exactly why the DIV-0012 fold above could not wait: `CREATE` needs `state.source()`, and `DOES>` needs no forth_state field at all but still runs inside the same =run_from= loop that does.
+
+** `VALUE`/`TO` and `DEFER`/`IS`: two more data-space-backed bindings
+
+=value_word= and =defer_word= (`machine/dictionary.hpp`) both hold a single data-space address rather than growing the dictionary entry itself, deliberately: it lets a compiled *reference* to either (from inside another word) reuse ordinary, already-existing opcodes (`push address`; `prim fetch`; and, for a deferred word, `execute`) rather than needing a new VM/dictionary channel the way `CREATE`/`DOES>` do.
+
+#+transclude: [[file:../src/smd/forth/machine/dictionary.hpp::9b4e6a1c-2f8d-4c3a-8e7b-5d1a9c4f6b3e]] :lines 2- :src cpp :end "9b4e6a1c-2f8d-4c3a-8e7b-5d1a9c4f6b3e end"
+
+`VALUE`/`DEFER` (non-immediate) install their own binding directly when interpreted, exactly like `CREATE`/`VARIABLE`; `TO` is immediate (it must resolve its target's address once, at the moment it is met, regardless of `STATE`) and either stores the popped value directly (interpreting) or compiles the equivalent push-address/store sequence (compiling).
+`IS` pops an execution token (produced by `'`) and stores it straight into the target's own data-space cell — no dictionary mutation at all, unlike `DOES>`.
+A deferred word invoked before `IS` is diagnosed with a specific message when found directly by name (=execute_entry='s own =defer_word= case checks the `-1` sentinel); a *compiled* reference to the same word (from inside another definition) instead lets the sentinel reach =op::execute= and diagnoses as an out-of-range instruction pointer — a documented, minor asymmetry, not a gap (D7: both are diagnosed, never UB, just with different specificity).
+
+** DIV-0015's revisit condition: resolved, not merely revisited
+
+DIV-0015 asked whether this step's own header unification would let `POSTPONE` of a control word compose with other code in the same definition, closing its own whole-body-only scope cut.
+It does, for exactly the three control words this step gives a real compiled form: `POSTPONE EXECUTE`/`CREATE`/`DOES>` now go through =compile_entry= like any primitive, so they compose freely (=interp.test.cpp='s own =PostponeExecuteComposesWithOtherCode=).
+It does *not*, and cannot, for the structural, orig/dest-patching control words (`IF`/`THEN`/`DO`/`LOOP`/...): their entire action *is* mutating the compile buffer directly, which is not a runtime effect any XT encoding could ever name — giving `THEN` a header/XT slot would not create an action for `EXECUTE` to invoke, because `THEN` has none.
+This is a structural fact about what these words are, not a scope cut this step failed to close; DIV-0015's own record is updated in place with this resolution.
+
+** Merge criteria
+
+=: CONSTANT2 CREATE , DOES> @ ;  42 CONSTANT2 LIFE  LIFE= leaves =[42]= (the R1 F20 classic, now required, and the concrete proof the dictionary-threading above works end to end) — both through =interpret= directly (=interp.test.cpp='s =ConstantTwoDoesMergeCriterion=) and through the public API (=forth.test.cpp='s own criterion of the same name).
+=' SQUARED EXECUTE= agrees with calling =SQUARED= directly, both at compile time and at runtime (=TickExecuteMergeCriterion=, both files) — D14's "the same value agrees with itself" read literally, since =EXECUTE='s interpreting-time behavior and a plain call both bottom out in the identical =call_word= invocation.
+A `DEFER`red word invoked before `IS` is diagnosed on execution, not a silent no-op (=DeferredWordBeforeIsIsDiagnosed=); redefinition shadowing is unaffected by every new binding kind this step adds (=machine/dictionary.test.cpp='s own shadowing tests, carried unchanged).
+
+See DIV-0016 (=docs/divergences/DIV-0016-f28-execution-tokens-and-defining-words.md=) for the complete record of this step's own design choices, including the ones this section only summarizes.

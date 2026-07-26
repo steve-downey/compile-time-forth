@@ -76,6 +76,9 @@ static_assert(primitive_data_effect(primitive::store) == known(2, 0));
 static_assert(primitive_data_effect(primitive::plus_store) == known(2, 0));
 static_assert(primitive_data_effect(primitive::allot) == known(1, 0));
 
+// Step F28: `,` is likewise not input-dependent.
+static_assert(primitive_data_effect(primitive::comma) == known(1, 0));
+
 static_assert(primitive_return_delta(primitive::to_r) == 1);
 static_assert(primitive_return_delta(primitive::r_from) == -1);
 static_assert(primitive_return_delta(primitive::r_fetch) == 0);

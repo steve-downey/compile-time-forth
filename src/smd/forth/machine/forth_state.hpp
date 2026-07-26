@@ -9,20 +9,48 @@
 #include <smd/forth/foundation/static_vector.hpp>
 #include <smd/forth/machine/cell.hpp>
 #include <smd/forth/machine/data_space.hpp>
+#include <smd/forth/machine/input_source.hpp>
 #include <smd/forth/machine/stacks.hpp>
 
 #include <cstdint>
+#include <string_view>
+#include <type_traits>
 #include <utility>
 #include <variant>
 
 namespace smd::forth::machine {
 
-/// The bundled Forth machine state (D7, D10).
+// Step F28 (docs/forth-plan-2.md), DIV-0012's own deferred fold: SOURCE/>IN,
+// BASE, and STATE join the stacks/data-space/output substrate here rather
+// than staying on the composed interpreter::forth_state wrapper F24/F25/F26/
+// F27 built this up through. D13 does not say the interpreter needs these
+// nearby; it says they *are* machine state in forth_state -- the wrapper was
+// accepted through F26 on scope grounds (the R1 pipeline's own four
+// consumers of the narrower type were still alive, and machine/ depending on
+// parser/ for @ref input_source would have been a new layering edge for no
+// benefit those steps needed), but F26 deleted that pipeline and F28 is the
+// step DIV-0012's own orchestrator amendment names as unable to defer this
+// any further: @ref apply_primitive and @ref run_from only ever see a
+// forth_state, so a word reached through `EXECUTE` (D18), or a defining word
+// like `CREATE`/`DOES>` invoked from inside another word's own compiled body
+// (both this step's own deliverables), can only reach the input stream and
+// the dictionary-mutating machinery that scans it if forth_state itself
+// carries `SOURCE`/`>IN`. `interpreter::forth_state`, the composed wrapper,
+// is deleted by this same step; every one of its own accessor names
+// (`source`/`base`/`set_base`/`state`/`set_state`) is preserved verbatim
+// here, so every caller of the wrapper's own spelling keeps working, minus
+// the now-gone `.machine()` indirection. See DIV-0012's own F28 addendum.
+
+/// The bundled Forth machine state (D7, D10, D13).
 ///
 /// Holds both stacks, a @ref data_space "data_space" arena (bounds-checked
 /// @c allot/@c fetch/@c store over a typed @ref addr, see
-/// `data_space.hpp`), and a fixed-capacity output buffer with Forth
-/// number-formatting helpers. A literal type: usable as a local in a
+/// `data_space.hpp`), a fixed-capacity output buffer with Forth
+/// number-formatting helpers, and -- since step F28's own fold, see this
+/// header's own top comment -- the Forth-2012 section 3.4 outer
+/// interpreter's own three remaining pieces of state: an @ref input_source
+/// (`SOURCE`/`>IN`), `BASE` (default 10), and `STATE` (0 = interpreting,
+/// nonzero = compiling). A literal type: usable as a local in a
 /// @c constexpr function, or exercised wholesale in a @c static_assert.
 ///
 /// @tparam MaxDepth  Data stack capacity, in cells.
@@ -33,6 +61,10 @@ template <int MaxDepth, int MaxRDepth, int MaxData, int MaxOut>
 class forth_state {
   public:
     constexpr forth_state() = default;
+
+    /// Constructs a forth_state whose @ref source is positioned at the start
+    /// of @p text, with `BASE` 10 and `STATE` 0 (interpreting).
+    constexpr explicit forth_state(std::string_view text) : source_{text} {}
 
     /// The data stack.
     [[nodiscard]] constexpr auto data() -> data_stack<MaxDepth> &;
@@ -69,11 +101,33 @@ class forth_state {
     /// Diagnoses overflow if the buffer cannot hold the full rendering.
     constexpr auto emit_cell(cell value) -> status;
 
+    /// `SOURCE`/`>IN` (D13): see @ref input_source.
+    [[nodiscard]] constexpr auto source() -> input_source &;
+    /// `SOURCE`/`>IN` (D13): see @ref input_source.
+    [[nodiscard]] constexpr auto source() const -> input_source const &;
+
+    /// `BASE`: the radix number-per-BASE classification and formatting use.
+    /// Defaults to 10.
+    [[nodiscard]] constexpr auto base() const -> int;
+    /// Sets `BASE`. A caller-supplied value outside 2..36 simply makes every
+    /// subsequent number classification fail, which is a diagnosed "unknown
+    /// word" at the interpreter loop, not UB.
+    constexpr auto set_base(int value) -> void;
+
+    /// `STATE`: 0 while interpreting, nonzero while compiling (`:` sets it,
+    /// `;` clears it).
+    [[nodiscard]] constexpr auto state() const -> int;
+    /// Sets `STATE`.
+    constexpr auto set_state(int value) -> void;
+
   private:
     data_stack<MaxDepth> data_{};
     return_stack<MaxRDepth> returns_{};
     machine::data_space<MaxData> data_space_{};
     foundation::static_vector<char, MaxOut> output_{};
+    input_source source_{};
+    int base_{10};
+    int state_{0};
 };
 
 template <int MaxDepth, int MaxRDepth, int MaxData, int MaxOut>
@@ -170,6 +224,55 @@ forth_state<MaxDepth, MaxRDepth, MaxData, MaxOut>::emit_cell(cell value)
     return emit_char(' ');
 }
 
+template <int MaxDepth, int MaxRDepth, int MaxData, int MaxOut>
+constexpr auto forth_state<MaxDepth, MaxRDepth, MaxData, MaxOut>::source()
+    -> input_source & {
+    return source_;
+}
+
+template <int MaxDepth, int MaxRDepth, int MaxData, int MaxOut>
+constexpr auto forth_state<MaxDepth, MaxRDepth, MaxData, MaxOut>::source() const
+    -> input_source const & {
+    return source_;
+}
+
+template <int MaxDepth, int MaxRDepth, int MaxData, int MaxOut>
+constexpr auto forth_state<MaxDepth, MaxRDepth, MaxData, MaxOut>::base() const
+    -> int {
+    return base_;
+}
+
+template <int MaxDepth, int MaxRDepth, int MaxData, int MaxOut>
+constexpr auto
+forth_state<MaxDepth, MaxRDepth, MaxData, MaxOut>::set_base(int value) -> void {
+    base_ = value;
+}
+
+template <int MaxDepth, int MaxRDepth, int MaxData, int MaxOut>
+constexpr auto forth_state<MaxDepth, MaxRDepth, MaxData, MaxOut>::state() const
+    -> int {
+    return state_;
+}
+
+template <int MaxDepth, int MaxRDepth, int MaxData, int MaxOut>
+constexpr auto
+forth_state<MaxDepth, MaxRDepth, MaxData, MaxOut>::set_state(int value)
+    -> void {
+    state_ = value;
+}
+
+namespace detail {
+
+// forth_state must stay a literal, trivially destructible type (D3): it is
+// what a constexpr-evaluated session (interpreter::build_session) runs its
+// own text interpreter against, and the R1-era static_assert this moved from
+// (interpreter::forth_state, deleted this step -- see this header's own top
+// comment) already checked exactly this for the composed wrapper; it must
+// hold for the folded-in type too.
+static_assert(std::is_trivially_destructible_v<forth_state<64, 64, 1024, 256>>);
+
+} // namespace detail
+
 /// The section-6 arithmetic, comparison, stack-manipulation, and output
 /// primitive opcodes (D7, D10). Enumerator names spell the Forth word, with
 /// a trailing underscore where the bare spelling would collide with a C++
@@ -243,9 +346,17 @@ enum class primitive {
                 ///< @c a-addr.
     plus_store, ///< `+!` ( n a-addr -- )  Adds @c n to the cell at
                 ///< @c a-addr.
-    allot       ///< `ALLOT` ( n -- ) Reserves @c n more cells past @ref
+    allot,      ///< `ALLOT` ( n -- ) Reserves @c n more cells past @ref
                 ///< data_space::here.
     // d3325ebc-173e-4f4a-b51f-cb9811d2993a end
+
+    // Step F28 (docs/forth-plan-2.md), D10/D21: `,` reserves one cell past
+    // @ref data_space::here and stores @c x there in the same step -- the
+    // primitive `CREATE ... , DOES> ...` (interpreter::apply_control_word's
+    // own `create_`/`does_` control words) uses to fill in the cell `CREATE`
+    // itself leaves empty.
+    comma ///< `,` ( x -- ) Reserves one cell past @ref data_space::here and
+          ///< stores @c x there.
 };
 
 /// Applies a pure-stack, output, or memory @ref primitive to @p state.
@@ -584,10 +695,51 @@ apply_primitive(primitive op,
         return std::monostate{};
     }
         // 29b353a0-fc5d-46fc-98e3-b9a47b8cd691 end
+    case primitive::comma: {
+        auto value = pop_one();
+        if (!value.has_value()) {
+            return value.error();
+        }
+        auto a = state.data_space().allot(1);
+        if (!a.has_value()) {
+            return a.error();
+        }
+        return state.data_space().store(a.value(), value.value());
+    }
     }
     return foundation::parse_error{foundation::source_pos{},
                                    "unknown primitive opcode"};
 }
+
+// Merge criteria (static_assert, immediately-invoked-lambda pattern), step
+// F28's own fold: SOURCE/>IN/BASE/STATE are directly on forth_state, and `,`
+// reserves and fills one data-space cell.
+
+static_assert([] {
+    forth_state<8, 8, 8, 32> st{"dup swap"};
+    return st.source().text() == "dup swap" && st.source().in() == 0 &&
+           st.base() == 10 && st.state() == 0;
+}());
+
+static_assert([] {
+    forth_state<8, 8, 8, 32> st{};
+    st.source().set_in(3);
+    st.set_base(16);
+    st.set_state(1);
+    return st.source().in() == 3 && st.base() == 16 && st.state() == 1;
+}());
+
+static_assert([] {
+    forth_state<8, 8, 8, 32> st{};
+    auto push = st.data().push(42);
+    if (!push.has_value()) {
+        return false;
+    }
+    auto r = apply_primitive(primitive::comma, st);
+    return r.has_value() && st.data().depth() == 0 &&
+           st.data_space().size() == 1 &&
+           st.data_space().fetch(addr{0}).value() == 42;
+}());
 
 } // namespace smd::forth::machine
 

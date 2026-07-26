@@ -1,8 +1,9 @@
 # DIV-0013: The colon compiler's binding shape and word-invocation mechanism
 
-- **Status:** half-closed at F26 — binding-shape half closed (see F26
-  addendum below); invocation half remains open, closing at F28 (see
-  Revisit condition)
+- **Status:** closed at F28 — binding-shape half closed at F26 (see that
+  addendum below); invocation half closed at F28 (see the F28 addendum
+  below): `call_word`'s own mechanism generalizes unchanged, plus one new
+  defaulted parameter
 - **Date:** 2026-07-25
 - **Step:** F25 (the colon compiler and the session image), docs/forth-plan-2.md
 - **Authority diverged from:** docs/forth-plan-2.md (F25's own step text left both
@@ -156,12 +157,23 @@ the `forth.hpp` retarget, and the `VARIABLE`/`CREATE`/`CONSTANT` addition its
 own merge criteria require) was already large enough without adding a
 repository-wide rename to it. See DIV-0014 for F26's own full record.
 
+## F28 addendum: the invocation half, closed
+
+`call_word`'s own mechanism generalizes without change: `EXECUTE` (D18) and
+interpreting a `variable_word` with a `DOES>`-attached does-field both reach
+it exactly the way interpreting a `compiled_colon_word` already did — "push
+a halt-pad return address, call `machine::run_from` at the callee's entry
+point." The one change `run_from`/`call_word` needed was unrelated to this
+mechanism itself: a new, nullable, non-owning `dictionary` pointer parameter
+(defaulted to `nullptr`), so `CREATE`/`DOES>` can reach the dictionary from
+inside a running colon word's own body (see DIV-0016,
+`docs/divergences/DIV-0016-f28-execution-tokens-and-defining-words.md`, for
+the full record of why and how). Every caller of `call_word`/`run_from`
+before F28 continues to compile and behave identically, since the new
+parameter is additive and defaulted.
+
 ## Revisit condition
 
-The binding-shape half is closed, as of F26 (see addendum above) — nothing
-further to revisit there.
-The invocation half closes at F28 if D18's unified execution-token/header
-work finds a reason `call_word`'s own "push a halt-pad return address, call
-`machine::run_from` at the callee's entry point" mechanism does not
-generalize — that reason supersedes this record and must be filed against
-D18 rather than silently reworked.
+Both halves are closed: the binding shape as of F26, the invocation
+mechanism as of F28. Nothing further to revisit here; DIV-0016 is where any
+future question about `run_from`'s own dictionary parameter should be filed.

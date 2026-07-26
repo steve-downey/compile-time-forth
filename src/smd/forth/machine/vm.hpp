@@ -7,9 +7,12 @@
 #include <smd/forth/foundation/result.hpp>
 #include <smd/forth/foundation/source_pos.hpp>
 #include <smd/forth/machine/cell.hpp>
+#include <smd/forth/machine/dictionary.hpp>
 #include <smd/forth/machine/forth_state.hpp>
 #include <smd/forth/machine/instruction.hpp>
+#include <smd/forth/parser/forth_chars.hpp>
 
+#include <string_view>
 #include <variant>
 
 namespace smd::forth::machine {
@@ -48,6 +51,47 @@ constexpr auto consume_vm_fuel(int &fuel) -> status {
     return std::monostate{};
 }
 
+// 7f3a9c1e-4b8d-4e2a-9c6f-1d8b3a7e5f2c
+/// `CREATE`'s own action (step F28, D18/D10): scan the next name off @p
+/// state's own SOURCE/>IN, allot @p cells_to_allot cells past the current
+/// data-space HERE, and define the scanned name in @p dict as a @ref
+/// variable_word at that address, with no does-field yet (@ref
+/// variable_word::does_entry defaults to -1; `DOES>` is what later attaches
+/// one, via @ref dictionary::attach_does).
+///
+/// Shared between @ref run_from's own @ref op::create_word case (`CREATE`
+/// invoked from inside another word's own compiled body -- a defining word
+/// like `: CONSTANT2 CREATE , DOES> @ ;`, once per invocation) and
+/// `interpreter::apply_control_word`'s own `create_` case (`CREATE` met
+/// directly by the text interpreter, interpreting): both need the identical
+/// action, and this is the one place it is written down.
+template <int MaxWords, int MaxName, int MaxDepth, int MaxRDepth, int MaxData,
+          int MaxOut>
+constexpr auto
+create_here(dictionary<MaxWords, MaxName> &dict,
+            forth_state<MaxDepth, MaxRDepth, MaxData, MaxOut> &state,
+            int cells_to_allot) -> status {
+    auto scanned = parser::scan_word<MaxName>(state.source().cursor_at_in());
+    if (!scanned.has_value()) {
+        return scanned.error();
+    }
+    auto const &folded = scanned.value().value;
+    if (folded.empty()) {
+        return foundation::parse_error{foundation::source_pos{},
+                                       "expected a name after CREATE"};
+    }
+    state.source().set_in(scanned.value().rest.position().offset);
+    std::string_view name_text{folded.begin(),
+                               static_cast<std::size_t>(folded.size())};
+    auto address = state.data_space().allot(cells_to_allot);
+    if (!address.has_value()) {
+        return address.error();
+    }
+    return dict.define_variable(
+        name_text, variable_word{.address = address.value(), .does_entry = -1});
+}
+// 7f3a9c1e-4b8d-4e2a-9c6f-1d8b3a7e5f2c end
+
 // e2a7c9f4-5d1b-4e8a-9c3f-7b2d6a4e1f8c
 /// Runs @p program against @p state, starting at @p entry (an arbitrary
 /// instruction index inside @p program -- not necessarily @p
@@ -74,11 +118,27 @@ constexpr auto consume_vm_fuel(int &fuel) -> status {
 ///
 /// Every opcode @ref op currently gives real semantics to (@ref op::push,
 /// @ref op::push_xt, @ref op::prim, @ref op::call, @ref op::ret, @ref
-/// op::branch, @ref op::branch0, @ref op::halt) is handled below; the nine
-/// opcodes reserved for steps F17/F18a (@ref instruction.hpp's own doc
-/// comment lists them) are diagnosed if ever encountered rather than
-/// invoking undefined behavior (D7) -- unreachable in practice, since this
-/// step's own @ref codegen never emits any of them.
+/// op::branch, @ref op::branch0, @ref op::execute, @ref op::create_word,
+/// @ref op::does_enter, @ref op::halt) is handled below; the opcodes
+/// reserved for steps F17/F31 (@ref instruction.hpp's own doc comment lists
+/// them) are diagnosed if ever encountered rather than invoking undefined
+/// behavior (D7) -- unreachable in practice, since this step's own @ref
+/// codegen never emits any of them.
+///
+/// @p dict is step F28's own addition (D18): `nullptr` by default, exactly
+/// as every caller before this step already implicitly assumed (none of
+/// them ever reached an opcode that would need it). Only @ref op::
+/// create_word and @ref op::does_enter consult it -- both are how `CREATE`/
+/// `DOES>` (`interp.hpp`'s own `compile_entry`) reach the dictionary from
+/// *inside* another word's own compiled body (the classic `: CONSTANT2
+/// CREATE , DOES> @ ;` pattern, DIV-0012's own reason F28 could not defer
+/// folding `SOURCE`/`>IN` into @ref forth_state any further): a colon word's
+/// body is ordinary VM bytecode with no other channel back to the
+/// dictionary, so @p dict is this function's own one deliberate exception to
+/// "the VM only ever sees a forth_state" -- a non-owning, nullable pointer
+/// (mirroring @ref dictionary::lookup's own "maybe" convention), never
+/// stored past this call. Passing `nullptr` while running a program that
+/// does reach one of these two opcodes is diagnosed, not UB.
 ///
 /// @tparam MaxCode      @p program's instruction-array capacity.
 /// @tparam MaxWords     @p program's word-table capacity.
@@ -89,6 +149,8 @@ constexpr auto consume_vm_fuel(int &fuel) -> status {
 ///                      comment).
 /// @tparam MaxData      @p state's data-space capacity.
 /// @tparam MaxOut       @p state's output-buffer capacity.
+/// @tparam DictWords    @p dict's own entry capacity, if given.
+/// @tparam DictName     @p dict's own maximum name length, if given.
 /// @param  program A successfully compiled program (@ref codegen), or any
 ///                  other @ref compiled_program whose @c code array @p entry
 ///                  indexes into.
@@ -98,12 +160,16 @@ constexpr auto consume_vm_fuel(int &fuel) -> status {
 ///                 instruction fetched (@ref consume_vm_fuel); exhaustion is
 ///                 a diagnosed error, never a hang, even for a
 ///                 nonterminating loop.
+/// @param  dict    The dictionary @ref op::create_word/@ref op::does_enter
+///                  mutate, or `nullptr` if @p program is known not to reach
+///                  either (every caller before step F28).
 template <int MaxCode, int MaxWords, int StackDepth, int RStackDepth,
-          int MaxData, int MaxOut>
+          int MaxData, int MaxOut, int DictWords = 256, int DictName = 32>
 constexpr auto
 run_from(compiled_program<MaxCode, MaxWords> const &program,
          forth_state<StackDepth, RStackDepth, MaxData, MaxOut> &state,
-         int entry, int fuel = 100000) -> status {
+         int entry, int fuel = 100000,
+         dictionary<DictWords, DictName> *dict = nullptr) -> status {
     int ip = entry;
 
     for (;;) {
@@ -289,13 +355,78 @@ run_from(compiled_program<MaxCode, MaxWords> const &program,
             ++ip;
             break;
         }
-        case op::execute:
+        case op::execute: {
+            // `EXECUTE` (step F28, D18): pop an execution token -- a
+            // code-space instruction index, @ref op::push_xt's own
+            // convention -- and jump to it exactly like @ref op::call does
+            // (push the return address, then jump). No dictionary lookup:
+            // whatever produced the token on the data stack (`'`, `[']`,
+            // `IS`) already resolved it to a real, `ret`-terminated code-space
+            // location.
+            auto target = state.data().pop();
+            if (!target.has_value()) {
+                return target.error();
+            }
+            auto r = state.returns().push(static_cast<cell>(ip + 1));
+            if (!r.has_value()) {
+                return r.error();
+            }
+            ip = static_cast<int>(target.value());
+            break;
+        }
+        case op::create_word: {
+            // `CREATE` (step F28, D18/D10): scan the next name off @p
+            // state's own SOURCE/>IN (folded into forth_state at this same
+            // step, DIV-0012) and define it in @p dict as a variable_word at
+            // the current data-space HERE, allotting @ref instr::operand
+            // cells (0 for `CREATE` itself; nothing yet reuses this opcode
+            // for `VARIABLE`, which keeps its own step F26 direct-name
+            // install). Needs @p dict because this opcode is how a defining
+            // word like `: CONSTANT2 CREATE , DOES> @ ;` reaches the
+            // dictionary from *inside* its own compiled body, once per
+            // invocation -- not once, at CONSTANT2's own definition time.
+            if (dict == nullptr) {
+                return foundation::parse_error{
+                    foundation::source_pos{},
+                    "CREATE: no dictionary available to this VM run"};
+            }
+            auto def_r =
+                create_here(*dict, state, static_cast<int>(in.operand));
+            if (!def_r.has_value()) {
+                return def_r;
+            }
+            ++ip;
+            break;
+        }
+        case op::does_enter: {
+            // `DOES>` (step F28, D18/D10): attach the instruction right
+            // after this one as the most recently defined (i.e. most
+            // recently `CREATE`d) dictionary entry's own does-field, then
+            // act like @ref op::ret -- ending the *defining* word's own
+            // execution here, per Forth-2012, so the code after `DOES>`
+            // never runs as part of defining the new word, only later, as
+            // that new word's own action.
+            if (dict == nullptr) {
+                return foundation::parse_error{
+                    foundation::source_pos{},
+                    "DOES>: no dictionary available to this VM run"};
+            }
+            auto attach_r = dict->attach_does(ip + 1);
+            if (!attach_r.has_value()) {
+                return attach_r;
+            }
+            auto ret_addr = state.returns().pop();
+            if (!ret_addr.has_value()) {
+                return ret_addr.error();
+            }
+            ip = static_cast<int>(ret_addr.value());
+            break;
+        }
         case op::catch_mark:
         case op::throw_op:
             return foundation::parse_error{
                 foundation::source_pos{},
-                "execution-token/exception opcode not implemented until "
-                "F18a"};
+                "exception opcode not implemented until F31"};
         }
     }
 }

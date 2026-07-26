@@ -10,7 +10,6 @@ target_sources(
                 compilebuf.hpp
                 control_flow_corpus.hpp
                 effect_lint.hpp
-                input_source.hpp
                 interp.hpp
                 session.hpp
 )
@@ -24,7 +23,6 @@ if(FORTH_ENABLE_TESTING)
             compilebuf.test.cpp
             control_flow_corpus.test.cpp
             effect_lint.test.cpp
-            input_source.test.cpp
             interp.test.cpp
             session.test.cpp
     )

@@ -154,7 +154,7 @@ constexpr auto call_defined_word(
             foundation::source_pos{},
             "word is not a compiled colon word in this session"};
     }
-    return call_word(sess.code, state, cw->entry_point, fuel);
+    return call_word(sess.code, state, cw->entry_point, fuel, &sess.dictionary);
 }
 // b4d8e2a6-7c1f-4e3a-9d5b-2a8f6c1e4d9b end
 
@@ -178,7 +178,7 @@ template <int MaxCode = 4096, int MaxWords = 256, int MaxData = 1024,
 constexpr auto build_session(std::string_view text, int fuel = 100000)
     -> foundation::result<
         session<MaxCode, MaxWords, MaxData, MaxOut, MaxName, MaxStack>> {
-    forth_state<MaxDepth, MaxRDepth, MaxData, MaxOut, MaxName> st{text};
+    machine::forth_state<MaxDepth, MaxRDepth, MaxData, MaxOut> st{text};
     auto dict = machine::default_dictionary<MaxWords, MaxName>();
     compile_buffer<MaxCode, MaxWords> buf;
 
@@ -191,15 +191,15 @@ constexpr auto build_session(std::string_view text, int fuel = 100000)
     // machine::primitive::dot_s prints in, and the same convention
     // forth.hpp's own (now-superseded) R1-era forth_program::stack used.
     foundation::static_vector<machine::cell, MaxStack> stack_snapshot{};
-    for (int offset = st.machine().data().depth() - 1; offset >= 0; --offset) {
-        stack_snapshot.push_back(st.machine().data().peek(offset).value());
+    for (int offset = st.data().depth() - 1; offset >= 0; --offset) {
+        stack_snapshot.push_back(st.data().peek(offset).value());
     }
 
     return session<MaxCode, MaxWords, MaxData, MaxOut, MaxName, MaxStack>{
         .code = buf,
         .dictionary = dict,
-        .data_space_high_water = st.machine().data_space().size(),
-        .output = st.machine().output(),
+        .data_space_high_water = st.data_space().size(),
+        .output = st.output(),
         .stack = stack_snapshot,
     };
 }
