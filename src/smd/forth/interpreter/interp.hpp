@@ -479,6 +479,7 @@ interpret(forth_state<MaxDepth, MaxRDepth, MaxData, MaxOut, MaxName> &st,
         if (st.state() == 0) {
             // -- Interpreting -----------------------------------------
 
+            // 5d9a3f7c-2e6b-4a81-9c4d-7f1b8e3a6d52
             if (text == ":") {
                 auto header =
                     scan_colon_header<MaxName>(st.source().cursor_at_in());
@@ -493,6 +494,7 @@ interpret(forth_state<MaxDepth, MaxRDepth, MaxData, MaxOut, MaxName> &st,
                 st.set_state(1);
                 continue;
             }
+            // 5d9a3f7c-2e6b-4a81-9c4d-7f1b8e3a6d52 end
             if (text == ";") {
                 return foundation::parse_error{
                     token_start.position(),
@@ -553,6 +555,7 @@ interpret(forth_state<MaxDepth, MaxRDepth, MaxData, MaxOut, MaxName> &st,
             return foundation::parse_error{token_start.position(),
                                            "nested : is not allowed"};
         }
+        // 8b4e1c7a-3f9d-4a62-8e5b-1d7c4a9f6e38
         if (text == ";") {
             auto ret_r = buf.emit(machine::op::ret, machine::cell{0},
                                   token_start.position());
@@ -591,6 +594,7 @@ interpret(forth_state<MaxDepth, MaxRDepth, MaxData, MaxOut, MaxName> &st,
             }
             continue;
         }
+        // 8b4e1c7a-3f9d-4a62-8e5b-1d7c4a9f6e38 end
 
         auto const *entry = dict.lookup(text);
         if (entry != nullptr) {
