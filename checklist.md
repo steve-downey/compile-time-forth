@@ -52,5 +52,5 @@
 
 ## Blog series continuation (one post per step; F23 = Part 12)
 
-- [ ] Blog: F23 the pivot (Part 12)
+- [x] Blog: F23 the pivot (Part 12)
 - [ ] Blog: F24 (Part 13) … F36 (Part 25), one per step as merged
