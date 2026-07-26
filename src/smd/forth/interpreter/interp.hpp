@@ -8,6 +8,7 @@
 #include <smd/forth/foundation/source_pos.hpp>
 #include <smd/forth/foundation/source_span.hpp>
 #include <smd/forth/interpreter/compilebuf.hpp>
+#include <smd/forth/interpreter/effect_lint.hpp>
 #include <smd/forth/machine/cell.hpp>
 #include <smd/forth/machine/dictionary.hpp>
 #include <smd/forth/machine/forth_state.hpp>
@@ -1953,13 +1954,73 @@ interpret(machine::forth_state<MaxDepth, MaxRDepth, MaxData, MaxOut> &st,
             if (!ret_r.has_value()) {
                 return ret_r.error();
             }
+            // Step F30 (D20): the effect lint runs here, over the
+            // definition's own just-finished instruction range -- ending
+            // DIV-0014's own suspension window (a declared effect was
+            // captured at scan_colon_header time but never verified between
+            // F26's own cut and this step). See effect_lint.hpp's own
+            // check_definition_effect for the full design.
+            auto lint = check_definition_effect(
+                buf.program(), dict, cctx.entry, buf.here(), st.source().text(),
+                cctx.effect, cctx.has_effect, token_start.position());
+            if (!lint.has_value()) {
+                return lint.error();
+            }
+            // DIV-0008's own second cut left these two fields at `-1`
+            // ("not computed"); this step is the first to have anything to
+            // fill them with. Given D13's own shared, ever-growing code
+            // space (many colon words compiled into one buf over a whole
+            // session, not F14's original "one compiled_program is one
+            // whole executable program"), a single peak-depth number for
+            // the *whole* compiled_program cannot mean "this exact program
+            // requires this much" the way it did before F26 -- so this
+            // step tracks a running maximum across every definition closed
+            // so far whose own peak was computable at all, a documented,
+            // coarser interpretation (DIV-0019) that still answers the
+            // field's own question ("how big must a caller size its own
+            // forth_state to safely run anything defined in this session
+            // so far") without pretending to a precision the architecture
+            // no longer supports.
+            if (lint.value().peak_depth >= 0 &&
+                lint.value().peak_depth > buf.program().required_stack_depth) {
+                buf.program().required_stack_depth = lint.value().peak_depth;
+            }
+            if (lint.value().peak_return_depth >= 0 &&
+                lint.value().peak_return_depth >
+                    buf.program().required_return_depth) {
+                buf.program().required_return_depth =
+                    lint.value().peak_return_depth;
+            }
+            // DIV-0019's own post-merge amendment: an undeclared data-stack
+            // join disagreement (a loop body whose net effect depends on a
+            // runtime-determined trip count, e.g. the Hayes ttester's own
+            // EMPTY-STACK) is advisory, not fatal (effect_lint.hpp's own
+            // check_definition_effect doc comment) -- collected here rather
+            // than dropped, onto the one place a caller can always find the
+            // whole session's own accumulated advisory diagnostics
+            // (`compile_buffer::program().diagnostics`). Silently stops
+            // once that list is full, exactly like the collection inside
+            // check_definition_effect itself: an advisory list running out
+            // of room must not become a compile failure.
+            for (int i = 0; i < lint.value().diagnostics.size(); ++i) {
+                if (buf.program().diagnostics.size() >=
+                    buf.program().diagnostics.capacity()) {
+                    break;
+                }
+                buf.program().diagnostics.push_back(
+                    lint.value().diagnostics[i]);
+            }
             std::string_view name_text{
                 cctx.name.begin(), static_cast<std::size_t>(cctx.name.size())};
             auto def_r = dict.define_compiled_colon(
-                name_text,
-                machine::compiled_colon_word{.entry_point = cctx.entry,
-                                             .effect_span = cctx.effect,
-                                             .has_effect = cctx.has_effect});
+                name_text, machine::compiled_colon_word{
+                               .entry_point = cctx.entry,
+                               .effect_span = cctx.effect,
+                               .has_effect = cctx.has_effect,
+                               .effect_known = lint.value().net.known,
+                               .effect_inputs = lint.value().net.inputs,
+                               .effect_outputs = lint.value().net.outputs,
+                               .peak_depth = lint.value().peak_depth});
             if (!def_r.has_value()) {
                 return def_r;
             }

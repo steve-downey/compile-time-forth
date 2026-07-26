@@ -87,15 +87,46 @@ struct compiled_colon_word {
 
     /// The declared `( ... -- ... )` stack-effect comment immediately after
     /// the definition's name, if the source had one -- captured verbatim as
-    /// a span into the interpreter's own source text (D20: stored, not
-    /// verified; the checker lands at F30). Meaningless unless @ref
-    /// has_effect is true.
+    /// a span into the interpreter's own source text. Verified against the
+    /// computed effect at `;` since step F30 (`interpreter::
+    /// check_definition_effect`): a mismatch is a compile error, so by the
+    /// time this span is stored on an installed dictionary entry it has
+    /// already agreed with @ref effect_inputs/@ref effect_outputs, when both
+    /// were known. Meaningless unless @ref has_effect is true.
     foundation::source_span effect_span{};
 
     /// True iff a `( ... )` comment was actually present immediately after
     /// the name (@ref effect_span is only meaningful when this is true) --
     /// Forth-2012 does not require one.
     bool has_effect = false;
+
+    /// Step F30 (D20): the *computed* (or, when @ref has_effect is true and
+    /// it parsed, declared-and-verified) net data-stack effect, filled by
+    /// `interpreter::effect_lint`'s own `;`-time check
+    /// (`interpreter::check_definition_effect`) -- the checker's one
+    /// durable, per-word deliverable, consulted by a later `call` to this
+    /// word from inside another definition's own effect check. `false`
+    /// means "not statically known" (the lattice's own top value): reached
+    /// only through `EXECUTE`/`CATCH`/an input-dependent primitive
+    /// (`?DUP`), or a branch/loop join this checker could not reconcile to
+    /// a single value (never a *rejected* definition -- those are diagnosed
+    /// compile errors at `;`, not installed at all).
+    bool effect_known = false;
+    /// Minimum data-stack depth this word requires at entry. Meaningful
+    /// only when @ref effect_known is true.
+    int effect_inputs = 0;
+    /// Data-stack depth this word leaves behind, measured from the same
+    /// entry point as @ref effect_inputs. Meaningful only when
+    /// @ref effect_known is true.
+    int effect_outputs = 0;
+    /// The greatest absolute data-stack depth reached anywhere in this
+    /// word's own body, assuming it is entered with exactly
+    /// @ref effect_inputs cells present (the tightest safe case) -- `-1`
+    /// ("not computed") unless @ref effect_known is also true: peak depth is
+    /// only reported for a word whose shape is fully known, never as a
+    /// partial/best-effort number for one that touches `unknown` anywhere
+    /// (DIV-0019's own disposition of DIV-0008's "peak depth" gap).
+    int peak_depth = -1;
 
     friend constexpr auto operator==(compiled_colon_word const &,
                                      compiled_colon_word const &)

@@ -34,6 +34,12 @@ class static_vector {
     /// Returns true if the vector contains no elements.
     [[nodiscard]] constexpr auto empty() const -> bool;
 
+    /// Returns the fixed capacity (@p Capacity) -- a caller-visible way to
+    /// check "is this vector full" (`size() >= capacity()`) before a
+    /// `push_back` that must not exceed it, without needing @p Capacity
+    /// named separately at the call site.
+    [[nodiscard]] constexpr auto capacity() const -> int { return Capacity; }
+
     /// Returns a reference to the element at @p index.
     /// @pre 0 <= index < size()
     [[nodiscard]] constexpr auto operator[](int index) -> T &;

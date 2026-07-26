@@ -685,7 +685,13 @@ TEST_CASE("InterpTest - UnterminatedColonDefinitionIsDiagnosed") {
     REQUIRE_FALSE(r.has_value());
 }
 
-TEST_CASE("InterpTest - DeclaredEffectCommentIsCapturedUnverified") {
+TEST_CASE("InterpTest - DeclaredEffectCommentIsCapturedAndVerified") {
+    // Renamed from this test's own pre-F30 name ("...CapturedUnverified"):
+    // since step F30, a declared effect is checked at ';', not merely
+    // captured -- this one happens to agree with its own computed effect
+    // (`( n -- n*n )` parses to known(1, 1), matching `DUP *`'s own
+    // computed known(1, 1)), so it still installs, but the comment above
+    // this test's own pre-F30 name would now contradict the code.
     forth_state<64, 64, 1024, 256> st{
         ": SQUARED ( n -- n*n ) DUP * ; 5 SQUARED"};
     auto dict = default_dictionary<>();
@@ -700,6 +706,9 @@ TEST_CASE("InterpTest - DeclaredEffectCommentIsCapturedUnverified") {
         std::get_if<smd::forth::machine::compiled_colon_word>(&entry->binding);
     REQUIRE(cw != nullptr);
     CHECK(cw->has_effect);
+    CHECK(cw->effect_known);
+    CHECK(cw->effect_inputs == 1);
+    CHECK(cw->effect_outputs == 1);
 }
 
 TEST_CASE("InterpTest - NoEffectCommentLeavesHasEffectFalse") {
@@ -715,6 +724,12 @@ TEST_CASE("InterpTest - NoEffectCommentLeavesHasEffectFalse") {
         std::get_if<smd::forth::machine::compiled_colon_word>(&entry->binding);
     REQUIRE(cw != nullptr);
     CHECK_FALSE(cw->has_effect);
+    // Step F30: undeclared, but still fully computable (one reachable exit,
+    // known throughout) -- `effect_known` and a declared `has_effect` are
+    // independent facts.
+    CHECK(cw->effect_known);
+    CHECK(cw->effect_inputs == 1);
+    CHECK(cw->effect_outputs == 1);
 }
 
 // -- Step F27: runtime mirrors of the control-flow corpus, plus a few extras
@@ -1583,4 +1598,358 @@ TEST_CASE("InterpTest - UncaughtThrowWhileInterpreting") {
     REQUIRE_FALSE(r.has_value());
     CHECK(r.error().where.offset == 5);
     CHECK(st.data().depth() == 0);
+}
+
+// -- Step F30: the effect lint (D20) -----------------------------------------
+//
+// The F12/F17 positive and negative program battery, reproduced over this
+// step's own instruction-range checker rather than the deleted elaborator's
+// tree walk (the old test programs, `elaborator/stack_effect.test.cpp`, died
+// with the elaborator at F26; this is the same *behavior*, not copied code
+// -- see effect_lint.hpp's own top comment for exactly where this checker's
+// diagnoses and their triggering conditions diverge from the deleted one,
+// and why: multiple undeclared EXIT paths disagreeing is no longer an error
+// (`ExitBoundaryMergeCriterion`/`INNER` above already exercises this; a
+// *declared* effect is what actually enforces one shape). Diagnostic
+// messages are this step's own wording (`instr` carries no source position
+// for this checker to reuse the deleted one's exact positions either, D16 --
+// see effect_lint.hpp's own check_definition_effect doc comment and
+// DIV-0019), so these tests check for this step's own text, not the deleted
+// suite's.
+//
+// Post-merge amendment (DIV-0019, orchestrator-directed after F32's own
+// Hayes ttester exposed a real design fault): a *data*-stack join
+// disagreement is advisory unless a declared effect is present, per D20's
+// own literal wording -- `EMPTY-STACK`'s own `DEPTH START-DEPTH @ < IF
+// DEPTH START-DEPTH @ SWAP DO 0 LOOP THEN` pads the stack by a
+// runtime-determined count, a nonzero-net loop body no static check can
+// reconcile, and it is standard, correct Forth-2012. So every one of the
+// old F12 negative tests below that involves *only* the data stack, and no
+// declared effect, is *not* rejected -- it is accepted, with the
+// disagreement collected onto `compiled_program::diagnostics` instead
+// (`interp.hpp`'s own `;` handling appends `check_definition_effect`'s own
+// per-definition `diagnostics` there). The *return*-stack tests
+// (`ReturnStackImbalance...`, the F17 residual) and the declared-effect one
+// (`BADDECL`) are unaffected: D20's "advisory unless declared" is about the
+// data stack specifically (`effect_lint.hpp`'s own `definition_effect` doc
+// comment has the full reasoning for why the return stack gets no such
+// allowance).
+
+TEST_CASE("EffectLintTest - IfArmsMismatchIsAdvisoryWhenUndeclared") {
+    // No ELSE: NEGATE-less arm (DROP, net -1) vs. an implicit empty ELSE
+    // (net 0) -- a genuine net disagreement, but undeclared, so this is
+    // collected, not fatal (D20).
+    forth_state<64, 64, 1024, 256> st{": BADCOND IF DROP THEN ;"};
+    auto dict = default_dictionary<>();
+    compile_buffer<> buf;
+    auto r = interpret(st, dict, buf);
+    REQUIRE(r.has_value());
+    REQUIRE(buf.program().diagnostics.size() >= 1);
+    CHECK(std::string_view{buf.program().diagnostics[0].message}.find(
+              "inconsistent") != std::string_view::npos);
+    CHECK(std::string_view{buf.program().diagnostics[0].message}.find(
+              "advisory") != std::string_view::npos);
+    auto const *entry = dict.lookup("BADCOND");
+    REQUIRE(entry != nullptr);
+    auto const *cw =
+        std::get_if<smd::forth::machine::compiled_colon_word>(&entry->binding);
+    REQUIRE(cw != nullptr);
+    CHECK_FALSE(cw->effect_known); // Genuinely no single shape to report.
+}
+
+TEST_CASE("EffectLintTest - DoLoopBodyNonzeroIsAdvisoryWhenUndeclared") {
+    // The F17 correction (DO's own two-cell entry cost) still recognizes
+    // this disagreement at the loop's own back edge; undeclared, it is
+    // collected rather than fatal -- exactly the shape EMPTY-STACK's own
+    // padding loop needs to keep compiling.
+    forth_state<64, 64, 1024, 256> st{": BADLOOP DO DUP LOOP ;"};
+    auto dict = default_dictionary<>();
+    compile_buffer<> buf;
+    auto r = interpret(st, dict, buf);
+    REQUIRE(r.has_value());
+    REQUIRE(buf.program().diagnostics.size() >= 1);
+    CHECK(std::string_view{buf.program().diagnostics[0].message}.find(
+              "inconsistent") != std::string_view::npos);
+}
+
+TEST_CASE("EffectLintTest - PlusLoopBodyWrongNetIsAdvisoryWhenUndeclared") {
+    // The F17 correction the other direction: +LOOP's own body should leave
+    // exactly the increment (net +1, `interpreter::corpus::
+    // sumeven_program`'s own "I + 2" shape); "I DROP" nets 0 instead, still
+    // just collected since undeclared.
+    forth_state<64, 64, 1024, 256> st{": BADPLUSLOOP 10 0 DO I DROP +LOOP ;"};
+    auto dict = default_dictionary<>();
+    compile_buffer<> buf;
+    auto r = interpret(st, dict, buf);
+    REQUIRE(r.has_value());
+    REQUIRE(buf.program().diagnostics.size() >= 1);
+    CHECK(std::string_view{buf.program().diagnostics[0].message}.find(
+              "inconsistent") != std::string_view::npos);
+}
+
+TEST_CASE(
+    "EffectLintTest - BeginUntilBodyWrongFlagCountIsAdvisoryWhenUndeclared") {
+    forth_state<64, 64, 1024, 256> st{": BADUNTIL BEGIN DUP DUP UNTIL ;"};
+    auto dict = default_dictionary<>();
+    compile_buffer<> buf;
+    auto r = interpret(st, dict, buf);
+    REQUIRE(r.has_value());
+    REQUIRE(buf.program().diagnostics.size() >= 1);
+    CHECK(std::string_view{buf.program().diagnostics[0].message}.find(
+              "inconsistent") != std::string_view::npos);
+}
+
+TEST_CASE("EffectLintTest - "
+          "BeginWhileConditionWrongFlagCountIsAdvisoryWhenUndeclared") {
+    // Empty body: the deleted elaborator's own per-construct rule checked
+    // the *condition* alone ("BEGIN...WHILE condition must leave exactly
+    // one flag"), independent of the body; this checker instead checks the
+    // whole cycle's own consistency at the loop's back edge (`REPEAT`
+    // rejoining `BEGIN`'s own dest), which an empty body cannot repair --
+    // still just advisory, undeclared.
+    forth_state<64, 64, 1024, 256> st{
+        ": BADWHILE BEGIN DUP DUP WHILE REPEAT ;"};
+    auto dict = default_dictionary<>();
+    compile_buffer<> buf;
+    auto r = interpret(st, dict, buf);
+    REQUIRE(r.has_value());
+    REQUIRE(buf.program().diagnostics.size() >= 1);
+    CHECK(std::string_view{buf.program().diagnostics[0].message}.find(
+              "inconsistent") != std::string_view::npos);
+}
+
+// A condition that leaves two cells past the flag (`DUP DUP`, one real
+// duplicate plus the flag `WHILE` pops) composes safely with a body that
+// removes the extra one (`DROP`) before `REPEAT` rejoins `BEGIN`'s own
+// dest, so the cycle never actually drifts -- no join disagreement at all
+// here, advisory or otherwise, and this one *is* fully known (unlike the
+// merely-accepted-as-advisory shapes above).
+TEST_CASE("EffectLintTest - "
+          "WhileConditionLeavingExtraCellsIsAcceptedWhenTheCycleIsConsistent") {
+    forth_state<64, 64, 1024, 256> st{
+        ": OKWHILE 3 BEGIN DUP DUP WHILE DROP 1 - REPEAT DROP ;"};
+    auto dict = default_dictionary<>();
+    compile_buffer<> buf;
+    auto r = interpret(st, dict, buf);
+    REQUIRE(r.has_value());
+    CHECK(buf.program().diagnostics.size() == 0);
+    auto const *entry = dict.lookup("OKWHILE");
+    REQUIRE(entry != nullptr);
+    auto const *cw =
+        std::get_if<smd::forth::machine::compiled_colon_word>(&entry->binding);
+    REQUIRE(cw != nullptr);
+    CHECK(cw->effect_known);
+}
+
+// A declared effect promotes the data-stack disagreement back to a hard,
+// unconditional error (D20's own "promoted to a hard gate ... exactly when
+// a declared effect is present") -- the same BADLOOP shape as above, but
+// now with a declaration nothing about it can satisfy.
+TEST_CASE("EffectLintTest - DeclaredDoLoopBodyNonzeroIsAHardError") {
+    forth_state<64, 64, 1024, 256> st{": BADLOOPDECL ( n -- n ) DO DUP LOOP ;"};
+    auto dict = default_dictionary<>();
+    compile_buffer<> buf;
+    auto r = interpret(st, dict, buf);
+    REQUIRE_FALSE(r.has_value());
+    CHECK(std::string_view{r.error().message}.find("inconsistent") !=
+          std::string_view::npos);
+    CHECK(buf.program().diagnostics.size() == 0); // Hard error, not collected.
+}
+
+TEST_CASE("EffectLintTest - ReturnStackImbalanceAcrossControlDiagnosed") {
+    // >R inside one IF arm only: the arm that ran it and the arm that did
+    // not disagree on return-stack depth at THEN's own landing.
+    forth_state<64, 64, 1024, 256> st{": BADRET IF >R THEN ;"};
+    auto dict = default_dictionary<>();
+    compile_buffer<> buf;
+    auto r = interpret(st, dict, buf);
+    REQUIRE_FALSE(r.has_value());
+    CHECK(std::string_view{r.error().message}.find(
+              "return stack is unbalanced") != std::string_view::npos);
+}
+
+TEST_CASE("EffectLintTest - ReturnStackImbalanceAtDefinitionEndDiagnosed") {
+    forth_state<64, 64, 1024, 256> st{": BADRETEND >R ;"};
+    auto dict = default_dictionary<>();
+    compile_buffer<> buf;
+    auto r = interpret(st, dict, buf);
+    REQUIRE_FALSE(r.has_value());
+    CHECK(std::string_view{r.error().message} ==
+          "return stack is unbalanced at the end of a definition");
+}
+
+TEST_CASE("EffectLintTest - ReturnStackImbalanceAcrossDoLoopDiagnosed") {
+    // The F17 residual this step is assigned to close (see step-brief.md's
+    // own gotcha and DIV-0018's orchestrator amendment): since F17,
+    // LOOP/+LOOP/UNLOOP teardown has assumed -- without checking -- that its
+    // own two-cell loop frame sits at the top of the return stack. An
+    // unbalanced >R across a loop boundary now fails exactly here, a static
+    // rejection at ';' that closes the gap without a runtime check in the
+    // loop's own hot path: the forward path into the loop body and the
+    // back edge from LOOP now disagree on return-stack depth (the body
+    // pushed one cell via >R that is never popped before LOOP), the same
+    // mechanism `ReturnStackImbalanceAcrossControlDiagnosed` above catches
+    // for IF, generalized to a loop's own back edge.
+    forth_state<64, 64, 1024, 256> st{": BAD 10 0 DO 5 >R LOOP ;"};
+    auto dict = default_dictionary<>();
+    compile_buffer<> buf;
+    auto r = interpret(st, dict, buf);
+    REQUIRE_FALSE(r.has_value());
+    CHECK(std::string_view{r.error().message}.find(
+              "return stack is unbalanced") != std::string_view::npos);
+}
+
+TEST_CASE("EffectLintTest - ExitInsideDoLoopWithoutUnloopDiagnosed") {
+    forth_state<64, 64, 1024, 256> st{": DOEX DO EXIT LOOP ;"};
+    auto dict = default_dictionary<>();
+    compile_buffer<> buf;
+    auto r = interpret(st, dict, buf);
+    REQUIRE_FALSE(r.has_value());
+    CHECK(std::string_view{r.error().message} ==
+          "EXIT inside a DO loop requires UNLOOP");
+}
+
+TEST_CASE("EffectLintTest - ExitInsideDoLoopWithUnloopIsAccepted") {
+    // The corpus's own FirstMergeCriterion already exercises this shape at
+    // runtime (`UNLOOP EXIT` inside an IF inside a DO); this is the same
+    // shape reduced to a minimal, standalone positive case.
+    forth_state<64, 64, 1024, 256> st{": DOEX2 DO UNLOOP EXIT LOOP ;"};
+    auto dict = default_dictionary<>();
+    compile_buffer<> buf;
+    auto r = interpret(st, dict, buf);
+    REQUIRE(r.has_value());
+}
+
+TEST_CASE("EffectLintTest - DeclaredEffectMismatchDiagnosed") {
+    forth_state<64, 64, 1024, 256> st{": BADDECL ( n -- n n ) DUP DROP ;"};
+    auto dict = default_dictionary<>();
+    compile_buffer<> buf;
+    auto r = interpret(st, dict, buf);
+    REQUIRE_FALSE(r.has_value());
+    CHECK(std::string_view{r.error().message} ==
+          "declared stack effect does not match computed stack effect");
+}
+
+TEST_CASE("EffectLintTest - DeclaredEffectMatchingComputedEffectInstalls") {
+    forth_state<64, 64, 1024, 256> st{
+        ": ABS2 ( n -- n ) DUP 0< IF NEGATE THEN ;"};
+    auto dict = default_dictionary<>();
+    compile_buffer<> buf;
+    auto r = interpret(st, dict, buf);
+    REQUIRE(r.has_value());
+    auto const *entry = dict.lookup("ABS2");
+    REQUIRE(entry != nullptr);
+    auto const *cw =
+        std::get_if<smd::forth::machine::compiled_colon_word>(&entry->binding);
+    REQUIRE(cw != nullptr);
+    CHECK(cw->effect_known);
+    CHECK(cw->effect_inputs == 1);
+    CHECK(cw->effect_outputs == 1);
+}
+
+// An undeclared word whose EXIT paths genuinely disagree (this header's own
+// top comment, and DIV-0019): accepted -- not an error -- but its own
+// stored effect is `unknown`, since there is no single shape to report.
+// `INNER`/`OUTER` above (`ExitBoundaryMergeCriterion`) already prove this
+// accepts at the interpret() level; this checks the stored dictionary
+// fields directly.
+TEST_CASE("EffectLintTest - DivergentExitPathsAreUnknownNotAnError") {
+    forth_state<64, 64, 1024, 256> st{corpus::exit_boundary_program};
+    auto dict = default_dictionary<>();
+    compile_buffer<> buf;
+    auto r = interpret(st, dict, buf);
+    REQUIRE(r.has_value());
+    auto const *entry = dict.lookup("INNER");
+    REQUIRE(entry != nullptr);
+    auto const *cw =
+        std::get_if<smd::forth::machine::compiled_colon_word>(&entry->binding);
+    REQUIRE(cw != nullptr);
+    CHECK_FALSE(cw->has_effect);
+    CHECK_FALSE(cw->effect_known);
+    CHECK(cw->peak_depth == -1);
+}
+
+// A hand-computed required/peak-depth merge criterion: `DUP DUP DROP DROP`
+// has net effect zero (one input, one output) but peaks at three cells
+// (entry's own one, plus two more DUPs) before the two DROPs bring it back
+// down -- required_depth == 1, peak_depth == required_depth + 2 == 3, by
+// hand: entered with exactly one cell, DUP makes two, DUP again makes
+// three (the peak), DROP DROP returns to one.
+TEST_CASE(
+    "EffectLintTest - PeakDepthIsARealNumberAssertedAgainstAHandComputation") {
+    forth_state<64, 64, 1024, 256> st{": PEAKY DUP DUP DROP DROP ;"};
+    auto dict = default_dictionary<>();
+    compile_buffer<> buf;
+    auto r = interpret(st, dict, buf);
+    REQUIRE(r.has_value());
+    auto const *entry = dict.lookup("PEAKY");
+    REQUIRE(entry != nullptr);
+    auto const *cw =
+        std::get_if<smd::forth::machine::compiled_colon_word>(&entry->binding);
+    REQUIRE(cw != nullptr);
+    CHECK(cw->effect_known);
+    CHECK(cw->effect_inputs == 1);
+    CHECK(cw->effect_outputs == 1);
+    CHECK(cw->peak_depth == 3);
+    // DIV-0008's own capacity fields, finally filled (this step's own
+    // merge criterion): a running maximum across every definition closed so
+    // far in this session whose own peak was computable (this interp.hpp's
+    // own doc comment explains why a single whole-`compiled_program` number
+    // cannot mean what it did before F26's own cut). PEAKY is the first and
+    // only definition in this fresh buf, so the running maximum is exactly
+    // its own peak.
+    CHECK(buf.program().required_stack_depth == 3);
+}
+
+// A definition that reaches EXECUTE has an unknown computed effect (this
+// header's own doc comment: EXECUTE poisons like CATCH/?DUP) -- advisory,
+// not an error, and no peak depth is reported for it.
+TEST_CASE("EffectLintTest - ExecuteMakesEffectUnknown") {
+    forth_state<64, 64, 1024, 256> st{": RUNIT ( xt -- ) EXECUTE ; "
+                                      "5 ' DUP RUNIT"};
+    auto dict = default_dictionary<>();
+    compile_buffer<> buf;
+    auto r = interpret(st, dict, buf);
+    // RUNIT's own declared effect (xt --) cannot be verified against an
+    // EXECUTE-reached body (its required entry depth is knowable -- popping
+    // the xt needs one cell -- but this checker does not attempt to model
+    // that for EXECUTE specifically, see instruction_effect's own doc
+    // comment: EXECUTE maps to unknown_effect wholesale, exactly like
+    // ?DUP), so this exercises the "declared, but body reaches unknown"
+    // path: still not an error (nothing checkable disagreed), and the word
+    // installs with the declared effect trusted (this header's own
+    // check_definition_effect doc comment: `any_unknown_reached` gates the
+    // verification attempt itself, not just individual exits).
+    REQUIRE(r.has_value());
+    REQUIRE(st.data().depth() == 2); // 5 DUP'd via EXECUTE: [5 5].
+    CHECK(st.data().peek().value() == 5);
+
+    auto const *entry = dict.lookup("RUNIT");
+    REQUIRE(entry != nullptr);
+    auto const *cw =
+        std::get_if<smd::forth::machine::compiled_colon_word>(&entry->binding);
+    REQUIRE(cw != nullptr);
+    CHECK(cw->effect_known);
+    CHECK(cw->effect_inputs == 1);
+    CHECK(cw->effect_outputs == 0);
+}
+
+// A word that CATCHes another word: CATCH's own compiled shape
+// (`catch_mark` + `catch_ok`) makes the enclosing definition's own effect
+// unknown too (this header's own top comment) -- exercised already by
+// `CatchUnwindsThroughToRDoLoopAndCallFrames` above at the interpret()
+// level (GUARD, DEEP); this checks the stored field directly.
+TEST_CASE("EffectLintTest - CatchMakesEffectUnknown") {
+    forth_state<64, 64, 1024, 256> st{": SAFE ['] DUP CATCH DROP ; "
+                                      "5 SAFE"};
+    auto dict = default_dictionary<>();
+    compile_buffer<> buf;
+    auto r = interpret(st, dict, buf);
+    REQUIRE(r.has_value());
+    auto const *entry = dict.lookup("SAFE");
+    REQUIRE(entry != nullptr);
+    auto const *cw =
+        std::get_if<smd::forth::machine::compiled_colon_word>(&entry->binding);
+    REQUIRE(cw != nullptr);
+    CHECK_FALSE(cw->effect_known);
 }
