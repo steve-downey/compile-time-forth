@@ -56,7 +56,7 @@
 - [x] Blog: F24 interpreter, interpret state only (Part 13)
 - [x] Blog: F25 colon compiler and session image (Part 14)
 - [x] Blog: F26 the cut (Part 15)
-- [ ] Blog: F27 immediacy and control flow (Part 16)
+- [x] Blog: F27 immediacy and control flow (Part 16)
 - [ ] Blog: F28 execution tokens and defining words (Part 17)
 - [ ] Blog: F29 parsing words and strings (Part 18)
 - [ ] Blog: F30 effect lint (Part 19)
