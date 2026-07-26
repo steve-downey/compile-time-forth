@@ -3,6 +3,7 @@
 #ifndef SRC_SMD_FORTH_MACHINE_INSTRUCTION_HPP
 #define SRC_SMD_FORTH_MACHINE_INSTRUCTION_HPP
 
+#include <smd/forth/foundation/parse_error.hpp>
 #include <smd/forth/foundation/static_vector.hpp>
 #include <smd/forth/machine/cell.hpp>
 
@@ -160,8 +161,10 @@ struct instr {
 /// the struct shape the plan calls for, but default to `-1` ("not
 /// computed") rather than a real bound; a caller must still size its own
 /// `forth_state` generously, exactly as F13's own tests already do.
+///
+/// @tparam MaxDiagnostics Capacity for @ref diagnostics (step F30, D20).
 // 7bb215b8-9ae5-42f0-90f1-dff9d46b08ab
-template <int MaxCode = 4096, int MaxWords = 256>
+template <int MaxCode = 4096, int MaxWords = 256, int MaxDiagnostics = 32>
 struct compiled_program {
     foundation::static_vector<instr, MaxCode> code{}; ///< The flat program.
 
@@ -180,10 +183,36 @@ struct compiled_program {
     /// @ref forth_state's own data space before executing any instruction.
     int data_space_size = 0;
 
-    /// See the class doc comment: not computed by this step.
+    /// Step F30 (D20): a running maximum, across every colon definition
+    /// closed so far in this session whose own peak was computable
+    /// (`interpreter::compiled_colon_word::peak_depth`, `-1` unless
+    /// known), of that peak -- not a real whole-program bound (see this
+    /// struct's own doc comment on why one no longer has a natural
+    /// referent under D13's shared, ever-growing code space, DIV-0019).
+    /// `-1` ("not computed") until the first definition whose own peak is
+    /// computable closes.
     int required_stack_depth = -1;
-    /// See the class doc comment: not computed by this step.
+    /// The same running-maximum idea as @ref required_stack_depth, for the
+    /// return stack's own `>R`-driven peak.
     int required_return_depth = -1;
+
+    /// Step F30 (D20), extended by this project's own post-F32-merge
+    /// amendment (DIV-0019): every *advisory* effect-lint diagnostic
+    /// collected so far in this session -- a data-stack join disagreement
+    /// in an undeclared definition (`interpreter::check_definition_effect`'s
+    /// own doc comment explains why this is advisory rather than fatal).
+    /// A caller retrieves these directly (`compiled_program::diagnostics`,
+    /// or `interpreter::compile_buffer::program().diagnostics`); nothing
+    /// about them is otherwise surfaced (no output, no separate return
+    /// value from `interpreter::interpret`) -- an advisory diagnostic
+    /// nobody reads is exactly as good as one that was never collected, so
+    /// this field is the one place a caller who cares can always find the
+    /// whole list. Diagnostics past @ref MaxDiagnostics capacity are
+    /// silently not recorded, never diagnosed as an error (D7 does not
+    /// apply to an advisory-only list: failing compilation because an
+    /// *informational* list ran out of room would defeat its own purpose).
+    foundation::static_vector<foundation::parse_error, MaxDiagnostics>
+        diagnostics{};
 };
 // 7bb215b8-9ae5-42f0-90f1-dff9d46b08ab end
 // c520a0cc-7a47-4db4-a218-617a1cfebe8d end

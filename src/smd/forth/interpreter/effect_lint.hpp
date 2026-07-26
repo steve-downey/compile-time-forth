@@ -3,6 +3,8 @@
 #ifndef SRC_SMD_FORTH_INTERPRETER_EFFECT_LINT_HPP
 #define SRC_SMD_FORTH_INTERPRETER_EFFECT_LINT_HPP
 
+#include <smd/forth/foundation/parse_error.hpp>
+#include <smd/forth/foundation/result.hpp>
 #include <smd/forth/foundation/source_span.hpp>
 #include <smd/forth/foundation/static_vector.hpp>
 #include <smd/forth/machine/dictionary.hpp>
@@ -691,10 +693,32 @@ template <int MaxBlocks, int MaxCode, int MaxWords>
 /// that touches `unknown` anywhere or whose return paths genuinely differ).
 /// @ref peak_return_depth is the same idea for the return stack's own
 /// `>R`-driven depth.
+///
+/// @ref diagnostics (DIV-0019's own post-merge amendment) collects every
+/// *advisory* data-stack join disagreement this definition's own body
+/// reached -- a data-stack level mismatch across a branch or a loop's back
+/// edge, undeclared, poisons that join to @ref unknown_effect exactly like
+/// `EXECUTE`/`CATCH`/`LEAVE` already do (this header's own top comment),
+/// rather than aborting the whole check: D20's own "advisory by default,
+/// promoted to a hard gate for a definition exactly when a declared effect
+/// is present" applies to a data-stack shape disagreement specifically,
+/// because a loop body's own net data-stack effect can genuinely depend on
+/// a runtime-determined trip count (the Hayes ttester's own `EMPTY-STACK`,
+/// `DEPTH START-DEPTH @ < IF DEPTH START-DEPTH @ SWAP DO 0 LOOP THEN`, pads
+/// the stack by a count only known at the moment it runs -- standard,
+/// intentional Forth, not a defect this checker is entitled to reject
+/// merely because it cannot pin one static shape on it). The *return*
+/// stack gets no such allowance (@ref check_definition_effect's own doc
+/// comment): Forth-2012 requires it balanced before `LOOP`, unconditionally,
+/// so a return-stack join disagreement stays a hard, always-on error
+/// regardless of @ref diagnostics or any declared effect.
+template <int MaxDiagnostics>
 struct definition_effect {
     effect net{};
     int peak_depth = -1;
     int peak_return_depth = -1;
+    foundation::static_vector<foundation::parse_error, MaxDiagnostics>
+        diagnostics{};
 };
 
 // 2f6a9c1d-7b3e-4d8a-9c1f-6e2b8a4d7f3c
@@ -711,30 +735,47 @@ struct definition_effect {
 ///    diagnoses to *every* join this checker finds, via one uniform
 ///    mechanism -- a level assigned to each reachable instruction, required
 ///    to agree across every edge that reaches it -- rather than the old
-///    per-construct special cases; the F17 corrections fall out of this one
-///    mechanism rather than needing their own code paths, since a loop back
-///    edge is exactly this same kind of join);
+///    per-construct special cases). **Advisory unless a declared effect is
+///    present** (D20's own "advisory by default, promoted to a hard gate
+///    ... exactly when a declared effect is present"): undeclared, a
+///    disagreement here is collected into @ref definition_effect::
+///    diagnostics and the offending join poisoned to @ref unknown_effect,
+///    not fatal, because a loop body's own net data-stack effect can
+///    genuinely depend on a runtime-determined trip count (the Hayes
+///    ttester's own `EMPTY-STACK`, DIV-0019's own post-merge amendment).
+///    With a declared effect present, this is promoted to a hard,
+///    unconditional compile error at `;` -- the F17 corrections
+///    (`DO`'s own two-cell entry cost, `+LOOP`'s own net-+1 body) are this
+///    same mechanism, so a *declared* colon word using either is checked
+///    exactly the way an undeclared one merely collects a diagnostic for;
 ///  - a `>R`/`R>` imbalance across any such join, including a loop body
 ///    (the F17 residual this step is assigned to close: `10 0 DO 5 >R
 ///    LOOP` now fails exactly here, at `;`, because the loop's own back
 ///    edge disagrees with the forward path on how deep the return stack
 ///    is -- rather than tearing down the wrong return-stack cells silently
 ///    at runtime), and at the end of the definition (every reachable exit
-///    must leave the return stack exactly as deep as it was at entry);
+///    must leave the return stack exactly as deep as it was at entry).
+///    **Always a hard, unconditional compile error, declared or not**:
+///    unlike the data stack, Forth-2012 requires the return stack balanced
+///    before `LOOP`, full stop -- a runtime-determined trip count changes
+///    nothing about that requirement, so there is no "cannot be sure"
+///    case to be advisory about (DIV-0019's own post-merge amendment: the
+///    justification is the standard, not this analysis's own confidence);
 ///  - a bare `EXIT` lexically inside a `DO ... LOOP`/`+LOOP` with no
 ///    preceding `UNLOOP` on that path (@ref recover_loop_regions plus a
-///    linear scan for an intervening `unloop`).
+///    linear scan for an intervening `unloop`) -- also always a hard,
+///    unconditional error (a structural defect independent of any runtime
+///    trip count: the wrong return-stack cell is popped regardless of how
+///    many iterations ran).
 ///
-/// Every diagnosis above is a hard, always-on compile error at `;`,
-/// independent of whether the definition wrote a declared effect (D7: this
-/// is genuine misuse, not merely an unverified claim). A declared
-/// `( ... -- ... )` effect additionally gates: it is checked against
-/// @ref required_depth (this function's own computed minimum entry depth)
-/// and against *every* reachable known exit's own absolute output depth
-/// individually -- not just one arbitrarily-chosen path, which is what
-/// actually closes DIV-0006 for the case that matters (see this header's
-/// own top comment for why multiple *undeclared* exits disagreeing is not
-/// itself an error).
+/// A declared `( ... -- ... )` effect additionally gates: @ref
+/// required_depth (this function's own computed minimum entry depth) is
+/// checked against the declaration's own inputs, and every reachable known
+/// exit's own absolute output depth is checked against the declaration's
+/// own outputs individually -- not just one arbitrarily-chosen path, which
+/// is what actually closes DIV-0006 for the case that matters (see this
+/// header's own top comment for why multiple *undeclared* exits
+/// disagreeing is not itself an error).
 ///
 /// @tparam MaxCode      Must match @p program's own instruction-array
 ///                      capacity.
@@ -757,6 +798,15 @@ struct definition_effect {
 ///                      definition whose own instruction count exceeds it
 ///                      rather than exceeding a fixed-capacity container's
 ///                      own precondition (D7).
+/// @tparam MaxDiagnostics Capacity for @ref definition_effect::diagnostics
+///                      (this definition's own collected, advisory
+///                      data-stack join disagreements). Excess diagnostics
+///                      past this capacity are silently not recorded
+///                      (never diagnosed as an error -- an advisory list
+///                      running out of room must not itself become fatal,
+///                      which would defeat the entire point of it being
+///                      advisory); every corpus/conformance definition this
+///                      project compiles produces at most a handful.
 /// @param entry          The definition's own entry point (@ref
 ///                       machine::compiled_colon_word::entry_point) --
 ///                       also, per Forth-2012, `RECURSE`'s own call target,
@@ -779,13 +829,14 @@ struct definition_effect {
 ///                       deleted elaborator-era checker's own per-node
 ///                       positions, and a documented divergence (DIV-0019).
 template <int MaxCode, int MaxProgWords, int MaxDictWords, int MaxName,
-          int MaxSpan = 160>
+          int MaxSpan = 160, int MaxDiagnostics = 8>
 [[nodiscard]] constexpr auto check_definition_effect(
     machine::compiled_program<MaxCode, MaxProgWords> const &program,
     machine::dictionary<MaxDictWords, MaxName> const &dict, int entry,
     int end_exclusive, std::string_view source,
     foundation::source_span declared_span, bool has_declared,
-    foundation::source_pos diag_pos) -> foundation::result<definition_effect> {
+    foundation::source_pos diag_pos)
+    -> foundation::result<definition_effect<MaxDiagnostics>> {
     using machine::op;
 
     if (end_exclusive - entry > MaxSpan) {
@@ -801,6 +852,16 @@ template <int MaxCode, int MaxProgWords, int MaxDictWords, int MaxName,
             self_effect = declared;
         }
     }
+    // D20: "advisory by default, promoted to a hard gate for a definition
+    // exactly when a declared effect is present" -- applies here to a
+    // data-stack join disagreement specifically (see definition_effect's
+    // own doc comment for why the return stack does not get the same
+    // allowance). True exactly when a data-stack join mismatch below must
+    // still abort the whole check rather than being poisoned to unknown
+    // and collected.
+    bool const declared_effect_gate = has_declared && declared.known;
+    foundation::static_vector<foundation::parse_error, MaxDiagnostics>
+        diagnostics{};
 
     // ---- Worklist: propagate a (data, return) level pair from `entry`
     // over every recovered edge, requiring agreement wherever two edges
@@ -864,10 +925,28 @@ template <int MaxCode, int MaxProgWords, int MaxDictWords, int MaxName,
         } else if (node.data_known) {
             if (item.data_known) {
                 if (node.data_level != item.data_level) {
-                    return foundation::parse_error{
-                        diag_pos,
-                        "stack effect is inconsistent across a branch or "
-                        "loop boundary"};
+                    if (declared_effect_gate) {
+                        return foundation::parse_error{
+                            diag_pos,
+                            "stack effect is inconsistent across a branch "
+                            "or loop boundary"};
+                    }
+                    // Advisory (D20, DIV-0019's own post-merge amendment):
+                    // undeclared, so a runtime-determined loop trip count
+                    // (the Hayes ttester's own `EMPTY-STACK`) may
+                    // legitimately make this join's own data-stack depth
+                    // unknowable statically -- collect the disagreement
+                    // rather than aborting, and poison this node to
+                    // unknown exactly like an EXECUTE/CATCH/LEAVE-caused
+                    // one (this header's own top comment).
+                    if (diagnostics.size() < MaxDiagnostics) {
+                        diagnostics.push_back(foundation::parse_error{
+                            diag_pos,
+                            "stack effect is inconsistent across a branch "
+                            "or loop boundary (advisory: undeclared)"});
+                    }
+                    node.data_known = false;
+                    data_changed = true;
                 }
             } else {
                 node.data_known = false;
@@ -1052,7 +1131,7 @@ template <int MaxCode, int MaxProgWords, int MaxDictWords, int MaxName,
         }
     }
 
-    definition_effect result{};
+    definition_effect<MaxDiagnostics> result{};
     if (has_declared && declared.known) {
         result.net = declared;
     } else if (computed_known) {
@@ -1064,6 +1143,7 @@ template <int MaxCode, int MaxProgWords, int MaxDictWords, int MaxName,
         result.peak_depth = required_depth + peak_relative;
         result.peak_return_depth = peak_return_relative;
     }
+    result.diagnostics = diagnostics;
     return result;
 }
 // 2f6a9c1d-7b3e-4d8a-9c1f-6e2b8a4d7f3c end

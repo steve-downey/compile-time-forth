@@ -1616,83 +1616,114 @@ TEST_CASE("InterpTest - UncaughtThrowWhileInterpreting") {
 // see effect_lint.hpp's own check_definition_effect doc comment and
 // DIV-0019), so these tests check for this step's own text, not the deleted
 // suite's.
+//
+// Post-merge amendment (DIV-0019, orchestrator-directed after F32's own
+// Hayes ttester exposed a real design fault): a *data*-stack join
+// disagreement is advisory unless a declared effect is present, per D20's
+// own literal wording -- `EMPTY-STACK`'s own `DEPTH START-DEPTH @ < IF
+// DEPTH START-DEPTH @ SWAP DO 0 LOOP THEN` pads the stack by a
+// runtime-determined count, a nonzero-net loop body no static check can
+// reconcile, and it is standard, correct Forth-2012. So every one of the
+// old F12 negative tests below that involves *only* the data stack, and no
+// declared effect, is *not* rejected -- it is accepted, with the
+// disagreement collected onto `compiled_program::diagnostics` instead
+// (`interp.hpp`'s own `;` handling appends `check_definition_effect`'s own
+// per-definition `diagnostics` there). The *return*-stack tests
+// (`ReturnStackImbalance...`, the F17 residual) and the declared-effect one
+// (`BADDECL`) are unaffected: D20's "advisory unless declared" is about the
+// data stack specifically (`effect_lint.hpp`'s own `definition_effect` doc
+// comment has the full reasoning for why the return stack gets no such
+// allowance).
 
-TEST_CASE("EffectLintTest - IfArmsMismatchDiagnosed") {
+TEST_CASE("EffectLintTest - IfArmsMismatchIsAdvisoryWhenUndeclared") {
     // No ELSE: NEGATE-less arm (DROP, net -1) vs. an implicit empty ELSE
-    // (net 0) -- a genuine net disagreement, not merely unknown.
+    // (net 0) -- a genuine net disagreement, but undeclared, so this is
+    // collected, not fatal (D20).
     forth_state<64, 64, 1024, 256> st{": BADCOND IF DROP THEN ;"};
     auto dict = default_dictionary<>();
     compile_buffer<> buf;
     auto r = interpret(st, dict, buf);
-    REQUIRE_FALSE(r.has_value());
-    CHECK(std::string_view{r.error().message}.find("inconsistent") !=
-          std::string_view::npos);
+    REQUIRE(r.has_value());
+    REQUIRE(buf.program().diagnostics.size() >= 1);
+    CHECK(std::string_view{buf.program().diagnostics[0].message}.find(
+              "inconsistent") != std::string_view::npos);
+    CHECK(std::string_view{buf.program().diagnostics[0].message}.find(
+              "advisory") != std::string_view::npos);
+    auto const *entry = dict.lookup("BADCOND");
+    REQUIRE(entry != nullptr);
+    auto const *cw =
+        std::get_if<smd::forth::machine::compiled_colon_word>(&entry->binding);
+    REQUIRE(cw != nullptr);
+    CHECK_FALSE(cw->effect_known); // Genuinely no single shape to report.
 }
 
-TEST_CASE("EffectLintTest - DoLoopBodyNonzeroDiagnosed") {
-    // The F17 correction: DO's own two-cell entry cost plus a nonzero-net
-    // body disagree at the loop's own back edge.
+TEST_CASE("EffectLintTest - DoLoopBodyNonzeroIsAdvisoryWhenUndeclared") {
+    // The F17 correction (DO's own two-cell entry cost) still recognizes
+    // this disagreement at the loop's own back edge; undeclared, it is
+    // collected rather than fatal -- exactly the shape EMPTY-STACK's own
+    // padding loop needs to keep compiling.
     forth_state<64, 64, 1024, 256> st{": BADLOOP DO DUP LOOP ;"};
     auto dict = default_dictionary<>();
     compile_buffer<> buf;
     auto r = interpret(st, dict, buf);
-    REQUIRE_FALSE(r.has_value());
-    CHECK(std::string_view{r.error().message}.find("inconsistent") !=
-          std::string_view::npos);
+    REQUIRE(r.has_value());
+    REQUIRE(buf.program().diagnostics.size() >= 1);
+    CHECK(std::string_view{buf.program().diagnostics[0].message}.find(
+              "inconsistent") != std::string_view::npos);
 }
 
-TEST_CASE("EffectLintTest - PlusLoopBodyMustNetPlusOne") {
-    // The F17 correction the other direction: +LOOP's own body must leave
-    // exactly the increment (net +1, `interpreter::corpus::sumeven_program`'s
-    // own "I + 2" shape) -- "I DROP" nets 0, which +LOOP's own -1
-    // (consuming the increment) cannot reconcile back to dest's own level.
+TEST_CASE("EffectLintTest - PlusLoopBodyWrongNetIsAdvisoryWhenUndeclared") {
+    // The F17 correction the other direction: +LOOP's own body should leave
+    // exactly the increment (net +1, `interpreter::corpus::
+    // sumeven_program`'s own "I + 2" shape); "I DROP" nets 0 instead, still
+    // just collected since undeclared.
     forth_state<64, 64, 1024, 256> st{": BADPLUSLOOP 10 0 DO I DROP +LOOP ;"};
     auto dict = default_dictionary<>();
     compile_buffer<> buf;
     auto r = interpret(st, dict, buf);
-    REQUIRE_FALSE(r.has_value());
-    CHECK(std::string_view{r.error().message}.find("inconsistent") !=
-          std::string_view::npos);
+    REQUIRE(r.has_value());
+    REQUIRE(buf.program().diagnostics.size() >= 1);
+    CHECK(std::string_view{buf.program().diagnostics[0].message}.find(
+              "inconsistent") != std::string_view::npos);
 }
 
-TEST_CASE("EffectLintTest - BeginUntilBodyWrongFlagCountDiagnosed") {
+TEST_CASE(
+    "EffectLintTest - BeginUntilBodyWrongFlagCountIsAdvisoryWhenUndeclared") {
     forth_state<64, 64, 1024, 256> st{": BADUNTIL BEGIN DUP DUP UNTIL ;"};
     auto dict = default_dictionary<>();
     compile_buffer<> buf;
     auto r = interpret(st, dict, buf);
-    REQUIRE_FALSE(r.has_value());
-    CHECK(std::string_view{r.error().message}.find("inconsistent") !=
-          std::string_view::npos);
+    REQUIRE(r.has_value());
+    REQUIRE(buf.program().diagnostics.size() >= 1);
+    CHECK(std::string_view{buf.program().diagnostics[0].message}.find(
+              "inconsistent") != std::string_view::npos);
 }
 
-TEST_CASE("EffectLintTest - BeginWhileConditionWrongFlagCountDiagnosed") {
+TEST_CASE("EffectLintTest - "
+          "BeginWhileConditionWrongFlagCountIsAdvisoryWhenUndeclared") {
     // Empty body: the deleted elaborator's own per-construct rule checked
     // the *condition* alone ("BEGIN...WHILE condition must leave exactly
     // one flag"), independent of the body; this checker instead checks the
     // whole cycle's own consistency at the loop's back edge (`REPEAT`
-    // rejoining `BEGIN`'s own dest), which an empty body cannot repair.
+    // rejoining `BEGIN`'s own dest), which an empty body cannot repair --
+    // still just advisory, undeclared.
     forth_state<64, 64, 1024, 256> st{
         ": BADWHILE BEGIN DUP DUP WHILE REPEAT ;"};
     auto dict = default_dictionary<>();
     compile_buffer<> buf;
     auto r = interpret(st, dict, buf);
-    REQUIRE_FALSE(r.has_value());
-    CHECK(std::string_view{r.error().message}.find("inconsistent") !=
-          std::string_view::npos);
+    REQUIRE(r.has_value());
+    REQUIRE(buf.program().diagnostics.size() >= 1);
+    CHECK(std::string_view{buf.program().diagnostics[0].message}.find(
+              "inconsistent") != std::string_view::npos);
 }
 
-// DIV-0019: the deleted elaborator's own "BEGIN...WHILE condition must
-// leave exactly one flag" rule checked the condition *alone*, so it
-// rejected this shape regardless of body. This checker instead verifies
-// whole-cycle consistency at the loop's own back edge (D20's own uniform
-// join mechanism, this header's own top comment) -- strictly *more*
-// permissive here: a condition that leaves two cells past the flag (`DUP
-// DUP`, one real duplicate plus the flag `WHILE` pops) composes safely with
-// a body that removes the extra one (`DROP`) before `REPEAT` rejoins
-// `BEGIN`'s own dest, so the cycle never actually drifts. Never unsafe
-// (every reachable instruction's own minimum depth is still verified,
-// unconditionally); just less eager to reject an unidiomatic-but-consistent
-// shape than the old per-construct rule was.
+// A condition that leaves two cells past the flag (`DUP DUP`, one real
+// duplicate plus the flag `WHILE` pops) composes safely with a body that
+// removes the extra one (`DROP`) before `REPEAT` rejoins `BEGIN`'s own
+// dest, so the cycle never actually drifts -- no join disagreement at all
+// here, advisory or otherwise, and this one *is* fully known (unlike the
+// merely-accepted-as-advisory shapes above).
 TEST_CASE("EffectLintTest - "
           "WhileConditionLeavingExtraCellsIsAcceptedWhenTheCycleIsConsistent") {
     forth_state<64, 64, 1024, 256> st{
@@ -1701,6 +1732,28 @@ TEST_CASE("EffectLintTest - "
     compile_buffer<> buf;
     auto r = interpret(st, dict, buf);
     REQUIRE(r.has_value());
+    CHECK(buf.program().diagnostics.size() == 0);
+    auto const *entry = dict.lookup("OKWHILE");
+    REQUIRE(entry != nullptr);
+    auto const *cw =
+        std::get_if<smd::forth::machine::compiled_colon_word>(&entry->binding);
+    REQUIRE(cw != nullptr);
+    CHECK(cw->effect_known);
+}
+
+// A declared effect promotes the data-stack disagreement back to a hard,
+// unconditional error (D20's own "promoted to a hard gate ... exactly when
+// a declared effect is present") -- the same BADLOOP shape as above, but
+// now with a declaration nothing about it can satisfy.
+TEST_CASE("EffectLintTest - DeclaredDoLoopBodyNonzeroIsAHardError") {
+    forth_state<64, 64, 1024, 256> st{": BADLOOPDECL ( n -- n ) DO DUP LOOP ;"};
+    auto dict = default_dictionary<>();
+    compile_buffer<> buf;
+    auto r = interpret(st, dict, buf);
+    REQUIRE_FALSE(r.has_value());
+    CHECK(std::string_view{r.error().message}.find("inconsistent") !=
+          std::string_view::npos);
+    CHECK(buf.program().diagnostics.size() == 0); // Hard error, not collected.
 }
 
 TEST_CASE("EffectLintTest - ReturnStackImbalanceAcrossControlDiagnosed") {

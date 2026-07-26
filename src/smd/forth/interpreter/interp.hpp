@@ -1991,6 +1991,25 @@ interpret(machine::forth_state<MaxDepth, MaxRDepth, MaxData, MaxOut> &st,
                 buf.program().required_return_depth =
                     lint.value().peak_return_depth;
             }
+            // DIV-0019's own post-merge amendment: an undeclared data-stack
+            // join disagreement (a loop body whose net effect depends on a
+            // runtime-determined trip count, e.g. the Hayes ttester's own
+            // EMPTY-STACK) is advisory, not fatal (effect_lint.hpp's own
+            // check_definition_effect doc comment) -- collected here rather
+            // than dropped, onto the one place a caller can always find the
+            // whole session's own accumulated advisory diagnostics
+            // (`compile_buffer::program().diagnostics`). Silently stops
+            // once that list is full, exactly like the collection inside
+            // check_definition_effect itself: an advisory list running out
+            // of room must not become a compile failure.
+            for (int i = 0; i < lint.value().diagnostics.size(); ++i) {
+                if (buf.program().diagnostics.size() >=
+                    buf.program().diagnostics.capacity()) {
+                    break;
+                }
+                buf.program().diagnostics.push_back(
+                    lint.value().diagnostics[i]);
+            }
             std::string_view name_text{
                 cctx.name.begin(), static_cast<std::size_t>(cctx.name.size())};
             auto def_r = dict.define_compiled_colon(

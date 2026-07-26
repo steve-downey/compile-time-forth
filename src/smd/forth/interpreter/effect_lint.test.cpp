@@ -268,8 +268,12 @@ static_assert([] {
     return eff.net == known(1, 1) && eff.peak_depth == 2;
 }());
 
-// A DO-loop body with a nonzero net effect (the F17 correction) is
-// diagnosed even hand-built, not just through `interpret()`.
+// A DO-loop body with a nonzero net effect (the F17 correction) is still
+// *recognized* even hand-built, not just through `interpret()` -- but
+// undeclared (`has_declared = false` here), it is advisory (D20's own
+// "advisory unless declared," DIV-0019's post-merge amendment): accepted,
+// with the disagreement collected onto the returned definition_effect's
+// own diagnostics rather than aborting the whole check.
 static_assert([] {
     compiled_program<16, 8> program{};
     program.code.push_back(instr{.code = op::halt, .operand = cell{0}});
@@ -283,5 +287,30 @@ static_assert([] {
     auto const dict = default_dictionary<>();
     auto const result = check_definition_effect(
         program, dict, entry, 5, "", source_span{}, false, source_pos{});
+    if (!result.has_value()) {
+        return false;
+    }
+    return !result.value().net.known && result.value().diagnostics.size() == 1;
+}());
+
+// The same shape, declared: promoted to a hard, unconditional error (D20's
+// own "promoted to a hard gate ... exactly when a declared effect is
+// present").
+static_assert([] {
+    compiled_program<16, 8> program{};
+    program.code.push_back(instr{.code = op::halt, .operand = cell{0}});
+    int const entry = 1;
+    program.code.push_back(instr{.code = op::do_setup, .operand = cell{0}});
+    program.code.push_back(
+        instr{.code = op::prim, .operand = static_cast<cell>(primitive::dup)});
+    program.code.push_back(instr{.code = op::loop_step, .operand = cell{2}});
+    program.code.push_back(instr{.code = op::ret, .operand = cell{0}});
+    auto const dict = default_dictionary<>();
+    constexpr std::string_view text = "( n -- n )";
+    constexpr source_span span{source_pos{0, 1, 1},
+                               source_pos{static_cast<int>(text.size()), 1,
+                                          static_cast<int>(text.size()) + 1}};
+    auto const result = check_definition_effect(program, dict, entry, 5, text,
+                                                span, true, source_pos{});
     return !result.has_value();
 }());
