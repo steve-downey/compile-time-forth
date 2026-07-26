@@ -203,7 +203,7 @@ installed ~COMPILE,~ as immediate a few steps back. Write the textbook
 helper here and ~COMPILE,~ fires the moment the helper itself is being
 defined, before ~[']~'s own deferred literal-push has ever taken effect,
 against a data stack that has nothing on it yet to pop: an underflow,
-every time, on a word this project ships and calls compileable.
+every time, on a word this project ships and calls compilable.
 
 #+begin_src forth
 : FOO ['] DUP COMPILE, ; IMMEDIATE

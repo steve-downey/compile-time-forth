@@ -1,4 +1,4 @@
-<div class="abstract" id="org37150ce">
+<div class="abstract" id="orgb29ee33">
 <p>
 Part 7 built a tree-walking evaluator whose only job was to agree with the
 compiled machine on every program. Part 15 deleted it and admitted, in the
@@ -143,7 +143,7 @@ The lesson I want to keep is not "division is fine, nothing to see." It's that a
 
 This one is a bug, and the oracle needed almost no coaxing to find it. Forth-2012's own idiom for `COMPILE,` is a small piece of misdirection that only works if you get the immediacy backwards on purpose: define an **immediate** helper word whose own body ends in `['] TARGET COMPILE,`, then use that helper inside some third definition. Because the helper is immediate, it runs while the third word is still being compiled, and because `COMPILE,` itself is **not** immediate, writing it inside the helper's own body doesn't execute it there; it compiles a deferred call into the helper, one that only actually appends `TARGET`'s own behavior once the helper later runs, live, during someone else's compilation.
 
-That's the whole trick, and it depends entirely on `COMPILE,` being the one non-immediate piece in an otherwise-immediate sandwich. This project installed `COMPILE,` as immediate a few steps back. Write the textbook helper here and `COMPILE,` fires the moment the helper itself is being defined, before `[']`'s own deferred literal-push has ever taken effect, against a data stack that has nothing on it yet to pop: an underflow, every time, on a word this project ships and calls compileable.
+That's the whole trick, and it depends entirely on `COMPILE,` being the one non-immediate piece in an otherwise-immediate sandwich. This project installed `COMPILE,` as immediate a few steps back. Write the textbook helper here and `COMPILE,` fires the moment the helper itself is being defined, before `[']`'s own deferred literal-push has ever taken effect, against a data stack that has nothing on it yet to pop: an underflow, every time, on a word this project ships and calls compilable.
 
 ```forth
 : FOO ['] DUP COMPILE, ; IMMEDIATE
