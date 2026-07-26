@@ -53,4 +53,16 @@
 ## Blog series continuation (one post per step; F23 = Part 12)
 
 - [x] Blog: F23 the pivot (Part 12)
-- [ ] Blog: F24 (Part 13) … F36 (Part 25), one per step as merged
+- [x] Blog: F24 interpreter, interpret state only (Part 13)
+- [ ] Blog: F25 colon compiler and session image (Part 14)
+- [ ] Blog: F26 the cut (Part 15)
+- [ ] Blog: F27 immediacy and control flow (Part 16)
+- [ ] Blog: F28 execution tokens and defining words (Part 17)
+- [ ] Blog: F29 parsing words and strings (Part 18)
+- [ ] Blog: F30 effect lint (Part 19)
+- [ ] Blog: F31 CATCH and THROW (Part 20)
+- [ ] Blog: F32 conformance (Part 21)
+- [ ] Blog: F33 sender backend (Part 22)
+- [ ] Blog: F34 foreign function interface (Part 23)
+- [ ] Blog: F35 bootstrap prelude (Part 24)
+- [ ] Blog: F36 consolidation (Part 25)
