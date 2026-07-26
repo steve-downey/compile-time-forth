@@ -132,6 +132,13 @@ before it ever reached anyone else's code.
 get a real execution token --- and paying down a debt from Part 13 turns out
 to be what makes any of it possible.
 
+** [[file:post-18-what-in-was-for.org][Part 18 — What >IN Was For]]
+
+~PARSE~, ~WORD~, ~CHAR~, ~S"~, ~."~, and ~ABORT"~ land, and a definition three
+words long --- ~: ECHO-WORD 32 WORD COUNT TYPE ;~ --- reaches past its own
+call for an argument that was never inside it. Two entries' worth of debt
+about ~>IN~ finally cash out on the same example.
+
 * Table of Contents
 
 #+toc: headlines 1

@@ -31,6 +31,7 @@ worktree and are supposed to roll forward.
 | Part 15 | The Cut | F26 | `56001da` | `blog/part-15` | 3 |
 | Part 16 | Nothing to Point At | F27 | `f79a529` | `blog/part-16` | 4 |
 | Part 17 | Something to Point At | F28 | `e7e9881` | `blog/part-17` | 4 |
+| Part 18 | What >IN Was For | F29 | `6b61b86` | `blog/part-18` | 3 |
 
 Pin SHAs are the commits that introduced each post. They are **not** the phase
 merges, for the reason in DISC-1.

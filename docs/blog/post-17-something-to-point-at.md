@@ -1,4 +1,4 @@
-<div class="abstract" id="org748cd2e">
+<div class="abstract" id="orgcc59c7a">
 <p>
 Part 16 ended on a control word with nothing to point at: <code>THEN</code>'s whole
 action is mutating the code being built, so there is no address <code>EXECUTE</code>
@@ -287,7 +287,7 @@ What tonight did change: almost everything in this dictionary now has something 
 
 <nav style="margin-top: 3em; border-top: 1px solid #ccc; padding-top: 1em">
 
-[↑ Series Index](index.md) | [← Part 16 - Nothing to Point At](post-16-nothing-to-point-at.md)
+[↑ Series Index](index.md) | [← Part 16 - Nothing to Point At](post-16-nothing-to-point-at.md) | [Part 18 - What >IN Was For →](post-18-what-in-was-for.md)
 
 </nav>
 

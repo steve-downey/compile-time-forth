@@ -1,0 +1,171 @@
+#+options: ':nil *:t -:t ::t <:t H:3 \n:nil ^:nil arch:headline author:t
+#+options: broken-links:nil c:nil creator:nil d:(not "LOGBOOK") date:t e:t
+#+options: email:nil f:t inline:t num:t p:nil pri:nil prop:nil stat:t tags:t
+#+options: tasks:t tex:t timestamp:t title:t toc:nil todo:t |:t
+#+options: html5-fancy:t
+#+bibliography: references.bib
+#+TITLE: Building a Compile-Time Forth in C++26: Part 18 - What >IN Was For
+#+AUTHOR: Steve Downey
+#+DATE: 2026-07-26
+
+#+begin_abstract
+Part 13 spent most of an entry defending a choice with no payoff that night:
+~>IN~ as a bare integer sitting in the open on the machine state, not a
+cursor tucked inside the scanner, because a parsing word would eventually
+need to reach it the same way the outer loop does. Part 17 folded that state
+onto ~machine::forth_state~ itself, for reasons that had nothing to do with
+parsing words --- ~EXECUTE~ and ~DOES>~ needed it first. Tonight both bills
+come due at once. ~PARSE~, ~WORD~, ~CHAR~, ~[CHAR]~, ~S"~, ~."~, ~ABORT"~,
+~COUNT~, and ~TYPE~ land, built on one shared scan of the input stream, and
+one small definition does the thing Part 0 refused to allow: a word written
+in this Forth that reaches past its own definition and takes an argument
+that was never inside it.
+#+end_abstract
+
+#+MACRO: TEASER_END
+{{TEASER_END}}
+#+html: <nav style="margin-bottom: 2em; border-bottom: 1px solid #ccc; padding-bottom: 1em">
+[[file:index.org][↑ Series Index]] | [[file:post-17-something-to-point-at.org][Part 17 - Something to Point At ←]]
+#+html: </nav>
+
+
+* Two debts, one payoff
+
+Part 13 put it plainly: a cursor would have been less code, and would have
+done everything that entry's own outer loop asked of it that night. The
+=int= won on an argument about a word that didn't exist yet --- something
+that reads a run of input and advances ~>IN~ itself, through the identical
+interface the outer loop uses, not through some separate mechanism the loop
+has and a Forth-level word can't reach. I wrote that down as an expectation,
+not a result, and said plainly it might be the entry that turns out to have
+been wrong about why.
+
+Part 17 didn't touch that argument at all. It folded ~SOURCE~, ~>IN~,
+~BASE~, and ~STATE~ off the wrapper Part 13 built and onto
+~machine::forth_state~ itself, because ~EXECUTE~ and ~DOES>~ needed the
+input reachable from inside the VM's own fetch-execute loop, with no
+interpreter-level watcher standing over it. Parsing words weren't the
+reason for that fold. They just needed it to have already happened.
+
+Tonight is where both land on the same demonstration.
+
+* ECHO-WORD
+
+#+transclude: [[orgit-file:~/src/compile-time-forth/compile-time-forth::blog/part-18::src/smd/forth/forth.test.cpp::b4097bfd-0f64-4d11-8a5a-8bb92271f996]] :lines 2- :src cpp :end "b4097bfd-0f64-4d11-8a5a-8bb92271f996 end"
+
+~ECHO-WORD~'s own definition is three words: ~32 WORD COUNT TYPE~. ~FOO~
+appears nowhere in it. ~FOO~ shows up only after ~ECHO-WORD~ is called, and
+what prints is ~FOO~ anyway --- ~ECHO-WORD~ reached into the input stream
+while it was running and took the next word for itself. That's a
+user-defined parsing word: a word that extends how the text after it gets
+read, written in ordinary Forth, with nothing in the interpreter that knows
+~ECHO-WORD~'s name.
+
+Nothing does know it. ~WORD~ is an ordinary, non-immediate primitive, no
+different in kind from ~DUP~ or ~@~: a colon definition that calls it
+compiles a plain ~op::prim~, D13's dispatch rule from several entries back,
+unchanged. When ~ECHO-WORD~ later runs, that instruction fires and consumes
+whatever text ~SOURCE~ and ~>IN~ happen to be sitting on at that exact
+moment --- which, at the call site above, is ~FOO~. Being ordinary and
+non-immediate is the entire trick. An immediate word runs at compile time,
+against whatever the source looks like while ~ECHO-WORD~ itself is being
+defined; ~WORD~ runs at ~ECHO-WORD~'s own call time, against whatever the
+source looks like then. Nothing about ~interpret~'s own loop had to change
+for this to work, because from the loop's point of view ~ECHO-WORD~ is a
+word like any other, and calling a word like any other is all ~interpret~
+has ever done.
+
+#+transclude: [[orgit-file:~/src/compile-time-forth/compile-time-forth::blog/part-18::src/smd/forth/machine/forth_state.hpp::4beb6ab5-f28e-4b2f-8a21-3d4ba8575f55]] :lines 2- :src cpp :end "4beb6ab5-f28e-4b2f-8a21-3d4ba8575f55 end"
+
+Every one of these reads or writes ~state~'s own ~source()~ and
+~data_space()~ directly, both plain fields since Part 17's fold, so each is
+a real ~machine::primitive~ enumerator dispatched through ~apply_primitive~
+--- no dictionary lookup, no new opcode, nothing ~ECHO-WORD~'s own caller
+had to set up in advance.
+
+* One scan underneath all of them
+
+~PARSE~, ~WORD~, and the reexpressed ~(~/~S"~/~."~/~ABORT"~ below all read
+through the same function, differing only in the delimiter, whether leading
+delimiters get skipped first, and what each does with the text once it has
+it:
+
+#+transclude: [[orgit-file:~/src/compile-time-forth/compile-time-forth::blog/part-18::src/smd/forth/parser/forth_chars.hpp::9cfdb6e6-c3b2-467a-a80c-50a53628f424]] :lines 2- :src cpp :end "9cfdb6e6-c3b2-467a-a80c-50a53628f424 end"
+
+~PARSE~ calls it with no leading skip and hands the raw text back as an
+address and a length --- Forth-2012's own ~( -- c-addr u )~ shape
+[cite:@forth2012]. ~WORD~ skips leading delimiters first and stores a
+*counted* string instead, the count in the first cell and the characters
+after it, because that's what ~COUNT~ expects to turn back into an
+address/length pair. Both copy their result into freshly allotted
+data-space cells, one character per cell --- this project's declared
+address-unit convention since the data space first existed --- rather than
+some fixed scratch buffer. That means a loop that calls ~WORD~ a hundred
+times allocates a hundred times, bounded by the same data-space capacity
+that already bounds ~CREATE~ or a bare ~,~, and diagnosed the same way if it
+runs out. No new capacity, no new failure mode, just the one this project
+already had.
+
+* ( and \ stop being special
+
+Through the last several entries, ~(~ and ~\~ were never words at all.
+~skip_forth_space~, down in the scanner, swallowed a comment as part of
+skipping ordinary whitespace, before anything got far enough to ask what
+kind of token it was looking at. Tonight that function is gone, deleted
+outright, not left in place as an unused alternative. ~(~ and ~\~ are
+ordinary dictionary entries now, immediate and not compile-only, each
+scanning forward from ~SOURCE~ through the shared function above --- ~)~ or
+end of line as the delimiter --- and advancing ~>IN~ past what it finds,
+exactly like any other parsing word this entry adds.
+
+There's a real cost to this, and I'd rather say it than let it hide in a
+changelog: a comment can no longer sit between ~:~ and the name it's
+defining. ~: ( oops ) NAME~ used to skip the parenthetical and define
+~NAME~; now it defines a word called ~(~. That is what a raw, undecorated
+name-parse does in any Forth-2012 system, so this is conformance, not a
+regression against the standard --- but it's a real behavior change against
+what this project did as recently as last entry, and no amount of "that's
+what the standard says" makes existing source using the old habit keep
+working.
+
+* ABORT" is honestly incomplete
+
+~ABORT"~ compiles a message, and if the flag on the stack when it runs is
+non-zero, it's supposed to print that message and unwind to the nearest
+exception handler --- Forth-2012's own ~THROW -2~. There is no ~THROW~ in
+this system yet, and there is no handler for one to unwind to. So
+~ABORT"~'s runtime primitive prints the message, the same way ~TYPE~ would,
+and then returns a diagnosed error that propagates all the way out of the
+interpreter. The whole program stops. That is a hard stop standing in for
+an unwind, not an unwind, and I don't want to describe it as more finished
+than it is. The message is real, printing it is a real, testable side
+effect, and interpretation does stop rather than silently continuing past a
+condition that was supposed to abort something --- but "something" was
+supposed to be nameable, and right now it's everything. That's a deliberate
+placeholder with a name and a reason, not a corner I forgot.
+
+* What's still open
+
+Nothing here touches stack-effect checking, which has had none of any kind
+since the tree that removed the old checker along with the rest of the R1
+pipeline. ~: BAD ( -- ) DROP ;~ still compiles clean and still underflows
+the instant anything calls it. There's still no ~CATCH~, no ~THROW~, no
+sender/receiver backend, no differential testing against gforth, and no
+Forth-2012 conformance suite anywhere near this tree. All of that was true
+last entry and is true again tonight.
+
+What's different is that the thing Part 0 refused to build --- a word
+defined in this Forth that changes how the text after it gets read --- now
+has one working example. ~ECHO-WORD~ isn't a demonstration wired up to look
+like the real thing. It's ordinary compiled Forth, calling an ordinary
+primitive, that happens to read the input stream because that's what the
+primitive does. Part 13's bet was that keeping ~>IN~ in the open would
+matter to something that didn't exist yet. Tonight it did.
+
+#+html: <nav style="margin-top: 3em; border-top: 1px solid #ccc; padding-top: 1em">
+[[file:index.org][↑ Series Index]] | [[file:post-17-something-to-point-at.org][← Part 17 - Something to Point At]]
+#+html: </nav>
+
+* References
+
+#+print_bibliography:
