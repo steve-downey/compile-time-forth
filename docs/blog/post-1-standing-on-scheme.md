@@ -1,9 +1,9 @@
-<div class="abstract" id="orgffe7a70">
+<div class="abstract" id="org39639ea">
 <p>
 Before any Forth exists there is a baseline to stand on: C++26 green on two
 compilers, Beman Execution vendored for the sender backend I am promising
 myself, and the <code>foundation</code> vocabulary copied over from the Scheme project. The
-copy is where the first surprise turned up &mdash; a two-line equality shortcut that
+copy is where the first surprise turned up &#x2014; a two-line equality shortcut that
 GCC accepts as a constant expression and Clang, correctly, does not.
 </p>
 
@@ -22,12 +22,12 @@ GCC accepts as a constant expression and Clang, correctly, does not.
 
 The first requirement is dull and non-negotiable: the whole thing compiles as C++26 on both GCC 16 and Clang 21, and stays that way. Two compilers, not one, because the constant evaluator is exactly where they disagree, and a compile-time project that only ever sees one front end is a project quietly depending on that front end's bugs. This entry is about a case where that mattered on day one.
 
-Beman Execution goes in as a submodule, and a small `sender/vocab.hpp` aliases the handful of names I expect to lean on later &mdash; `just`, `then`, `let_value`, `when_all`, `sync_wait`. Nothing uses them yet. They are there because Part 0 made a promise about senders, and I would rather the dependency be wired and building now than discovered missing the day I need it. Vendoring it also flushed out one build-environment quirk worth its own note some other time; today it just has to build.
+Beman Execution goes in as a submodule, and a small `sender/vocab.hpp` aliases the handful of names I expect to lean on later &#x2014; `just`, `then`, `let_value`, `when_all`, `sync_wait`. Nothing uses them yet. They are there because Part 0 made a promise about senders, and I would rather the dependency be wired and building now than discovered missing the day I need it. Vendoring it also flushed out one build-environment quirk worth its own note some other time; today it just has to build.
 
 
 # Importing the foundation
 
-The Scheme compiler already has the pieces every stage here will need: a `result<T>` that carries either a value or a `parse_error`, a `static_vector` that never reallocates, the `tree_arena/arena_box` pair that makes tree-shaped data legal under `constexpr`, and a small typeclass layer &mdash; `functor/applicative/alternative`. I bring them across by copy, renamespaced into `smd::forth::foundation`, with the fixed capacities lifted to template parameters so the Forth side can size them itself.
+The Scheme compiler already has the pieces every stage here will need: a `result<T>` that carries either a value or a `parse_error`, a `static_vector` that never reallocates, the `tree_arena/arena_box` pair that makes tree-shaped data legal under `constexpr`, and a small typeclass layer &#x2014; `functor/applicative/alternative`. I bring them across by copy, renamespaced into `smd::forth::foundation`, with the fixed capacities lifted to template parameters so the Forth side can size them itself.
 
 Copy, renamespace, fix debt. The rule I set for imported code is that anything past a mechanical rename needs a reason written down. The reason turned up immediately.
 
@@ -55,12 +55,12 @@ static_assert(parse_error{source_pos{1, 1, 2}, "oops"}
            == parse_error{source_pos{1, 1, 2}, "oops"});
 ```
 
-with, from Clang, *comparison of addresses of potentially overlapping literals has unspecified value*. The Scheme repo is green. Its own test suite never wrote this particular `static_assert` &mdash; identical literal on both sides, forced through the constant evaluator &mdash; against Clang, so the defect sat there undetected. It took a second compiler to see it, which is the entire argument for keeping the second compiler.
+with, from Clang, *comparison of addresses of potentially overlapping literals has unspecified value*. The Scheme repo is green. Its own test suite never wrote this particular `static_assert` &#x2014; identical literal on both sides, forced through the constant evaluator &#x2014; against Clang, so the defect sat there undetected. It took a second compiler to see it, which is the entire argument for keeping the second compiler.
 
 
 # The fix is to compare less
 
-The shortcut was never doing anything a correct scan wouldn't. Two equal pointers point at equal strings, and the character scan returns `true` for those anyway &mdash; a string equals itself. The only thing the fast path bought was skipping a loop, and it bought that with an unspecified comparison. So it goes. What stays is the comparison that is always legal: a pointer against a null pointer constant, which both compilers accept in a constant expression.
+The shortcut was never doing anything a correct scan wouldn't. Two equal pointers point at equal strings, and the character scan returns `true` for those anyway &#x2014; a string equals itself. The only thing the fast path bought was skipping a loop, and it bought that with an unspecified comparison. So it goes. What stays is the comparison that is always legal: a pointer against a null pointer constant, which both compilers accept in a constant expression.
 
 ```cpp
 friend constexpr auto operator==(foundation::parse_error const &lhs,
@@ -103,4 +103,4 @@ The foundation is in and both compilers are quiet. Next I need something to pars
 
 # References
 
-{ISO/IEC JTC1/SC22/WG21} (2024). *ISO/IEC 14882, Programming languages &mdash; C++*.
+{ISO/IEC JTC1/SC22/WG21} (2024). *ISO/IEC 14882, Programming languages &#x2014; C++*.
