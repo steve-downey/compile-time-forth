@@ -90,13 +90,13 @@ the same diagnosed error `apply_primitive` already produces.
 - Makefile is the single build interface. **Use `TOOLCHAIN=gcc-16`** — bare `make`
   picks system gcc-13, which rejects `gnu++26` and fails to configure.
   `make TOOLCHAIN=gcc-16 compile|test`; secondary `clang-21`.
-- **`make lint` caveat:** the sandbox cannot provision the node/go-based hooks
-  (`markdownlint`, `gitleaks`, `checkmake`) — they fail with a TLS certificate
-  error while downloading their env. Run the rest individually
-  (`.venv/bin/pre-commit run clang-format --all-files`, plus `gersemi`,
-  `codespell`, `check-yaml`, `shellcheck`, `mbake-validate`,
-  `trailing-whitespace`, `end-of-file-fixer`) — all pass. Environment limit, not
-  a code problem. **clang-format will reflow** touched files; let it.
+- **`make lint` runs clean, all hooks.** The previous brief's caveat that the
+  node/go-based hooks (`markdownlint`, `gitleaks`, `checkmake`) cannot provision
+  is **stale** — they provision and pass as of F23. Treat a lint failure as a
+  real failure. **clang-format will reflow** touched files; let it. Note that
+  clang-format is pinned to v21.1.2 by `.pre-commit-config.yaml` and is stricter
+  than a system clang-format may be, particularly about the indentation of
+  transclusion anchor comments.
 - Every compiled structure is flat, trivially destructible, and
   capacity-parameterized; heap-backed `fix`/`Box` types are barred. All
   capacities are template parameters with defaults.
