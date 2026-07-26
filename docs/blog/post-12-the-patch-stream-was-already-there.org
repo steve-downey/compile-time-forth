@@ -208,7 +208,7 @@ unresolved here than pretend today settled it.
 
 
 #+html: <nav style="margin-top: 3em; border-top: 1px solid #ccc; padding-top: 1em">
-[[file:index.org][↑ Series Index]] | [[file:post-11-counted-loops.org][← Part 11 - The Two Cells the Checker Never Saw]]
+[[file:index.org][↑ Series Index]] | [[file:post-11-counted-loops.org][← Part 11 - The Two Cells the Checker Never Saw]] | [[file:post-13-in-is-not-a-cursor.org][Part 13 - >IN Is Not a Cursor →]]
 #+html: </nav>
 
 * References

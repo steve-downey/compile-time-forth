@@ -1,0 +1,177 @@
+#+options: ':nil *:t -:t ::t <:t H:3 \n:nil ^:nil arch:headline author:t
+#+options: broken-links:nil c:nil creator:nil d:(not "LOGBOOK") date:t e:t
+#+options: email:nil f:t inline:t num:t p:nil pri:nil prop:nil stat:t tags:t
+#+options: tasks:t tex:t timestamp:t title:t toc:nil todo:t |:t
+#+options: html5-fancy:t
+#+bibliography: references.bib
+#+TITLE: Building a Compile-Time Forth in C++26: Part 13 - >IN Is Not a Cursor
+#+AUTHOR: Steve Downey
+#+DATE: 2026-07-25
+
+#+begin_abstract
+Part 12 argued that the outer interpreter I refused to build in Part 0 was
+never actually in conflict with anything this project needed, and left it at
+that --- no code changed, the tree was still there. Tonight there's something
+on the other side of the argument to check it against: =interpreter::forth_state=,
+which adds =SOURCE=, =>IN=, =BASE=, and =STATE= to the machine state from Part
+5, and =interpret=, the Forth-2012 section 3.4 outer loop itself, running
+over it. There's no ~:~ yet, so =STATE= never leaves 0 today. The one design
+choice I want to defend before anyone else sees it: =>IN= is a bare integer
+offset sitting in the open, not a cursor buried inside the scanner, and
+tonight that looks like more code for no visible benefit.
+#+end_abstract
+
+#+MACRO: TEASER_END
+{{TEASER_END}}
+#+html: <nav style="margin-bottom: 2em; border-bottom: 1px solid #ccc; padding-bottom: 1em">
+[[file:index.org][↑ Series Index]] | [[file:post-12-the-patch-stream-was-already-there.org][Part 12 - The Patch Stream Was Already There ←]]
+#+html: </nav>
+
+
+* The loop that runs
+
+Feed =interpret= the text ~1 2 + .~ and what comes back is a state with an
+empty data stack and the string ~"3 "~ sitting in its output buffer. That's
+the whole outer interpreter, doing the whole job an outer interpreter does:
+scan one word, decide what it is, act on it, and go around again.
+
+The deciding is three questions, asked in order, against a dictionary
+searched newest-first so a redefinition shadows whatever it replaces. Is the
+word a primitive already in the dictionary? Run it, through the same
+=apply_primitive= that has been there since the machine substrate landed
+--- unchanged, because an outer interpreter calling a primitive and a
+tree-walking pass calling the same primitive are, from the primitive's own
+point of view, indistinguishable callers. Is it a number in the current
+=BASE=? Push it. Neither? Diagnose it, at the position where the word itself
+starts, not the position of whatever ran before it.
+
+#+transclude: [[orgit-file:~/src/compile-time-forth/compile-time-forth::blog/part-13::src/smd/forth/interpreter/interp.hpp::aa1d6f83-9b3c-4e2a-8d5f-3c7b1e9a4f62]] :lines 2- :src cpp :end "aa1d6f83-9b3c-4e2a-8d5f-3c7b1e9a4f62 end"
+
+~\~ and ~( ... )~ comments never become tokens at all --- they're consumed as
+intertoken space by the same scan that skips ordinary blanks, so the loop
+above never has to know a comment happened. And every stack or data-space
+misuse a primitive can diagnose --- underflow, overflow, division by zero,
+an out-of-bounds ~@~ or ~!~ --- comes back out of =interpret= as the exact
+same error value =apply_primitive= would have produced calling it directly.
+Not re-diagnosed, not repositioned. The loop is a caller, and a boring one.
+
+There's no ~:~ in this entry, which means =STATE= exists on the state object
+and has never once been anything but 0. I'm not going to pretend that's
+more than it is: a field added because Part 5's =SOURCE=, =>IN=, =BASE=, and
+=STATE= were meant to arrive together, sitting there unused until something
+writes to it.
+
+* >IN, in the open
+
+Here's the design choice I want to defend before it has a payoff. =input_source=
+is Forth's =SOURCE= and =>IN= pair [cite:@forth2012], and =>IN= is stored as a
+plain ~int~ offset into the program text, not as a =parser::cursor=.
+
+#+transclude: [[orgit-file:~/src/compile-time-forth/compile-time-forth::blog/part-13::src/smd/forth/interpreter/input_source.hpp::6a8b2e4f-1c9d-4a3e-8f5b-2d7c9e1a4b6f]] :lines 2- :src cpp :end "6a8b2e4f-1c9d-4a3e-8f5b-2d7c9e1a4b6f end"
+
+A cursor would have been less code and would have done everything =interpret=
+itself asks of it tonight: =cursor_at_in= exists only to rebuild one, by
+replaying =bump= from the start of the text whenever a diagnostic needs a
+line and column, which is a worse way to get a cursor than just keeping one.
+Locally, this is the wrong call.
+
+The reason isn't local. =>IN= being an ordinary, readable, writable ~int~ on
+the state --- instead of a cursor's private bookkeeping, reachable only from
+inside whatever function currently holds it --- is what a user-defined
+parsing word is going to need: something that reads a run of input and
+advances =>IN= itself, through the identical interface the outer loop above
+uses, not through some separate mechanism the loop has and a Forth-level
+word can't reach. Nothing in this codebase is that word yet. I'm writing
+this down as an expectation I'm building toward, not a result I have. If it
+doesn't pan out, this is the entry that was wrong about why.
+
+* Numbers, per BASE
+
+~FF .~ prints ~255~ once =BASE= is set to 16. ~-A .~ prints ~-10~ at the same
+=BASE=, the sign handled the same way it always has been. Both are the old
+decimal-only number recognizer from several entries back, generalized:
+=is_number_token_in_base= and =token_to_cell_in_base= treat ~A~ through ~Z~ as
+digits 10 through 35, so any base from 2 to 36 falls out of the same two
+functions instead of needing one apiece.
+
+Letters work as digits without a separate lowercase branch because every
+token reaching this classifier has already been folded to uppercase by the
+scanner, a decision made for entirely different reasons a long way back.
+That's the kind of thing I like finding: two pieces of the lexical layer
+built for unrelated purposes turn out to compose for free.
+
+The old adversarial cases move over intact and stay adversarial: ~-1~ is a
+number, ~1-~ is a word, ~-~ is neither, all checked by =static_assert=
+against the original decimal-only functions at base 10 so the new
+classifier can't quietly disagree with the old one on the cases that made it
+worth writing carefully the first time.
+
+* A budget of its own
+
+=interpret= takes its own fuel argument, spent one unit per token, separate
+from the VM's budget and separate from the direct evaluator's. Neither of
+those two would ever notice a source that is nothing but an unbroken run of
+valid tokens --- none of them ever touching a stack hard enough to trip
+either budget, all of them perfectly legal, forever. Something has to
+notice that on its own, or the constant evaluator just runs past whatever
+its own limits are with no diagnosis pointing at why. Fuel has been
+unconditional in this project since the machine substrate arrived; today it
+just has one more place to live.
+
+* What's unchanged
+
+None of this replaced anything. The tree, the grammar, the elaborator, the
+direct evaluator --- all of it still builds, all of it still passes, 237
+tests deep. =interpreter= is a new front end growing in beside the old one,
+not instead of it, and =machine::apply_primitive= is the one piece of
+machinery both fronts run through unmodified. Whatever gets decided about
+the old pipeline is a decision for later entries, and this one isn't making
+it.
+
+* A wrapper I don't expect to keep
+
+One more thing worth being straight about, because it's a real seam and not
+a stylistic one. The state object above isn't =machine::forth_state= with
+three new fields on it. It's a new, wider type that wraps the old one as a
+private member and exposes it through a =machine()= accessor. I built it
+that way on purpose: =machine::forth_state= is still what the VM, the direct
+evaluator, and the one-shot API all consume today, and none of those three
+sit above the interpreter in this codebase's own layering --- they sit
+below it. Growing =machine::forth_state= in place to hold an input source
+would mean the bottom of the stack depending on a type defined above it,
+which nothing else here does, anywhere.
+
+That's a real reason, and it's also not where this ends up, and I'd rather
+say so tonight than let the wrapper quietly harden into the design. Every
+primitive runs through =apply_primitive=, and =apply_primitive= only ever
+sees the narrower =machine::forth_state= --- never the wrapper, never the
+input source riding along beside it. Which means, as written, no primitive
+can ever read or write =>IN=. And the entire argument two sections up for
+why =>IN= is a bare offset instead of a cursor was that a parsing word
+needs to reach it the same way this loop does. A parsing word that can't be
+a primitive can't keep that promise. =SOURCE=, =>IN=, =BASE=, and =STATE=
+belong down in the machine layer, not composed on top of it; they're wrapped
+tonight because the old pipeline still needs that layer to stay narrow, and
+they'll want folding down once it doesn't. I'm recording that here as debt
+I can already see, not as a decision I've made peace with.
+
+* What I haven't done
+
+No ~:~, no immediate words, no ~POSTPONE~. =STATE= is a field that has never
+held anything but 0. The old pipeline is untouched, on purpose, and I don't
+yet know what an abstract interpretation over emitted instructions --- if
+that's even the shape it takes --- will need to recover what the tree-pass
+checker could already see. Part 12 argued the refusal from Part 0 was never
+load-bearing. Tonight is the first entry with anything on the other side of
+that argument to point at, and what's on the other side is one loop,
+running one word at a time, in a language that still can't define a word of
+its own.
+
+
+#+html: <nav style="margin-top: 3em; border-top: 1px solid #ccc; padding-top: 1em">
+[[file:index.org][↑ Series Index]] | [[file:post-12-the-patch-stream-was-already-there.org][← Part 12 - The Patch Stream Was Already There]]
+#+html: </nav>
+
+* References
+
+#+print_bibliography:

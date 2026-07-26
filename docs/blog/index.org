@@ -100,6 +100,12 @@ back-patching it worried about was already the project's own target
 representation. No code changed this entry --- only the argument for what has
 to change next.
 
+** [[file:post-13-in-is-not-a-cursor.org][Part 13 — >IN Is Not a Cursor]]
+
+The Forth-2012 outer text interpreter, in interpret state only --- and a
+design choice that pays off nowhere in this entry: ~>IN~ is a bare offset
+sitting in the open, not a cursor buried inside the scanner.
+
 * Table of Contents
 
 #+toc: headlines 1

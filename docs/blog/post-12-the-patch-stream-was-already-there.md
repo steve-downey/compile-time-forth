@@ -1,4 +1,4 @@
-<div class="abstract" id="org4691d8e">
+<div class="abstract" id="org0f1e552">
 <p>
 Part 0 refused to build Forth's outer interpreter &#x2014; no <code>IMMEDIATE</code>, no
 <code>POSTPONE</code>, no <code>STATE</code> &#x2014; on the grounds that laying down control structure
@@ -122,7 +122,7 @@ Nothing in this entry changed a line of code that runs. The tree is still there 
 
 <nav style="margin-top: 3em; border-top: 1px solid #ccc; padding-top: 1em">
 
-[↑ Series Index](index.md) | [← Part 11 - The Two Cells the Checker Never Saw](post-11-counted-loops.md)
+[↑ Series Index](index.md) | [← Part 11 - The Two Cells the Checker Never Saw](post-11-counted-loops.md) | [Part 13 - >IN Is Not a Cursor →](post-13-in-is-not-a-cursor.md)
 
 </nav>
 
