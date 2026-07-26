@@ -10,14 +10,16 @@
 // condition is that the build fails (CMake's WILL_FAIL test property).
 //
 // ": UNCLOSED DUP *" never closes its colon definition with a terminating
-// ";", so smd::forth::reader::read_program diagnoses it as
-// "unterminated definition (no ;)" (read_program.hpp's own
-// parse_colon_def). compiled_forth<Source>'s own constexpr initializer
-// then calls .value() on that failed foundation::result, which is not a
-// core constant expression (std::get on the wrong std::variant
-// alternative throws), so this translation unit fails to compile right
-// here -- exactly the "hard compile error" contract forth.hpp's own
-// compiled_forth documents.
+// ";", so smd::forth::interpreter::interpret diagnoses it as "unterminated
+// colon definition" once its source runs out while STATE is still nonzero
+// (interp.hpp's own interpret loop; step F26 retargeted this test onto the
+// text interpreter after the R1 reader::read_program that used to diagnose
+// this same shape of malformed program was deleted -- see DIV-0014).
+// compiled_forth<Source>'s own constexpr initializer then calls .value() on
+// that failed foundation::result, which is not a core constant expression
+// (std::get on the wrong std::variant alternative throws), so this
+// translation unit fails to compile right here -- exactly the "hard compile
+// error" contract forth.hpp's own compiled_forth documents.
 #include <smd/forth/forth.hpp>
 
 namespace {

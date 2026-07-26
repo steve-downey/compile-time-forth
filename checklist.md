@@ -32,7 +32,7 @@
 - [x] Step F23: revision governance and pivot record
 - [x] Step F24: interpreter, interpret state only
 - [x] Step F25: colon compiler and session image
-- [ ] Step F26: the cut
+- [x] Step F26: the cut
 - [ ] Step F27: immediacy and control flow
 - [ ] Step F28: execution tokens and defining words
 - [ ] Step F29: parsing words and strings

@@ -1,0 +1,2214 @@
+#+OPTIONS: broken-links:nil c:nil creator:nil d:(not "LOGBOOK") date:t e:t
+#+OPTIONS: ':nil *:t -:t ::t <:t H:4 \n:nil ^:nil arch:headline author:t
+#+TITLE: Compiler Architecture History: The Grammar Era (R1)
+#+SUBTITLE: Phases 2-5 of docs/compiler_architecture.org, retired at step F26
+#+AUTHOR: Agent
+#+LANGUAGE: en
+#+STARTUP: showall
+
+* Archival note
+
+This document is a frozen, one-time snapshot.
+It is not on any agent's read path (=AGENTS.md= Tier 3 names only =docs/compiler_architecture.org=, by anchor); it exists so the R1 pipeline's own design record survives its deletion, for anyone doing archaeology later.
+
+Step F26 ("the cut", =docs/forth-plan-2.md=) deleted the R1 pipeline this document describes: =reader/read_program.hpp=, =reader/syntax_tree.hpp=, the =elaborator/= directory in full, =machine/eval_direct.hpp=, and =machine/codegen.hpp=.
+That pipeline was superseded as the project's front end by DIV-0011's true-Forth pivot (=docs/divergences/DIV-0011-true-forth-pivot.md=) well before its deletion: steps F24/F25 already replaced it with the Forth-2012 text interpreter (D13) as the live architecture, and this pipeline's own code sat unused by anything new from F24 onward, kept only so its own tests kept passing until F26 removed it outright.
+
+What follows is Phases 2 through 5 of =docs/compiler_architecture.org=, exactly as they read immediately before F26's deletion, with every =#+transclude:= directive hand-expanded to a static =#+begin_src cpp= block (one-time expansion, authorized for this archival snapshot only — the living document never does this; it transcludes from real, currently-building source).
+Two of Phase 5's eight transclusions (the instruction-set enum/=compiled_program= shape, and the VM's =run=/=run_from=) are from files that are *not* deleted (=instruction.hpp=, =vm.hpp= — D16: "the instruction set and VM carry"); their current, live-transcluded coverage moved to a new phase in the living document rather than staying only here.
+Everything else below describes code that no longer exists in this repository at any later commit.
+
+* Phase 2: Applicative Parser Combinators and the Forth Grammar
+
+DRAFT — pending author revision.
+
+Recursive descent, hand-rolled as a tree of =if=/=else=/=while=, is error-prone and hard to compose.
+Instead the front end is built from parser combinators: small composable objects that snap together into a grammar the way Lego bricks snap together into a model.
+Because C++26 =constexpr= evaluation cannot easily juggle capturing lambdas converted to function pointers, parsers are represented as ordinary callable objects (functors with =operator()=), registered against the project's =functor=/=applicative=/=alternative= typeclasses (imported in step F3, exercised for real the first time in step F4).
+
+#+begin_src cpp
+/// A type-erased callable wrapper for a single-pass parser.
+///
+/// @c parser<F> wraps a callable @p F with signature
+/// @c parse_result<T>(cursor). It satisfies @ref parser_like so it
+/// composes with all the combinator functions in this header.
+///
+/// @tparam F Callable type; deduced via the deduction guide.
+template <class F>
+class parser {
+  public:
+    /// Constructs a parser wrapping @p f.
+    constexpr explicit parser(F f) : f_{f} {}
+
+    /// Runs the parser starting at @p cur.
+    constexpr auto operator()(cursor cur) const { return f_(cur); }
+
+  private:
+    F f_;
+};
+
+/// Deduction guide: @c parser(f) deduces @c parser<F>.
+template <class F>
+parser(F) -> parser<F>;
+#+end_src
+
+Alternatives compose with an ordered-choice operator: try the first parser, and only fall back to the second if the first failed without having consumed any input, so a parser that has committed to a partial match is never silently backtracked out of.
+
+#+begin_src cpp
+/// Ordered-choice combinator: tries @p pa; if it fails *at the same position*
+/// it started, tries @p pb.
+///
+/// If @p pa consumes input before failing the error is propagated without
+/// trying @p pb, which prevents accidental backtracking into already-consumed
+/// tokens.
+///
+/// @tparam PA First alternative parser.
+/// @tparam PB Second alternative parser.
+template <parser_like PA, parser_like PB>
+[[nodiscard]] constexpr auto operator|(PA pa, PB pb) {
+    return parser{[pa, pb](cursor cur) {
+        auto start = cur.position().offset;
+        auto ra = pa(cur);
+        if (ra.has_value())
+            return ra;
+        if (ra.error().where.offset != start)
+            return ra;
+        return pb(cur);
+    }};
+}
+#+end_src
+
+Step F7's grammar (=src/smd/forth/reader/read_program.hpp=) is the production parser built from this combinator library, per the project's decision D6 that the combinator library is the parser, not merely a tool for scanning atoms.
+Every token-level production — names, numbers, keywords, the stack-effect comment capture — is composed directly from the F4/F5 free functions above and from Phase 1's lexical layer.
+The grammar's *nested* productions are the one place this project accepts a documented exception rather than a silent hand-rolled fallback: an =IF= that can itself contain another =IF= has no finite combinator type to compose it from (the combinator's own C++ type would have to mention itself), and building syntax-tree nodes needs a mutable arena threaded alongside the cursor, which the combinator calling convention (=cursor -> parse_result<T>=) has no slot for.
+DIV-0005 records this in full; the entry point below still returns a =foundation::result=, exactly like every combinator above it, and every recursive production is bounded by an explicit =MaxDepth= template parameter rather than being allowed to recurse without limit.
+
+#+begin_src cpp
+/// Parses a complete Forth program (`item* eof`) into a @ref syntax_tree.
+///
+/// @tparam MaxNodes Arena capacity shared by every handle in the tree.
+/// @tparam MaxBody  Maximum number of forms in any one node's body, and of
+///                  top-level items in the program.
+/// @tparam MaxName  Maximum name/word length.
+/// @tparam MaxDepth Maximum nesting depth of control structures (IF/BEGIN/DO
+///                  nested inside one another); bounds the recursive-descent
+///                  region's own recursion (DIV-0005).
+/// @param  source   The complete program text.
+/// @return The parsed @ref syntax_tree, or the first @ref
+///         foundation::parse_error encountered, carrying its source
+///         position.
+template <int MaxNodes = 1024, int MaxBody = 64, int MaxName = 32,
+          int MaxDepth = 32>
+constexpr auto read_program(std::string_view source)
+    -> foundation::result<syntax_tree<MaxNodes, MaxBody, MaxName>> {
+    syntax_tree<MaxNodes, MaxBody, MaxName> tree{};
+    parser::cursor cur{source};
+    for (;;) {
+        if (skip_forth_space(cur).empty()) {
+            return tree;
+        }
+        auto scanned = scan_token<MaxName>(cur);
+        if (!scanned.has_value()) {
+            return scanned.error();
+        }
+        auto const &tok = scanned.value().value;
+        auto item = parse_item<MaxNodes, MaxBody, MaxName>(
+            tree.arena, tok.text, tok.pos, scanned.value().rest, MaxDepth);
+        if (!item.has_value()) {
+            return item.error();
+        }
+        if (tree.program.size() >= MaxBody) {
+            return foundation::parse_error{
+                tok.pos, "program exceeds top-level capacity"};
+        }
+        tree.program.push_back(item.value().handle);
+        cur = item.value().rest;
+    }
+}
+#+end_src
+
+* Phase 3: The Syntax Tree
+
+The syntax tree is the parser's output: a direct, structural record of what the source text says, before anything has been resolved against the dictionary or checked for stack-effect soundness.
+Every tree in this compiler — the syntax tree, the elaborated core, and the compiled instruction program — is a flat arena of trivially destructible nodes addressed by integer =arena_box= handles (=docs/forth-plan.md= D3); there is no heap-backed =fix=/=Box= recursion anywhere in the compiled pipeline.
+The syntax tree's closed node type, =syn_node=, is a =std::variant= over every syntax form Forth needs: literals, bare words, colon definitions, the three control-flow shapes (=IF=, =BEGIN ... UNTIL=, =BEGIN ... WHILE ... REPEAT=, =DO ... LOOP=), and the four declaration forms (=VARIABLE=, =CONSTANT=, =CREATE=, =' NAME= tick).
+=syn_node= is forward-declared before it is defined, which is what lets its own composite alternatives (a colon definition's body, an =IF='s two branches, and so on) hold handles to sibling nodes of the very type being defined — an =arena_box<T, MaxNodes>= handle only ever stores an integer, so it never needs =T= to be complete, and the recursion closes without reaching for =fix= at all.
+
+#+begin_src cpp
+/// A literal integer pushed on the stack, e.g. `42`.
+struct syn_literal {
+    std::int64_t cell{};          ///< The literal value.
+    foundation::source_pos pos{}; ///< Where the literal appears in source.
+};
+
+/// A bare word reference, e.g. `DUP` or `+`.
+///
+/// Resolution against the dictionary happens in elaboration (F11), not here;
+/// at this stage a word is just its (already case-folded) spelling.
+template <int MaxName = 32>
+struct syn_word {
+    syn_name<MaxName> name{};     ///< Case-folded word name.
+    foundation::source_pos pos{}; ///< Where the word appears in source.
+};
+#+end_src
+
+The three control-flow node kinds each carry one or two bodies — sequences of child-node handles — and the colon-definition node additionally carries the raw span of a stack-effect comment for step F12 to re-slice out of the original source text later, rather than duplicating that text into the tree now.
+
+#+begin_src cpp
+/// A colon definition: `: NAME ... ;`, optionally preceded by a `( ... )`
+/// stack-effect comment immediately after the name.
+///
+/// @tparam MaxNodes Arena capacity shared by every handle in the tree.
+/// @tparam MaxBody  Maximum number of body forms.
+/// @tparam MaxName  Maximum name length.
+template <int MaxNodes = 1024, int MaxBody = 64, int MaxName = 32>
+struct syn_colon_def {
+    syn_name<MaxName> name{}; ///< The defined word's name.
+    /// The raw `( ... )` stack-effect comment span, or an empty span
+    /// (`first == last`, the default) when none was written.
+    /// F7's grammar captures the span; F12's stack-effect checker re-slices
+    /// the original source text through it when it needs the declared
+    /// effect text (e.g. `( a b -- c )`).
+    foundation::source_span declared_effect{};
+    syn_body<MaxNodes, MaxBody, MaxName> body{}; ///< The definition's body.
+    foundation::source_pos pos{}; ///< Where the `:` token appears.
+};
+
+/// An `IF ... [ELSE ...] THEN` conditional.
+///
+/// `else_body` is empty when there is no `ELSE` clause.
+template <int MaxNodes = 1024, int MaxBody = 64, int MaxName = 32>
+struct syn_if {
+    syn_body<MaxNodes, MaxBody, MaxName> then_body{}; ///< `IF` ... `[ELSE]`.
+    syn_body<MaxNodes, MaxBody, MaxName> else_body{}; ///< `ELSE` ... `THEN`.
+    foundation::source_pos pos{}; ///< Where the `IF` token appears.
+};
+
+/// A `BEGIN ... UNTIL` post-tested loop.
+template <int MaxNodes = 1024, int MaxBody = 64, int MaxName = 32>
+struct syn_begin_until {
+    syn_body<MaxNodes, MaxBody, MaxName> body{}; ///< `BEGIN` ... `UNTIL`.
+    foundation::source_pos pos{}; ///< Where the `BEGIN` token appears.
+};
+
+/// A `BEGIN ... WHILE ... REPEAT` pre-tested loop.
+///
+/// `condition` runs first on every iteration; `body` runs only while
+/// `condition` left a true flag, then control returns to `condition`.
+template <int MaxNodes = 1024, int MaxBody = 64, int MaxName = 32>
+struct syn_begin_while {
+    syn_body<MaxNodes, MaxBody, MaxName> condition{}; ///< `BEGIN` ... `WHILE`.
+    syn_body<MaxNodes, MaxBody, MaxName> body{};      ///< `WHILE` ... `REPEAT`.
+    foundation::source_pos pos{}; ///< Where the `BEGIN` token appears.
+};
+
+/// A `DO ... LOOP` or `DO ... +LOOP` counted loop.
+template <int MaxNodes = 1024, int MaxBody = 64, int MaxName = 32>
+struct syn_do_loop {
+    syn_body<MaxNodes, MaxBody, MaxName> body{}; ///< `DO` ... `LOOP`/`+LOOP`.
+    bool is_plus_loop{};          ///< True for `+LOOP`, false for plain `LOOP`.
+    foundation::source_pos pos{}; ///< Where the `DO` token appears.
+};
+#+end_src
+
+The closed node type itself ties every kind above into a single variant that a =foundation::tree_arena= can store flat, with every capacity (arena size, body length, name length) left as a template parameter rather than a hardcoded constant.
+
+#+begin_src cpp
+/// The closed node type for the syntax tree.
+///
+/// One variant over every node kind, stored flat in a
+/// @ref foundation::tree_arena and addressed by @ref syn_box handles (D3) --
+/// there is no heap-backed `fix`/`Box` recursion anywhere in this type.
+///
+/// @tparam MaxNodes Arena capacity shared by every handle in the tree.
+/// @tparam MaxBody  Maximum number of forms in any one node's body.
+/// @tparam MaxName  Maximum length of any name stored in the tree.
+template <int MaxNodes, int MaxBody, int MaxName>
+struct syn_node {
+    std::variant<syn_literal, syn_word<MaxName>,
+                 syn_colon_def<MaxNodes, MaxBody, MaxName>,
+                 syn_if<MaxNodes, MaxBody, MaxName>,
+                 syn_begin_until<MaxNodes, MaxBody, MaxName>,
+                 syn_begin_while<MaxNodes, MaxBody, MaxName>,
+                 syn_do_loop<MaxNodes, MaxBody, MaxName>, syn_variable<MaxName>,
+                 syn_constant<MaxName>, syn_create<MaxName>, syn_tick<MaxName>>
+        value{};
+};
+#+end_src
+
+* Phase 4: Elaboration (Resolution and Stack-Effect Checking)
+
+DRAFT — pending author revision.
+
+Elaboration is compiler jargon for "figuring out what the code actually means."
+Where the syntax tree only records what the text says structurally, the elaborated core additionally resolves every word reference against the dictionary and checks that every definition's stack effect is sound before anything is allowed to run (step F12).
+Step F11 (this section) owns resolution: it walks the syntax tree in program order, threading a =machine::dictionary= forward exactly as a traditional Forth cross-compiler would, and produces a second flat arena — the elaborated core — in the same trivially destructible, =arena_box=-addressed style as the syntax tree (D3).
+Every syntax-tree word reference (a bare word or a =' NAME= tick) becomes one of a small number of already-resolved node kinds: a direct primitive invocation, a call to another definition by its dictionary index, a variable's address, a constant's value, or an execution token — there is no dictionary lookup left to do once elaboration finishes.
+
+#+begin_src cpp
+/// Pushes a literal integer, e.g. the elaborated form of a `syn_literal`.
+struct core_push {
+    machine::cell value{};        ///< The literal value.
+    foundation::source_pos pos{}; ///< Where the literal appeared in source.
+};
+
+/// Invokes a primitive opcode directly -- no dictionary indirection needed at
+/// run time, since the 47 primitives never change identity once elaborated.
+struct core_prim {
+    machine::primitive op{};      ///< Which primitive to run.
+    foundation::source_pos pos{}; ///< Where the reference appeared in source.
+};
+
+/// Calls a colon-defined word by dictionary index.
+///
+/// @ref word_index is resolved once, at elaboration time, against whatever
+/// the dictionary looked like at the calling word's own position (static
+/// binding); a later redefinition of the same name does not retroactively
+/// change an already-elaborated `core_call`. `RECURSE` resolves to the
+/// definition currently being compiled, using this same node kind.
+struct core_call {
+    int word_index = -1;          ///< Index into the dictionary.
+    foundation::source_pos pos{}; ///< Where the reference appeared in source.
+};
+
+/// Pushes the data-space address of a `VARIABLE`- or `CREATE`-defined word.
+struct core_var {
+    machine::addr address{};      ///< The variable's data-space address.
+    foundation::source_pos pos{}; ///< Where the reference appeared in source.
+};
+
+/// Pushes a `CONSTANT`'s fixed value, resolved once at elaboration time.
+struct core_const {
+    machine::cell value{};        ///< The constant's value.
+    foundation::source_pos pos{}; ///< Where the reference appeared in source.
+};
+
+/// Pushes the execution token (dictionary index) of a word, e.g. the
+/// elaborated form of `' NAME`. Unlike @ref core_call, this resolves to any
+/// binding kind -- primitive, colon word, variable, constant, or foreign --
+/// since `EXECUTE` (F18a) is what later decides what to do with the token.
+struct core_push_xt {
+    int word_index = -1;          ///< Index into the dictionary.
+    foundation::source_pos pos{}; ///< Where the tick appeared in source.
+};
+
+/// Returns from the definition currently executing -- the elaborated form of
+/// a bare `EXIT` word inside a colon-definition body.
+struct core_exit {
+    foundation::source_pos pos{}; ///< Where the `EXIT` appeared in source.
+};
+
+/// Pushes a counted-loop index onto the data stack -- the elaborated form of
+/// `I` (@ref level 0, the innermost enclosing loop) or `J` (@ref level 1, the
+/// next loop out) (F17). Recognized in `resolve_word` alongside
+/// `EXIT`/`RECURSE`, so it is never a dictionary entry or a `machine::
+/// primitive`; the index it reads lives on the return stack (the loop
+/// parameters `DO` established), not in this node.
+struct core_loop_index {
+    int level{};                  ///< 0 for `I`, 1 for `J`.
+    foundation::source_pos pos{}; ///< Where `I`/`J` appeared in source.
+};
+
+/// One-shot forward transfer to the innermost enclosing counted loop's exit
+/// -- the elaborated form of `LEAVE` (F17). Discards that loop's parameters
+/// from the return stack and continues just past its `LOOP`/`+LOOP`. Like
+/// `core_exit`, this is dynamic-extent, one-shot nonlocal control (D11),
+/// carried through the direct evaluator's own result channel and, in the VM,
+/// a back-patched forward branch -- never a C++ exception.
+struct core_leave {
+    foundation::source_pos pos{}; ///< Where `LEAVE` appeared in source.
+};
+
+/// Discards the innermost enclosing counted loop's parameters from the return
+/// stack without branching -- the elaborated form of `UNLOOP` (F17), used to
+/// leave the return stack consistent before an `EXIT` that returns from a
+/// definition out of the middle of a `DO` loop.
+struct core_unloop {
+    foundation::source_pos pos{}; ///< Where `UNLOOP` appeared in source.
+};
+#+end_src
+
+The three control-flow node kinds mirror the syntax tree's =IF=/=BEGIN...UNTIL=/=BEGIN...WHILE...REPEAT=/=DO...LOOP= shapes one for one, and =core_seq= is the one new shape: it is what a colon definition's elaborated body becomes, and it is the node a =colon_word= dictionary entry's =core_id= actually points at.
+
+#+begin_src cpp
+/// An elaborated `IF ... [ELSE ...] THEN` conditional.
+///
+/// `else_body` is empty when there was no `ELSE` clause.
+template <int MaxNodes = 1024, int MaxBody = 64>
+struct core_if {
+    core_body<MaxNodes, MaxBody> then_body{}; ///< `IF` ... `[ELSE]`.
+    core_body<MaxNodes, MaxBody> else_body{}; ///< `ELSE` ... `THEN`.
+    foundation::source_pos pos{}; ///< Where the `IF` token appeared.
+};
+
+/// An elaborated `BEGIN ... UNTIL` post-tested loop.
+template <int MaxNodes = 1024, int MaxBody = 64>
+struct core_begin_until {
+    core_body<MaxNodes, MaxBody> body{}; ///< `BEGIN` ... `UNTIL`.
+    foundation::source_pos pos{};        ///< Where the `BEGIN` token appeared.
+};
+
+/// An elaborated `BEGIN ... WHILE ... REPEAT` pre-tested loop.
+template <int MaxNodes = 1024, int MaxBody = 64>
+struct core_begin_while {
+    core_body<MaxNodes, MaxBody> condition{}; ///< `BEGIN` ... `WHILE`.
+    core_body<MaxNodes, MaxBody> body{};      ///< `WHILE` ... `REPEAT`.
+    foundation::source_pos pos{}; ///< Where the `BEGIN` token appeared.
+};
+
+/// An elaborated `DO ... LOOP` or `DO ... +LOOP` counted loop.
+template <int MaxNodes = 1024, int MaxBody = 64>
+struct core_do_loop {
+    core_body<MaxNodes, MaxBody> body{}; ///< `DO` ... `LOOP`/`+LOOP`.
+    bool is_plus_loop{};          ///< True for `+LOOP`, false for plain `LOOP`.
+    foundation::source_pos pos{}; ///< Where the `DO` token appeared.
+};
+
+/// A sequence of elaborated items -- what a colon definition's body becomes.
+///
+/// `machine::colon_word::core_id` is the arena index of one of these: the
+/// only way to give a bare `int` handle (F9 could not name a typed handle to
+/// a type it did not know yet) somewhere to point at.
+template <int MaxNodes = 1024, int MaxBody = 64>
+struct core_seq {
+    core_body<MaxNodes, MaxBody> items{}; ///< The sequence's elaborated items.
+    foundation::source_pos pos{}; ///< Where the sequence's first form began.
+};
+#+end_src
+
+The closed node type ties every kind into one variant, exactly like the syntax tree's own =syn_node=, and for the same reason: an =arena_box= handle only ever stores an integer, so the composite kinds above can hold handles to sibling nodes of the very type being defined without ever reaching for =fix=.
+
+#+begin_src cpp
+/// The closed node type for the elaborated core.
+///
+/// One variant over every node kind, stored flat in a
+/// @ref foundation::tree_arena and addressed by @ref core_box handles (D3) --
+/// there is no heap-backed `fix`/`Box` recursion anywhere in this type,
+/// exactly like @ref smd::forth::reader::syn_node.
+///
+/// @tparam MaxNodes Arena capacity shared by every handle in the tree.
+/// @tparam MaxBody  Maximum number of forms in any one node's body.
+template <int MaxNodes, int MaxBody>
+struct core_node {
+    std::variant<core_push, core_prim, core_call, core_var, core_const,
+                 core_push_xt, core_exit, core_loop_index, core_leave,
+                 core_unloop, core_if<MaxNodes, MaxBody>,
+                 core_begin_until<MaxNodes, MaxBody>,
+                 core_begin_while<MaxNodes, MaxBody>,
+                 core_do_loop<MaxNodes, MaxBody>, core_seq<MaxNodes, MaxBody>>
+        value{};
+};
+#+end_src
+
+Elaboration threads a dictionary forward and mutates it as it goes: a colon definition's body is resolved against whatever the dictionary looks like *at that definition's own position in the source*, never against the whole program at once.
+This is what makes redefinition behave the way a traditional (cross-compiling) Forth expects: defining a word a second time does not retroactively change any earlier definition that already called the old one.
+=machine::dictionary= never overwrites or removes a shadowed entry — it only ever appends — so an earlier colon definition's already-elaborated =core_call= keeps pointing at the old entry's index by construction, while later code that looks the name up again reaches the new one first (newest-first lookup).
+Elaboration does not treat redefinition as an error; it records it as a warning in the =compiled_unit='s own collected-diagnostics channel and keeps going, matching the traditional Forth expectation that redefining a word is routine, not exceptional.
+
+#+begin_src cpp
+/// Elaborates a complete @ref reader::syntax_tree (F7's output) into a
+/// @ref compiled_unit, per D9.
+///
+/// Walks `tree.program` in order. Colon definitions extend the dictionary as
+/// encountered (@ref elaborate_colon_def); `VARIABLE`/`CREATE` allocate from
+/// the data space (@ref elaborate_variable / @ref elaborate_create);
+/// `CONSTANT` consumes the immediately preceding top-level literal (@ref
+/// elaborate_constant) -- a `CONSTANT` with no immediately preceding literal
+/// is a diagnosed error, not silently ignored. Every other top-level form is
+/// an ordinary body-item, elaborated exactly as it would be inside a colon
+/// definition's body, except with `self_index = -1` (so a bare `EXIT` or
+/// `RECURSE` at the top level is diagnosed rather than accepted).
+///
+/// The dictionary starts pre-populated with every F8 primitive (@ref
+/// machine::default_dictionary), so ordinary arithmetic/stack words resolve
+/// to @ref core_prim from the first definition onward.
+///
+/// @p source is the exact program text @p tree was parsed from. F11 did not
+/// take this parameter (it never needed to read a declared stack-effect
+/// comment's text, only its span); F12 adds it so @ref elaborate_colon_def
+/// can re-slice a colon definition's declared effect for @ref
+/// analyze_colon_effect -- this is a real, additive signature change to
+/// this entry point, not a new overload.
+///
+/// @tparam MaxNodes    Elaborated-core arena capacity.
+/// @tparam MaxBody     Maximum number of forms in any one node's body, and of
+///                     top-level items in the program.
+/// @tparam MaxName     Maximum dictionary-entry name length; reused from
+///                     @p tree's own @c MaxName.
+/// @tparam MaxWords    Maximum number of dictionary entries.
+/// @tparam MaxData     Maximum number of data-space cells.
+/// @tparam MaxWarnings Maximum number of collected redefinition warnings.
+template <int MaxNodes = 1024, int MaxBody = 64, int MaxName = 32,
+          int MaxWords = 256, int MaxData = 1024, int MaxWarnings = 64>
+constexpr auto
+elaborate(reader::syntax_tree<MaxNodes, MaxBody, MaxName> const &tree,
+          std::string_view source)
+    -> foundation::result<compiled_unit<MaxNodes, MaxBody, MaxName, MaxWords,
+                                        MaxData, MaxWarnings>> {
+    compiled_unit<MaxNodes, MaxBody, MaxName, MaxWords, MaxData, MaxWarnings>
+        unit{};
+    unit.dictionary = machine::default_dictionary<MaxWords, MaxName>();
+
+    int i = 0;
+    while (i < tree.program.size()) {
+        auto const &node = tree.arena.get(tree.program[i]);
+
+        if (auto const *cd =
+                std::get_if<reader::syn_colon_def<MaxNodes, MaxBody, MaxName>>(
+                    &node.value)) {
+            auto status = elaborate_colon_def(tree, *cd, unit, source);
+            if (!status.has_value()) {
+                return status.error();
+            }
+            ++i;
+            continue;
+        }
+        if (auto const *v =
+                std::get_if<reader::syn_variable<MaxName>>(&node.value)) {
+            auto status = elaborate_variable(*v, unit);
+            if (!status.has_value()) {
+                return status.error();
+            }
+            ++i;
+            continue;
+        }
+        if (auto const *c =
+                std::get_if<reader::syn_create<MaxName>>(&node.value)) {
+            auto status = elaborate_create(*c, unit);
+            if (!status.has_value()) {
+                return status.error();
+            }
+            ++i;
+            continue;
+        }
+        if (auto const *cn =
+                std::get_if<reader::syn_constant<MaxName>>(&node.value)) {
+            return foundation::parse_error{
+                cn->pos, "CONSTANT requires a preceding integer literal"};
+        }
+        if (auto const *lit = std::get_if<reader::syn_literal>(&node.value)) {
+            if (i + 1 < tree.program.size()) {
+                auto const &next_node = tree.arena.get(tree.program[i + 1]);
+                if (auto const *cn = std::get_if<reader::syn_constant<MaxName>>(
+                        &next_node.value)) {
+                    auto status = elaborate_constant(*cn, lit->cell, unit);
+                    if (!status.has_value()) {
+                        return status.error();
+                    }
+                    i += 2;
+                    continue;
+                }
+            }
+            // Falls through: an ordinary top-level literal, not consumed by
+            // a following CONSTANT.
+        }
+
+        auto item = elaborate_body_item(tree, node, unit, /*self_index=*/-1);
+        if (!item.has_value()) {
+            return item.error();
+        }
+        if (unit.program.size() >= MaxBody) {
+            return foundation::parse_error{
+                syn_node_pos(node), "top-level body exceeds MaxBody capacity"};
+        }
+        unit.program.push_back(item.value());
+        ++i;
+    }
+    return unit;
+}
+#+end_src
+
+Step F12 (this section) owns stack-effect checking: it runs as part of =elaborate= itself, per D9, so a program that fails analysis fails elaboration — there is no separate "type-check" pass a caller can skip.
+The checker is an abstract interpretation over the elaborated core, computed once per colon definition, that tracks two independent quantities: a data-stack effect and a return-stack depth delta.
+The data-stack side uses a small lattice: a =known= value is a concrete =(inputs, outputs)= pair, where =inputs= doubles as the definition's minimum entry depth and =outputs= is the depth left behind measured from that same entry point; the lattice's top value, =unknown=, suppresses further depth-based checking downstream rather than erroring, and is produced only by input-dependent primitives (=?DUP= today; whatever primitive =EXECUTE= becomes once step F18a adds it).
+The return-stack side is tracked as a plain running integer, not a lattice, because none of =>R=/=R>=/=R@= are ever input-dependent — only the data-stack side can go =unknown=.
+
+#+begin_src cpp
+/// The stack-effect abstract-interpretation lattice.
+///
+/// A @ref known value is a concrete `(inputs, outputs)` pair: @ref inputs is
+/// the minimum stack depth required at entry (the "minimum entry depth" the
+/// plan asks for -- there is no separate field for it, because it *is* this
+/// number), and @ref outputs is the depth left behind, measured from that
+/// same entry point. An @c unknown value is the lattice's top element:
+/// produced by input-dependent primitives (`?DUP`) or anything reached only
+/// through `EXECUTE` (not yet a primitive as of F12 -- F18a is what adds
+/// one; @ref primitive_data_effect documents where its table entry belongs
+/// once it exists). Once a computation touches `unknown`, every downstream
+/// combination stays `unknown` (it poisons forward through @ref
+/// combine_sequential and @ref combine_branch) and depth-based checking is
+/// *suppressed* for it, not diagnosed as an error -- this is what "suppresses
+/// checking downstream rather than erroring" means concretely.
+// b238e219-4650-4e62-96ff-95b16e1d08e3
+struct effect {
+    bool known = true; ///< False means "unknown" (the lattice's top value).
+    int inputs = 0;    ///< Cells required present at entry. Only meaningful
+                       ///< when @ref known is true.
+    int outputs = 0;   ///< Cells left behind, from the same entry point.
+                       ///< Only meaningful when @ref known is true.
+
+    /// The net change in stack depth (`outputs - inputs`). Only meaningful
+    /// when @ref known is true -- callers must check that first.
+    [[nodiscard]] constexpr auto net() const -> int { return outputs - inputs; }
+
+    friend constexpr auto operator==(effect const &, effect const &)
+        -> bool = default;
+};
+// b238e219-4650-4e62-96ff-95b16e1d08e3 end
+
+/// The lattice's top value: an input-dependent or otherwise not-statically-
+/// determinable effect.
+inline constexpr effect unknown_effect{.known = false};
+
+/// The empty/identity effect: consumes nothing, produces nothing. This is
+/// the identity element for @ref combine_sequential (composing with it on
+/// either side returns the other operand unchanged) -- it is also what a
+/// missing `ELSE` clause and an empty loop body mean.
+inline constexpr effect identity_effect{
+    .known = true, .inputs = 0, .outputs = 0};
+
+/// Builds a known effect.
+constexpr auto known(int inputs, int outputs) -> effect {
+    return effect{.known = true, .inputs = inputs, .outputs = outputs};
+}
+
+/// Sequential composition: @p first runs, then @p second runs immediately
+/// after it, both starting from the same conceptual entry point.
+///
+/// Standard "stack level" derivation: to satisfy both @p first's own input
+/// requirement and whatever @p second needs once @p first has run, the
+/// combined entry requirement is @p first's own input requirement, plus
+/// however much more @p second needs beyond what @p first's own output left
+/// behind. The combined output follows from the combined input plus the sum
+/// of both operands' net changes.
+///
+/// Returns @ref unknown_effect if either operand is unknown (the lattice's
+/// top value poisons forward through composition).
+constexpr auto combine_sequential(effect first, effect second) -> effect {
+    if (!first.known || !second.known) {
+        return unknown_effect;
+    }
+    int const shortfall = second.inputs - first.outputs;
+    int const extra = shortfall > 0 ? shortfall : 0;
+    int const combined_inputs = first.inputs + extra;
+    int const combined_outputs = combined_inputs + first.net() + second.net();
+    return known(combined_inputs, combined_outputs);
+}
+
+/// Combines two already-verified-compatible `IF`/`ELSE` arms (@p then_eff,
+/// @p else_eff) into the `IF` node's own contributed effect.
+///
+/// Precondition (checked by the caller, not here): both arms are @ref known
+/// and have the same @ref effect::net -- see the "IF/ELSE arms" diagnosis
+/// below for why equal *net effect* (the depth delta), not the full
+/// `(inputs, outputs)` pair, is what must match. `NEGATE` (1,1) and an empty
+/// `ELSE`-less arm (0,0) have the same net effect (0) despite different
+/// shapes, and Forth-2012 idioms like `: ABS DUP 0< IF NEGATE THEN ;`
+/// require exactly this to type-check.
+constexpr auto combine_branch(effect then_eff, effect else_eff) -> effect {
+    int const entry =
+        then_eff.inputs > else_eff.inputs ? then_eff.inputs : else_eff.inputs;
+    return known(entry + 1, entry + then_eff.net());
+}
+#+end_src
+
+Composing two effects in sequence follows the standard "stack level" derivation: the combined entry requirement is whatever the first effect needs, plus however much more the second effect needs once the first has already produced its share; combining two verified-compatible =IF=/=ELSE= arms into the =IF= node's own contributed effect works the same way, using whichever arm demands more at entry.
+A subtlety worth calling out explicitly: =IF=/=ELSE= arms are compared by their *net* effect (the depth delta, =outputs - inputs=) rather than by the full pair, because two arms can have different shapes and still be safe to run interchangeably — =NEGATE= (1,1) and an implicit empty =ELSE= (0,0) both have net effect zero despite different shapes, and the canonical Forth-2012 idiom =: ABS DUP 0< IF NEGATE THEN ;= depends on exactly this reading to type-check at all.
+The main walk (=analyze_body=) recurses into every control structure's nested bodies, diagnosing four of the plan's five error shapes as it goes: unequal =IF=/=ELSE= net effect, a loop body (=DO=, =BEGIN...UNTIL=, or =BEGIN...WHILE...REPEAT=) with the wrong net effect, and a return-stack depth that fails to return to zero across any single control-structure body.
+=RECURSE= poses a real fixed-point problem — the callee's effect is exactly the thing being computed — and this step does not attempt to solve it: a definition's declared =( ... )= effect comment, when present, is trusted as the assumed effect of its own =RECURSE= call sites; when absent, a self-call is simply treated as =unknown=, exactly like =?DUP=.
+=EXIT= is handled conservatively rather than with full flow sensitivity: once encountered while folding a body's items, remaining items in that same body are unreachable and are not visited at all, which is sound for an unconditional trailing =EXIT= but does not attempt to reconcile an early-return depth against the definition's eventual fall-through depth when =EXIT= sits inside a conditional (see DIV-0006).
+
+#+begin_src cpp
+/// Walks @p items (one `core_body`), computing its @ref body_analysis and
+/// diagnosing diagnoses 1-3 (`IF`/`ELSE` arm mismatch, nonzero-net-effect
+/// loop bodies, return-stack imbalance across a control boundary) wherever
+/// they occur, at any nesting depth.
+///
+/// @p self_index is the dictionary index of the colon definition currently
+/// being analyzed (so a `RECURSE`-produced `core_call` back to it can be
+/// recognized); @p self_effect is what that self-call should be assumed to
+/// have -- the definition's own declared effect if it wrote one, else @ref
+/// unknown_effect (the plan's own open "RECURSE fixed-point" question,
+/// resolved this way: F12 does not attempt to fix-point-solve a
+/// self-referential effect, it either trusts a human-supplied declaration or
+/// falls back to the same `unknown`-suppresses-checking treatment as
+/// `?DUP`/`EXECUTE`).
+///
+/// A `core_exit` node stops folding for the *remainder of its own immediate
+/// body list only* -- code after an unconditional `EXIT` never runs, so it
+/// is not visited. This is a deliberately conservative simplification, not a
+/// fully flow-sensitive treatment of multiple return paths (an `EXIT` nested
+/// inside one `IF` arm does not attempt to reconcile that arm's
+/// early-return depth against the definition's eventual fall-through depth);
+/// see stack_effect.hpp's own doc block above and DIV-0006 for the scope
+/// this leaves for a future step.
+template <int MaxNodes, int MaxBody, int MaxName, int MaxWords, int MaxData,
+          int MaxWarnings>
+constexpr auto analyze_body(compiled_unit<MaxNodes, MaxBody, MaxName, MaxWords,
+                                          MaxData, MaxWarnings> const &unit,
+                            core_body<MaxNodes, MaxBody> const &items,
+                            int self_index, effect self_effect)
+    -> foundation::result<body_analysis> {
+    body_analysis result{};
+    for (int i = 0; i < items.size(); ++i) {
+        auto const &node = unit.arena.get(items[i]);
+        effect item_eff{};
+        int item_r = 0;
+        bool stop = false;
+
+        auto outcome = std::visit(
+            [&](auto const &alt) -> foundation::result<std::monostate> {
+                using T = std::decay_t<decltype(alt)>;
+                if constexpr (std::is_same_v<T, core_push> ||
+                              std::is_same_v<T, core_var> ||
+                              std::is_same_v<T, core_const> ||
+                              std::is_same_v<T, core_push_xt>) {
+                    item_eff = known(0, 1);
+                } else if constexpr (std::is_same_v<T, core_prim>) {
+                    item_eff = primitive_data_effect(alt.op);
+                    item_r = primitive_return_delta(alt.op);
+                } else if constexpr (std::is_same_v<T, core_call>) {
+                    if (alt.word_index == self_index) {
+                        item_eff = self_effect;
+                    } else {
+                        auto const &entry =
+                            unit.dictionary.entry_at(alt.word_index);
+                        auto const *cw =
+                            std::get_if<machine::colon_word>(&entry.binding);
+                        if (cw == nullptr) {
+                            return foundation::parse_error{
+                                alt.pos, "call target is not a colon word"};
+                        }
+                        item_eff = cw->effect.known ? known(cw->effect.inputs,
+                                                            cw->effect.outputs)
+                                                    : unknown_effect;
+                    }
+                } else if constexpr (std::is_same_v<T, core_exit>) {
+                    item_eff = identity_effect;
+                    stop = true;
+                } else if constexpr (std::is_same_v<T, core_loop_index>) {
+                    // `I`/`J` push one cell read from the return stack's loop
+                    // frame; the return stack itself is not disturbed.
+                    item_eff = known(0, 1);
+                } else if constexpr (std::is_same_v<T, core_leave>) {
+                    // A one-shot forward transfer out of the loop: what the
+                    // data stack looks like at the loop's exit cannot be
+                    // reconciled with the fall-through path statically, so
+                    // LEAVE poisons to unknown (like ?DUP). This is also what
+                    // lets `... IF <stuff> LEAVE THEN ...` type-check despite
+                    // the LEAVE arm and the empty else-arm differing in shape
+                    // (the unknown suppresses the IF-arm net comparison).
+                    item_eff = unknown_effect;
+                } else if constexpr (std::is_same_v<T, core_unloop>) {
+                    // Return-stack loop-frame teardown only; no data-stack
+                    // effect and no tracked return-stack delta (the loop frame
+                    // DO/LOOP manage is not part of the >R/R> delta this walk
+                    // tracks).
+                    item_eff = identity_effect;
+                } else if constexpr (std::is_same_v<
+                                         T, core_if<MaxNodes, MaxBody>>) {
+                    auto then_r = analyze_body(unit, alt.then_body, self_index,
+                                               self_effect);
+                    if (!then_r.has_value()) {
+                        return then_r.error();
+                    }
+                    auto else_r = analyze_body(unit, alt.else_body, self_index,
+                                               self_effect);
+                    if (!else_r.has_value()) {
+                        return else_r.error();
+                    }
+                    if (then_r.value().r_delta != 0 ||
+                        else_r.value().r_delta != 0) {
+                        return foundation::parse_error{
+                            alt.pos, "return stack is unbalanced across a "
+                                     "control-structure body"};
+                    }
+                    auto const &then_eff = then_r.value().eff;
+                    auto const &else_eff = else_r.value().eff;
+                    if (then_eff.known && else_eff.known) {
+                        if (then_eff.net() != else_eff.net()) {
+                            return foundation::parse_error{
+                                alt.pos,
+                                "IF/ELSE arms have unequal net stack effect"};
+                        }
+                        item_eff = combine_branch(then_eff, else_eff);
+                    } else {
+                        item_eff = unknown_effect;
+                    }
+                } else if constexpr (std::is_same_v<
+                                         T,
+                                         core_begin_until<MaxNodes, MaxBody>>) {
+                    auto body_r =
+                        analyze_body(unit, alt.body, self_index, self_effect);
+                    if (!body_r.has_value()) {
+                        return body_r.error();
+                    }
+                    if (body_r.value().r_delta != 0) {
+                        return foundation::parse_error{
+                            alt.pos, "return stack is unbalanced across a "
+                                     "control-structure body"};
+                    }
+                    auto const &body_eff = body_r.value().eff;
+                    if (body_eff.known) {
+                        if (body_eff.net() != 1) {
+                            return foundation::parse_error{
+                                alt.pos,
+                                "BEGIN...UNTIL body must leave exactly one "
+                                "flag for UNTIL"};
+                        }
+                        item_eff = known(body_eff.inputs, body_eff.inputs);
+                    } else {
+                        item_eff = unknown_effect;
+                    }
+                } else if constexpr (std::is_same_v<
+                                         T,
+                                         core_begin_while<MaxNodes, MaxBody>>) {
+                    auto cond_r = analyze_body(unit, alt.condition, self_index,
+                                               self_effect);
+                    if (!cond_r.has_value()) {
+                        return cond_r.error();
+                    }
+                    auto body_r =
+                        analyze_body(unit, alt.body, self_index, self_effect);
+                    if (!body_r.has_value()) {
+                        return body_r.error();
+                    }
+                    if (cond_r.value().r_delta != 0 ||
+                        body_r.value().r_delta != 0) {
+                        return foundation::parse_error{
+                            alt.pos, "return stack is unbalanced across a "
+                                     "control-structure body"};
+                    }
+                    auto const &cond_eff = cond_r.value().eff;
+                    auto const &body_eff = body_r.value().eff;
+                    if (cond_eff.known && cond_eff.net() != 1) {
+                        return foundation::parse_error{
+                            alt.pos,
+                            "BEGIN...WHILE condition must leave exactly one "
+                            "flag for WHILE"};
+                    }
+                    if (body_eff.known && body_eff.net() != 0) {
+                        return foundation::parse_error{
+                            alt.pos, "BEGIN...WHILE...REPEAT body must have a "
+                                     "net-zero stack effect"};
+                    }
+                    if (cond_eff.known && body_eff.known) {
+                        int const entry = cond_eff.inputs > body_eff.inputs
+                                              ? cond_eff.inputs
+                                              : body_eff.inputs;
+                        item_eff = known(entry, entry);
+                    } else {
+                        item_eff = unknown_effect;
+                    }
+                    // 4b7e2c9a-1d6f-4a83-b5c0-8f2e9d6a3b17
+                } else if constexpr (std::is_same_v<
+                                         T, core_do_loop<MaxNodes, MaxBody>>) {
+                    auto body_r =
+                        analyze_body(unit, alt.body, self_index, self_effect);
+                    if (!body_r.has_value()) {
+                        return body_r.error();
+                    }
+                    if (body_r.value().r_delta != 0) {
+                        return foundation::parse_error{
+                            alt.pos, "return stack is unbalanced across a "
+                                     "control-structure body"};
+                    }
+                    auto const &body_eff = body_r.value().eff;
+                    if (body_eff.known) {
+                        // A plain `LOOP` body must be net-zero; a `+LOOP` body
+                        // must leave exactly the increment `+LOOP` then
+                        // consumes (net +1).
+                        if (alt.is_plus_loop) {
+                            if (body_eff.net() != 1) {
+                                return foundation::parse_error{
+                                    alt.pos,
+                                    "+LOOP body must leave exactly the "
+                                    "increment (net +1)"};
+                            }
+                        } else if (body_eff.net() != 0) {
+                            return foundation::parse_error{
+                                alt.pos,
+                                "DO loop body must have a net-zero stack "
+                                "effect"};
+                        }
+                        // `DO` itself consumes the two cells (limit start)
+                        // sitting above whatever the body needs; for `+LOOP`
+                        // the body's extra output is consumed by `+LOOP`
+                        // itself. Either way the whole `DO ... LOOP`/`+LOOP`
+                        // needs body.inputs + 2 at entry and leaves
+                        // body.inputs behind. Modelling those two consumed
+                        // cells (F12 did not) is what lets a nested counted
+                        // loop -- whose inner `limit start` are pushed inside
+                        // the outer loop's own body -- still satisfy the outer
+                        // body's net-zero requirement.
+                        item_eff = known(body_eff.inputs + 2, body_eff.inputs);
+                    } else {
+                        item_eff = unknown_effect;
+                    }
+                    // 4b7e2c9a-1d6f-4a83-b5c0-8f2e9d6a3b17 end
+                } else {
+                    // core_seq: never nested inside a body in practice --
+                    // only ever the top-level wrapper a colon_word::core_id
+                    // points at -- but std::visit must stay exhaustive.
+                    return foundation::parse_error{
+                        alt.pos, "unexpected nested sequence node"};
+                }
+                return std::monostate{};
+            },
+            node.value);
+
+        if (!outcome.has_value()) {
+            return outcome.error();
+        }
+        result.eff = combine_sequential(result.eff, item_eff);
+        result.r_delta += item_r;
+        if (stop) {
+            break;
+        }
+    }
+    return result;
+}
+#+end_src
+
+The fifth diagnosis — an =EXIT= lexically nested inside a =DO= loop's body without an =UNLOOP= to appease first — is a separate, purely lexical scan, independent of the depth-tracking walk above.
+Step F17 made =UNLOOP= real, so this scan now honors it: an =UNLOOP= seen earlier in a body sequence clears the requirement for every =EXIT= after it (and anything it recurses into), accepting the canonical =... UNLOOP EXIT ...= and =... IF UNLOOP EXIT THEN ...= idioms, while a bare =EXIT= inside =DO= with no preceding =UNLOOP= is still diagnosed (see DIV-0010).
+The same step also corrected two imprecisions in the =DO...LOOP= effect model: =DO= is now modelled as consuming the two cells =( limit start )= it pops (without which any *nested* counted loop, whose inner =limit start= are pushed inside the outer loop's body, would spuriously fail the net-zero body check), and a =+LOOP= body is required to be net =+1= (it leaves the increment =+LOOP= then consumes) rather than net zero.
+=analyze_colon_effect= is the entry point =elaborate_colon_def= calls, between building a definition's =core_seq= and installing its =colon_word=: it runs the lexical =EXIT=-in-=DO= scan, then the depth-tracking walk, then checks that the whole definition ends return-stack balanced, then — if a =( ... )= comment was written — compares the declared effect against the computed one, verbatim, field for field.
+Reading a declared effect's *text* back out of its captured span is new work this step needed that step F11 did not: =elaborate='s signature grew a =std::string_view source= parameter (the exact program text a =syntax_tree= was parsed from), threaded down to wherever a colon definition's =declared_effect= span needs re-slicing.
+
+#+begin_src cpp
+/// Analyzes one colon definition's whole body (F12's top-level entry point,
+/// called from `elaborate_colon_def` between building the body's `core_seq`
+/// and installing the `colon_word`): runs diagnosis 4 (@ref
+/// check_exit_in_do_loops), then @ref analyze_body for diagnoses 1-3, then
+/// checks diagnosis 3's whole-definition half ("a definition must end with
+/// return stack balanced") and diagnosis 5 (declared-vs-computed mismatch).
+///
+/// @p source is the original program text @p cd's @ref
+/// reader::syn_colon_def::declared_effect span indexes into -- @ref elaborate
+/// did not used to take this parameter (F11 never needed the declared
+/// effect's *text*, only its span); F12 adds it, threaded down from
+/// @ref elaborate's own new `source` parameter.
+///
+/// Returns the @ref machine::stack_effect to store on the new
+/// @ref machine::colon_word: the declared effect verbatim if one was
+/// written (trusted ground truth, per the RECURSE design note on @ref
+/// analyze_body), else the computed effect if it came out @ref known, else
+/// `stack_effect{.known = false}`.
+template <int MaxNodes, int MaxBody, int MaxName, int MaxWords, int MaxData,
+          int MaxWarnings>
+constexpr auto analyze_colon_effect(
+    compiled_unit<MaxNodes, MaxBody, MaxName, MaxWords, MaxData,
+                  MaxWarnings> const &unit,
+    core_body<MaxNodes, MaxBody> const &body_items, int self_index,
+    reader::syn_colon_def<MaxNodes, MaxBody, MaxName> const &cd,
+    std::string_view source) -> foundation::result<machine::stack_effect> {
+    auto exit_check = check_exit_in_do_loops(unit.arena, body_items, false);
+    if (!exit_check.has_value()) {
+        return exit_check.error();
+    }
+
+    bool const declared_present = has_declared_effect(cd.declared_effect);
+    effect const declared =
+        declared_present ? parse_declared_effect(source, cd.declared_effect)
+                         : unknown_effect;
+    effect const self_effect =
+        (declared_present && declared.known) ? declared : unknown_effect;
+
+    auto analysis = analyze_body(unit, body_items, self_index, self_effect);
+    if (!analysis.has_value()) {
+        return analysis.error();
+    }
+    auto const &summary = analysis.value();
+    if (summary.r_delta != 0) {
+        return foundation::parse_error{
+            cd.pos, "return stack is unbalanced at the end of a definition"};
+    }
+
+    if (declared_present && declared.known && summary.eff.known) {
+        if (declared.inputs != summary.eff.inputs ||
+            declared.outputs != summary.eff.outputs) {
+            return foundation::parse_error{
+                cd.declared_effect.first,
+                "declared stack effect does not match computed stack "
+                "effect"};
+        }
+    }
+
+    if (declared_present && declared.known) {
+        return machine::stack_effect{.inputs = declared.inputs,
+                                     .outputs = declared.outputs,
+                                     .known = true};
+    }
+    if (summary.eff.known) {
+        return machine::stack_effect{.inputs = summary.eff.inputs,
+                                     .outputs = summary.eff.outputs,
+                                     .known = true};
+    }
+    return machine::stack_effect{};
+}
+#+end_src
+
+* Phase 5: Codegen and the Three Backends
+
+DRAFT — pending author revision.
+
+Codegen turns the elaborated core into a compiled instruction program: another flat, trivially destructible =tree_arena=, this time of machine instructions rather than syntax forms.
+That same instruction program is then interpretable three ways: directly by a tree-walking evaluator, by a small classic stack machine (two fixed-capacity stacks, an arena data space, and an output buffer), and by a Beman Execution sender graph in which Forth's one-shot, dynamic-extent control words (=EXIT=, =LEAVE=, =CATCH=/=THROW=) map directly onto the sender/receiver completion discipline.
+Step F13 (this section) is the first of the three to land, and it skips codegen entirely: it is a *reference* interpreter, walking the elaborated core directly by structural recursion rather than flattening it into an instruction array first.
+This is deliberate, not a shortcut taken for its own sake — step F14's stack-machine codegen and VM is checked against this evaluator's own output (the plan's own merge criterion for F14 runs the same F13 test programs through both backends and requires they agree), so F13 has to exist as a trustworthy, independently-derived oracle before F14's flattening/back-patching machinery has anything to be checked against.
+=eval_direct.hpp= lives under =src/smd/forth/machine/=, not =src/smd/forth/elaborator/=, per the plan's own placement — it depends on =elaborator::compiled_unit= the same way every =elaborator/*.hpp= header already depends on =machine/*.hpp= for =dictionary=/=forth_state=, and both directories fold into the same single build target (=compile-time-forth.forth=), so this is a documented, one-directional layering choice, not a new library boundary or a circular dependency.
+
+#+begin_src cpp
+/// What happened after evaluating one core node or body.
+///
+/// `exited` is the runtime counterpart of a `core_exit` node: it is *not* a
+/// C++ exception (per D11, all nonlocal control here is one-shot and
+/// dynamic-extent, threaded through the evaluator's own result channel, not
+/// unwound via the language's own exception mechanism). An `exited` signal
+/// propagates upward through every nested control-structure body it is
+/// returned from (`core_if`'s arms, a loop's own body) without evaluating
+/// anything after it in that body, all the way up to the nearest enclosing
+/// `core_call` (or the top-level program, which has nothing left to skip
+/// past) -- exactly the "unwind to the enclosing definition's own boundary,
+/// not just the current nested body" shape handoff.md's architectural
+/// invariants call for. A `core_call` is where the signal is absorbed: the
+/// callee's own `EXIT` never escapes past the call that invoked it, since a
+/// call is itself a fresh definition boundary.
+enum class eval_signal {
+    normal, ///< Control reached the end of the body/node normally.
+    exited, ///< A `core_exit` occurred; the caller must stop evaluating
+            ///< anything else in the body currently unwinding through.
+    left,   ///< A `core_leave` (`LEAVE`) occurred; propagates upward through
+            ///< nested control bodies exactly like @ref exited, but is
+            ///< absorbed by the nearest enclosing `core_do_loop` (which tears
+            ///< down its loop frame and continues past the loop) rather than
+            ///< by a `core_call`.
+};
+
+/// Decrements @p fuel, the evaluator's step budget, diagnosing exhaustion at
+/// @p pos rather than letting a nonterminating program (e.g.
+/// `BEGIN FALSE UNTIL`) hang the evaluator forever -- the compiler will
+/// happily loop forever evaluating a `constexpr` function that never
+/// terminates, so this is the only way to bound evaluation at compile time
+/// (handoff-next.md's F13 briefing). Called once per core node visited by
+/// @ref eval_node, so a budget of @p fuel bounds the total number of nodes
+/// (including repeated visits to the same node across loop iterations) any
+/// one evaluation may visit.
+constexpr auto consume_fuel(int &fuel, foundation::source_pos pos)
+    -> foundation::result<std::monostate> {
+    if (fuel <= 0) {
+        return foundation::parse_error{pos, "evaluation budget exhausted"};
+    }
+    --fuel;
+    return std::monostate{};
+}
+
+// Forward declarations: eval_body and eval_node are mutually recursive (a
+// body may contain IF/BEGIN, each of which evaluates its own nested
+// body/bodies) -- the same shape elaborate_body/elaborate_body_item (F11)
+// and analyze_body (F12) already use for the same underlying tree.
+
+template <int MaxNodes, int MaxBody, int MaxName, int MaxWords, int MaxData,
+          int MaxWarnings, int StackDepth, int RStackDepth, int MaxOut>
+constexpr auto
+eval_body(elaborator::compiled_unit<MaxNodes, MaxBody, MaxName, MaxWords,
+                                    MaxData, MaxWarnings> const &unit,
+          elaborator::core_body<MaxNodes, MaxBody> const &items,
+          forth_state<StackDepth, RStackDepth, MaxData, MaxOut> &state,
+          int &fuel) -> foundation::result<eval_signal>;
+
+template <int MaxNodes, int MaxBody, int MaxName, int MaxWords, int MaxData,
+          int MaxWarnings, int StackDepth, int RStackDepth, int MaxOut>
+constexpr auto
+eval_node(elaborator::compiled_unit<MaxNodes, MaxBody, MaxName, MaxWords,
+                                    MaxData, MaxWarnings> const &unit,
+          elaborator::core_node<MaxNodes, MaxBody> const &node,
+          forth_state<StackDepth, RStackDepth, MaxData, MaxOut> &state,
+          int &fuel) -> foundation::result<eval_signal>;
+
+/// Evaluates one @ref elaborator::core_node against @p state: primitives run
+/// through @ref apply_primitive (F8's imperative implementation -- *not*
+/// F12's declarative `elaborator::primitive_data_effect` table, which exists
+/// only for abstract interpretation and knows nothing about actually running
+/// a primitive); a call recurses structurally into the callee's own core,
+/// found the same way F12's `analyze_body` finds a `core_call` target's
+/// effect (`unit.dictionary.entry_at(word_index)`, then
+/// `unit.arena.get(colon_word.core_id)`); `IF`/`BEGIN...UNTIL`/
+/// `BEGIN...WHILE...REPEAT` become real control flow, conditionally or
+/// repeatedly evaluating their bodies against the live @p state rather than
+/// only predicting a depth.
+template <int MaxNodes, int MaxBody, int MaxName, int MaxWords, int MaxData,
+          int MaxWarnings, int StackDepth, int RStackDepth, int MaxOut>
+constexpr auto
+eval_node(elaborator::compiled_unit<MaxNodes, MaxBody, MaxName, MaxWords,
+                                    MaxData, MaxWarnings> const &unit,
+          elaborator::core_node<MaxNodes, MaxBody> const &node,
+          forth_state<StackDepth, RStackDepth, MaxData, MaxOut> &state,
+          int &fuel) -> foundation::result<eval_signal> {
+    return std::visit(
+        [&](auto const &alt) -> foundation::result<eval_signal> {
+            using T = std::decay_t<decltype(alt)>;
+
+            auto budget = consume_fuel(fuel, alt.pos);
+            if (!budget.has_value()) {
+                return budget.error();
+            }
+
+            if constexpr (std::is_same_v<T, elaborator::core_push>) {
+                auto r = state.data().push(alt.value);
+                if (!r.has_value()) {
+                    return r.error();
+                }
+                return eval_signal::normal;
+            } else if constexpr (std::is_same_v<T, elaborator::core_prim>) {
+                auto r = apply_primitive(alt.op, state);
+                if (!r.has_value()) {
+                    return r.error();
+                }
+                return eval_signal::normal;
+            } else if constexpr (std::is_same_v<T, elaborator::core_call>) {
+                auto const &entry = unit.dictionary.entry_at(alt.word_index);
+                auto const *cw = std::get_if<colon_word>(&entry.binding);
+                if (cw == nullptr) {
+                    return foundation::parse_error{
+                        alt.pos, "call target is not a colon word"};
+                }
+                auto const &callee_node = unit.arena.get(cw->core_id);
+                auto const *seq =
+                    std::get_if<elaborator::core_seq<MaxNodes, MaxBody>>(
+                        &callee_node.value);
+                if (seq == nullptr) {
+                    return foundation::parse_error{
+                        alt.pos, "call target's core is not a sequence"};
+                }
+                auto r = eval_body(unit, seq->items, state, fuel);
+                if (!r.has_value()) {
+                    return r.error();
+                }
+                // A call is a fresh definition boundary (D11): whatever the
+                // callee's own body returned -- normal fall-through, or an
+                // EXIT that unwound all the way back up to here -- is
+                // equally "the call is done" from this caller's own point of
+                // view. The callee's EXIT never propagates past its own
+                // call.
+                return eval_signal::normal;
+            } else if constexpr (std::is_same_v<T, elaborator::core_var>) {
+                auto r = state.data().push(static_cast<cell>(alt.address));
+                if (!r.has_value()) {
+                    return r.error();
+                }
+                return eval_signal::normal;
+            } else if constexpr (std::is_same_v<T, elaborator::core_const>) {
+                auto r = state.data().push(alt.value);
+                if (!r.has_value()) {
+                    return r.error();
+                }
+                return eval_signal::normal;
+            } else if constexpr (std::is_same_v<T, elaborator::core_push_xt>) {
+                // An execution token is simply its dictionary index, cast to
+                // a cell (D11); EXECUTE (F18a) is what later decides what to
+                // do with it.
+                auto r = state.data().push(static_cast<cell>(alt.word_index));
+                if (!r.has_value()) {
+                    return r.error();
+                }
+                return eval_signal::normal;
+            } else if constexpr (std::is_same_v<T, elaborator::core_exit>) {
+                return eval_signal::exited;
+                // 1c9d7a2e-5b3f-4e91-8a6d-2f7c4b9e0d31
+            } else if constexpr (std::is_same_v<T,
+                                                elaborator::core_loop_index>) {
+                // The loop frame DO established on the return stack is (limit
+                // index) per loop, index on top; a level-L index sits at
+                // return-stack offset 2*L (I=0, J=2). Reading it does not
+                // disturb the return stack.
+                auto v = state.returns().peek(2 * alt.level);
+                if (!v.has_value()) {
+                    return v.error();
+                }
+                auto r = state.data().push(v.value());
+                if (!r.has_value()) {
+                    return r.error();
+                }
+                return eval_signal::normal;
+            } else if constexpr (std::is_same_v<T, elaborator::core_leave>) {
+                return eval_signal::left;
+            } else if constexpr (std::is_same_v<T, elaborator::core_unloop>) {
+                // Discard the innermost loop frame (index then limit) without
+                // branching, leaving the return stack as it was before DO.
+                auto index = state.returns().pop();
+                if (!index.has_value()) {
+                    return index.error();
+                }
+                auto limit = state.returns().pop();
+                if (!limit.has_value()) {
+                    return limit.error();
+                }
+                return eval_signal::normal;
+                // 1c9d7a2e-5b3f-4e91-8a6d-2f7c4b9e0d31 end
+            } else if constexpr (std::is_same_v<T, elaborator::core_if<
+                                                       MaxNodes, MaxBody>>) {
+                auto flag = state.data().pop();
+                if (!flag.has_value()) {
+                    return flag.error();
+                }
+                return flag.value() != 0
+                           ? eval_body(unit, alt.then_body, state, fuel)
+                           : eval_body(unit, alt.else_body, state, fuel);
+            } else if constexpr (std::is_same_v<T, elaborator::core_begin_until<
+                                                       MaxNodes, MaxBody>>) {
+                for (;;) {
+                    auto body_r = eval_body(unit, alt.body, state, fuel);
+                    if (!body_r.has_value()) {
+                        return body_r.error();
+                    }
+                    if (body_r.value() != eval_signal::normal) {
+                        return body_r.value();
+                    }
+                    auto flag = state.data().pop();
+                    if (!flag.has_value()) {
+                        return flag.error();
+                    }
+                    if (flag.value() != 0) {
+                        break;
+                    }
+                }
+                return eval_signal::normal;
+            } else if constexpr (std::is_same_v<T, elaborator::core_begin_while<
+                                                       MaxNodes, MaxBody>>) {
+                for (;;) {
+                    auto cond_r = eval_body(unit, alt.condition, state, fuel);
+                    if (!cond_r.has_value()) {
+                        return cond_r.error();
+                    }
+                    if (cond_r.value() != eval_signal::normal) {
+                        return cond_r.value();
+                    }
+                    auto flag = state.data().pop();
+                    if (!flag.has_value()) {
+                        return flag.error();
+                    }
+                    if (flag.value() == 0) {
+                        break;
+                    }
+                    auto body_r = eval_body(unit, alt.body, state, fuel);
+                    if (!body_r.has_value()) {
+                        return body_r.error();
+                    }
+                    if (body_r.value() != eval_signal::normal) {
+                        return body_r.value();
+                    }
+                }
+                return eval_signal::normal;
+                // 9e4a1f6b-8c2d-4f57-b1a9-3d6e0c8b5a72
+            } else if constexpr (std::is_same_v<T, elaborator::core_do_loop<
+                                                       MaxNodes, MaxBody>>) {
+                // `limit start DO ... LOOP/+LOOP` (F17). The loop parameters
+                // live on the return stack as the pair (limit index), index
+                // on top, so I/J read them by offset and they nest correctly
+                // with an outer loop's own frame. `start` is the top data
+                // cell, `limit` the one below it.
+                auto start = state.data().pop();
+                if (!start.has_value()) {
+                    return start.error();
+                }
+                auto limit = state.data().pop();
+                if (!limit.has_value()) {
+                    return limit.error();
+                }
+                if (auto r = state.returns().push(limit.value());
+                    !r.has_value()) {
+                    return r.error();
+                }
+                if (auto r = state.returns().push(start.value());
+                    !r.has_value()) {
+                    return r.error();
+                }
+                for (;;) {
+                    auto step = consume_fuel(fuel, alt.pos);
+                    if (!step.has_value()) {
+                        return step.error();
+                    }
+                    auto body_r = eval_body(unit, alt.body, state, fuel);
+                    if (!body_r.has_value()) {
+                        return body_r.error();
+                    }
+                    if (body_r.value() == eval_signal::exited) {
+                        // A well-formed early EXIT out of a DO loop is preceded
+                        // by UNLOOP (diagnosis 4), which already tore down the
+                        // frame; just keep unwinding to the enclosing call.
+                        return eval_signal::exited;
+                    }
+                    if (body_r.value() == eval_signal::left) {
+                        // LEAVE: discard this loop's frame and fall out past
+                        // the loop.
+                        if (auto r = state.returns().pop(); !r.has_value()) {
+                            return r.error();
+                        }
+                        if (auto r = state.returns().pop(); !r.has_value()) {
+                            return r.error();
+                        }
+                        return eval_signal::normal;
+                    }
+                    // Advance the loop index (top of the return stack).
+                    auto index = state.returns().pop();
+                    if (!index.has_value()) {
+                        return index.error();
+                    }
+                    auto lim = state.returns().peek(0);
+                    if (!lim.has_value()) {
+                        return lim.error();
+                    }
+                    bool terminate = false;
+                    cell next{};
+                    if (alt.is_plus_loop) {
+                        // `+LOOP`: add the increment the body left on the data
+                        // stack; terminate when the index crosses the boundary
+                        // between limit-1 and limit (Forth-2012), i.e. when the
+                        // sign of (index - limit) flips.
+                        auto incr = state.data().pop();
+                        if (!incr.has_value()) {
+                            return incr.error();
+                        }
+                        cell const before = index.value() - lim.value();
+                        next = index.value() + incr.value();
+                        cell const after = next - lim.value();
+                        terminate = (before ^ after) < 0;
+                    } else {
+                        // `LOOP`: add one; terminate when the index reaches the
+                        // limit (Forth-2012 equality test).
+                        next = index.value() + 1;
+                        terminate = next == lim.value();
+                    }
+                    if (terminate) {
+                        if (auto r = state.returns().pop(); !r.has_value()) {
+                            return r.error();
+                        }
+                        return eval_signal::normal;
+                    }
+                    if (auto r = state.returns().push(next); !r.has_value()) {
+                        return r.error();
+                    }
+                }
+                // 9e4a1f6b-8c2d-4f57-b1a9-3d6e0c8b5a72 end
+            } else {
+                // core_seq: never visited here in practice -- a core_call's
+                // target is unwrapped directly (see above) rather than
+                // dispatched through this visitor, and core_seq is
+                // otherwise only ever the top-level wrapper a
+                // colon_word::core_id points at -- but std::visit must stay
+                // exhaustive, so this is a diagnosed error, not UB. Mirrors
+                // analyze_body's identical defensive-only arm
+                // (stack_effect.hpp).
+                return foundation::parse_error{
+                    alt.pos, "unexpected nested sequence node"};
+            }
+        },
+        node.value);
+}
+
+/// Evaluates @p items in order against @p state, stopping early (without
+/// visiting the rest of @p items) the moment any item reports a non-@ref
+/// eval_signal::normal signal -- code after an `EXIT` or `LEAVE` never runs,
+/// matching F12's `analyze_body` treatment of the same shape
+/// (stack_effect.hpp), except here it is a real runtime early return rather
+/// than an abstract-interpretation shortcut. Both @ref eval_signal::exited and
+/// @ref eval_signal::left propagate through unchanged; each is absorbed at its
+/// own boundary (a `core_call` for `exited`, a `core_do_loop` for `left`).
+template <int MaxNodes, int MaxBody, int MaxName, int MaxWords, int MaxData,
+          int MaxWarnings, int StackDepth, int RStackDepth, int MaxOut>
+constexpr auto
+eval_body(elaborator::compiled_unit<MaxNodes, MaxBody, MaxName, MaxWords,
+                                    MaxData, MaxWarnings> const &unit,
+          elaborator::core_body<MaxNodes, MaxBody> const &items,
+          forth_state<StackDepth, RStackDepth, MaxData, MaxOut> &state,
+          int &fuel) -> foundation::result<eval_signal> {
+    for (int i = 0; i < items.size(); ++i) {
+        auto const &node = unit.arena.get(items[i]);
+        auto r = eval_node(unit, node, state, fuel);
+        if (!r.has_value()) {
+            return r.error();
+        }
+        if (r.value() != eval_signal::normal) {
+            return r.value();
+        }
+    }
+    return eval_signal::normal;
+}
+#+end_src
+
+Primitives run through =machine::apply_primitive= — F8's imperative implementation, the one that actually mutates a =forth_state= — never through F12's =elaborator::primitive_data_effect= table, which exists purely for abstract interpretation and has no notion of actually running anything.
+A =core_call= recurses structurally into the callee's own core, found the same way F12's =analyze_body= already finds a call target's effect: =unit.dictionary.entry_at(word_index)= to get the =colon_word=, then =unit.arena.get(colon_word.core_id)= to reach its =core_seq=.
+=core_if=, =core_begin_until=, and =core_begin_while= become real control flow this time, conditionally or repeatedly evaluating their bodies against the live machine state rather than only predicting a depth the way F12's analysis did — =core_begin_until='s body runs at least once and re-runs until the flag it leaves behind is true; =core_begin_while='s condition runs before every iteration (including the first) and the loop stops the moment it leaves a false flag.
+=core_exit= is the one genuinely new piece of control-flow plumbing: it is a runtime early return, threaded through the evaluator's own =foundation::result<eval_signal>= channel rather than a C++ exception, matching this project's one-shot, dynamic-extent nonlocal-control invariant (D11).
+An =eval_signal::exited= return value propagates upward through every nested control-structure body it passes through — unevaluated code after it in the same body list is simply never visited — all the way up to the nearest enclosing =core_call=, which is where it is absorbed: a call is its own fresh definition boundary, so a callee's own =EXIT= never unwinds past the call that invoked it.
+=DO...LOOP= was left diagnosed-not-implemented by F13 (none of its own merge criteria exercise it); step F17 (below) gives =core_do_loop= real structural evaluation here, threading loop parameters through the return stack and a new =eval_signal::left= for =LEAVE=.
+
+Every misuse the evaluator can observe is a diagnosed =foundation::result= error exactly as it would be calling =apply_primitive= or a =cell_stack= directly by hand: stack underflow/overflow, division by zero, output-buffer overflow, and one new failure mode this step introduces — budget exhaustion.
+A nonterminating program (=BEGIN FALSE UNTIL= never becomes true) would otherwise hang a =constexpr= evaluation forever, since the compiler is perfectly willing to keep folding a =constexpr= function that never returns; the evaluator instead threads a plain decrementing =int= "fuel" counter through every node it visits and diagnoses exhaustion rather than looping.
+
+#+begin_src cpp
+/// Evaluates @p unit's whole top-level program body (F13's entry point):
+/// builds a fresh @ref forth_state, seeds its data space from @p unit's own
+/// (F16, D10 -- every `VARIABLE`/`CREATE` address elaboration already baked
+/// into `unit.program` is valid from the first instruction onward), runs
+/// every top-level item through @ref eval_body under @p fuel, and returns
+/// the resulting state (its data stack, return stack, data space, and output
+/// buffer all reflect the program's full run) or the first diagnosed error
+/// -- a stack/return-stack misuse, an out-of-bounds/exhausted data-space
+/// access, a division by zero, an output-buffer overflow, or budget
+/// exhaustion (@ref consume_fuel), any of which halts evaluation immediately
+/// rather than continuing in an inconsistent state.
+///
+/// A bare top-level `EXIT` cannot actually reach here: elaboration itself
+/// already diagnoses `"EXIT outside a definition"` (F11's
+/// `elaborate_word_ref`), so no `core_exit` node can exist anywhere in
+/// `unit.program`. @ref eval_signal::exited is still a possible return from
+/// @ref eval_body in principle (an `EXIT` nested inside a top-level `IF`,
+/// say -- elaboration only forbids a *bare* top-level `EXIT`, not one nested
+/// inside a top-level control structure), and is simply treated the same as
+/// @ref eval_signal::normal here: the top-level program has no further body
+/// of its own to skip past either way.
+///
+/// @tparam StackDepth  Data stack capacity (@ref forth_state).
+/// @tparam RStackDepth Return stack capacity (@ref forth_state).
+/// @tparam MaxOut      Output buffer capacity (@ref forth_state).
+/// @param  unit A successfully elaborated program (F11/F12): every
+///              definition in it has already passed stack-effect analysis,
+///              per D9 -- @ref eval_program never sees a `compiled_unit`
+///              that failed elaboration.
+/// @param  fuel The evaluation step budget: decremented once per core node
+///              visited (@ref consume_fuel); exhaustion is a diagnosed
+///              error, never a hang, even for a nonterminating
+///              `BEGIN ... UNTIL`.
+template <int MaxNodes, int MaxBody, int MaxName, int MaxWords, int MaxData,
+          int MaxWarnings, int StackDepth = 64, int RStackDepth = 64,
+          int MaxOut = 256>
+constexpr auto
+eval_program(elaborator::compiled_unit<MaxNodes, MaxBody, MaxName, MaxWords,
+                                       MaxData, MaxWarnings> const &unit,
+             int fuel = 100000)
+    -> foundation::result<
+        forth_state<StackDepth, RStackDepth, MaxData, MaxOut>> {
+    forth_state<StackDepth, RStackDepth, MaxData, MaxOut> state{};
+    // F16: seed state's own data space with the same high-water mark
+    // unit.data_space reached during elaboration (every VARIABLE/CREATE
+    // allotment), so core_var addresses already baked into unit.program are
+    // valid for @/!/+! from the first instruction onward; a fresh state's
+    // data_space always starts at high-water mark 0 (data_space.hpp), and
+    // this reuses allot itself rather than adding a second way to advance
+    // it, so it can never disagree with an ordinary runtime ALLOT's own
+    // bookkeeping.
+    auto data_init = state.data_space().allot(unit.data_space.size());
+    if (!data_init.has_value()) {
+        return data_init.error();
+    }
+    auto outcome = eval_body(unit, unit.program, state, fuel);
+    if (!outcome.has_value()) {
+        return outcome.error();
+    }
+    return state;
+}
+#+end_src
+
+This step is also the first to need `.`, `.S`, `EMIT`, and `CR` as real, runnable primitives (D10) — F8 never wired them, and one further word this step's own merge criteria need verbatim, `1-`, was missing from the language entirely (DIV-0007 records both gaps and this step's fix).
+=eval_program= is the pipeline's first true end-to-end milestone: read (F5/F7) into a syntax tree, elaborate (F11/F12) into a =compiled_unit= whose every definition has already passed stack-effect analysis, then evaluate that =compiled_unit= directly, all in one =constexpr= chain a =static_assert= can exercise at compile time.
+
+** The classic stack machine (step F14)
+
+Step F14 (this section) is the second of the three backends, and the first to actually do codegen: it flattens the same elaborated core F13 walks directly into a linear array of machine instructions, then executes that array with an explicit instruction-pointer loop, rather than recursing through the core's own tree shape at every step.
+An instruction is one opcode plus a single immediate =cell= operand — about as close to a real machine's own encoding as a =constexpr=-friendly C++ type can get.
+
+#+begin_src cpp
+/// One stack-machine opcode.
+///
+/// Only the opcodes this step's own codegen (`codegen.hpp`) actually emits
+/// and this step's own VM (`vm.hpp`) actually executes have real semantics
+/// yet: `push`, `prim`, `call`, `ret`, `branch`, `branch0`, `push_xt`,
+/// `halt`. The remaining nine enumerators reserve opcode space for later
+/// steps per the plan's own instruction-set shape, so the enum itself never
+/// has to change once those steps land: `do_setup`, `loop_step`,
+/// `plus_loop_step`, `push_index` (`I`/`J`), `leave`, and `unloop` are all
+/// `DO ... LOOP` machinery (step F17's own deliverable -- F14's codegen
+/// diagnoses `core_do_loop` as "not implemented" rather than emitting any of
+/// these, mirroring F13's identical choice for the direct evaluator); and
+/// `execute` (`EXECUTE`), `catch_mark`, and `throw_op` are step F18a's
+/// (execution tokens and exceptions). The VM diagnoses any of these nine if
+/// it ever encounters one in a compiled program, rather than treating an
+/// unimplemented opcode as undefined behavior (D7) -- codegen simply never
+/// emits them yet, so this path is defensive, not currently reachable from
+/// `codegen(compiled_unit)`.
+///
+/// `branch0` pops a flag and branches only when that flag is zero (Forth's
+/// "false" -- see `cell.hpp`'s `flag_false`/`flag_true`); this is the
+/// opposite polarity from an "if true, branch" instruction, chosen because
+/// it is the natural encoding for both `IF`'s "skip the `THEN` arm when the
+/// condition is false" and `BEGIN ... UNTIL`'s "loop back while the flag is
+/// still false."
+enum class op : std::uint8_t {
+    push,           ///< Push @ref instr::operand onto the data stack.
+    prim,           ///< Invoke the primitive named by @ref instr::operand
+                    ///< (cast from @ref instr::operand) via @ref
+                    ///< apply_primitive.
+    call,           ///< Push the return address (next instruction index)
+                    ///< onto the return stack, then jump to @ref
+                    ///< instr::operand.
+    ret,            ///< Pop a return address off the return stack and jump
+                    ///< to it.
+    branch,         ///< Unconditionally jump to @ref instr::operand.
+    branch0,        ///< Pop a flag; jump to @ref instr::operand if it is
+                    ///< zero (Forth false), else fall through.
+    do_setup,       ///< Reserved for step F17 (`DO`): not emitted yet.
+    loop_step,      ///< Reserved for step F17 (`LOOP`): not emitted yet.
+    plus_loop_step, ///< Reserved for step F17 (`+LOOP`): not emitted yet.
+    push_index,     ///< Reserved for step F17 (`I`/`J`): not emitted yet.
+    leave,          ///< Reserved for step F17 (`LEAVE`): not emitted yet.
+    unloop,         ///< Reserved for step F17 (`UNLOOP`): not emitted yet.
+    push_xt,        ///< Push @ref instr::operand (a dictionary word index)
+                    ///< onto the data stack as an execution token (D11) --
+                    ///< the elaborated form of `' NAME`. Distinct from
+                    ///< @ref push only for documentation/extensibility;
+                    ///< runtime behavior is identical.
+    execute,        ///< Reserved for step F18a (`EXECUTE`): not emitted yet.
+    catch_mark,     ///< Reserved for step F18a (`CATCH`): not emitted yet.
+    throw_op,       ///< Reserved for step F18a (`THROW`): not emitted yet.
+    halt,           ///< Stop the VM's fetch-execute loop successfully.
+};
+
+/// One flat instruction: an opcode plus a single immediate @ref cell
+/// operand. Every operand's meaning is opcode-dependent: an instruction
+/// index for `call`/`branch`/`branch0`, a literal value for `push`, a
+/// `primitive` enumerator (cast to @ref cell) for `prim`, a dictionary word
+/// index for `push_xt`, and unused (left zero) for `ret`/`halt`.
+///
+/// A plain aggregate, trivially copyable and a literal type by construction
+/// -- there is nothing here for the compiler to have to prove trivial.
+// f42b25c1-ce56-43b1-9d4b-adecc6e3ae0b
+struct instr {
+    op code{};      ///< Which operation to perform.
+    cell operand{}; ///< The operation's single immediate operand.
+};
+// f42b25c1-ce56-43b1-9d4b-adecc6e3ae0b end
+#+end_src
+
+As of F14 only eight of the seventeen opcodes had real codegen and VM behavior: =push=, =push_xt=, =prim=, =call=, =ret=, =branch=, =branch0=, =halt=.
+Step F17 (below) added the six counted-loop opcodes — =do_setup=, =loop_step=, =plus_loop_step=, =push_index=, =leave=, =unloop= — leaving only F18a's three (=execute=, =catch_mark=, =throw_op=) reserved-but-diagnosed.
+The VM still diagnoses any not-yet-implemented opcode if asked to execute one, rather than treating it as undefined behavior (D7) — unreachable in practice, since codegen never emits an opcode it has no behavior for.
+DIV-0008 records this scope cut, along with a second one: =compiled_program='s own =required_stack_depth=/=required_return_depth= fields exist (the plan calls for "required stack capacities" alongside the word table and data-space size) but default to =-1=, "not computed" — F12's stack-effect analysis computes each definition's net effect and minimum entry depth, not a whole-program running peak, and no other analysis in the pipeline yet computes one either.
+
+#+begin_src cpp
+/// The compiled artifact codegen produces and the VM runs: a flat
+/// instruction array plus everything a caller needs to run it, bundled so it
+/// survives as one self-contained value from compile time to runtime (the
+/// plan's own words: "it is THE artifact that survives to runtime").
+///
+/// @tparam MaxCode  Instruction-array capacity (@ref code).
+/// @tparam MaxWords Word-table capacity (@ref entry_points); shares its
+///                  value with whatever `elaborator::compiled_unit`'s own
+///                  `MaxWords` was when @ref codegen built this program, so
+///                  every dictionary index @ref entry_points might be
+///                  indexed by is always in range.
+///
+/// Word-table shape (a design choice this step had to make -- the plan only
+/// says "entry point per word"): @ref entry_points is a plain
+/// `foundation::static_vector<int, MaxWords>`, one slot per dictionary
+/// entry in dictionary-index order, exactly mirroring how
+/// `machine::dictionary` itself is a flat, index-addressed structure. A
+/// colon word's slot holds the instruction index its body starts at; every
+/// other binding kind (primitive, variable, constant, foreign) has no
+/// instruction-level entry point of its own -- primitives are inlined as
+/// `prim` at each reference site, variables/constants as `push`, so their
+/// slot holds `-1`.
+///
+/// "Required stack capacities" (the plan's own phrase): step F12 computes
+/// each colon definition's *net* data-stack effect and minimum entry depth,
+/// not a whole-program running peak, so this step does not attempt real
+/// peak-depth analysis (see `docs/divergences/DIV-0008-*.md`).
+/// @ref required_stack_depth and @ref required_return_depth are carried as
+/// the struct shape the plan calls for, but default to `-1` ("not
+/// computed") rather than a real bound; a caller must still size its own
+/// `forth_state` generously, exactly as F13's own tests already do.
+// 7bb215b8-9ae5-42f0-90f1-dff9d46b08ab
+template <int MaxCode = 4096, int MaxWords = 256>
+struct compiled_program {
+    foundation::static_vector<instr, MaxCode> code{}; ///< The flat program.
+
+    /// Entry-point instruction index for dictionary word `i`, or `-1` if
+    /// word `i` is not a colon word.
+    foundation::static_vector<int, MaxWords> entry_points{};
+
+    /// Instruction index where the top-level program body begins -- the
+    /// VM's own "main," run after every colon definition's own code (which
+    /// only ever runs when called).
+    int program_entry = 0;
+
+    /// Cells the source `compiled_unit`'s data space had actually allotted
+    /// (`VARIABLE`/`CREATE`) by the time codegen ran. F16's own @ref run
+    /// consumes this at the start of every run to seed a fresh
+    /// @ref forth_state's own data space before executing any instruction.
+    int data_space_size = 0;
+
+    /// See the class doc comment: not computed by this step.
+    int required_stack_depth = -1;
+    /// See the class doc comment: not computed by this step.
+    int required_return_depth = -1;
+};
+// 7bb215b8-9ae5-42f0-90f1-dff9d46b08ab end
+#+end_src
+
+=compiled_program= is the artifact that survives from a =constexpr= codegen call to an ordinary-runtime VM call unchanged: a literal type, trivially copyable, bundling the flat instruction array with a word table (=entry_points=, one instruction index per dictionary entry, =-1= for anything that is not a colon word — primitives, variables, and constants are inlined at each reference site instead of called), the top-level program's own starting instruction index, and the data-space size the source =compiled_unit= had already allotted.
+
+=codegen= walks =unit.dictionary= in index order, emitting each colon word's own body before moving to the next entry, and records that word's entry point *before* emitting its body rather than after.
+This ordering is what lets every =call= instruction's operand resolve to a real instruction index without any back-patching: F11's static-binding discipline guarantees a =core_call='s target is always either an earlier word (already emitted, by construction, since dictionary order is walked forward) or the very word currently being emitted (=RECURSE=, a self-call — already in the word table by the time its own body's self-reference is reached, because the entry was recorded first).
+Back-patching is reserved for what actually needs it: a control structure's own *forward* branch, whose target instruction has not been emitted yet at the point the branch itself is.
+
+#+begin_src cpp
+/// Emits @p node's own instructions into @p out, per @ref op's documented
+/// shape.
+///
+/// `core_if` and `core_begin_until`/`core_begin_while` back-patch their own
+/// forward branch operands: a placeholder `branch`/`branch0` is emitted with
+/// a temporary operand of 0, its own instruction index is remembered, and
+/// once the jump's real target instruction has actually been emitted (the
+/// arm/loop-exit that follows), @p out's own instruction array is indexed
+/// directly to overwrite that placeholder's operand -- the classic
+/// single-pass assembler technique the plan's own wording ("computed by
+/// back-patching inside codegen") names directly. Backward branches (a
+/// `BEGIN ... UNTIL`/`BEGIN ... WHILE`'s own jump back to the loop's start)
+/// never need this: the loop's start instruction has already been emitted by
+/// the time the backward jump is, so its index is already known.
+template <int MaxCode, int MaxNodes, int MaxBody, int MaxName, int MaxWords,
+          int MaxData, int MaxWarnings>
+constexpr auto codegen_emit_node(
+    elaborator::compiled_unit<MaxNodes, MaxBody, MaxName, MaxWords, MaxData,
+                              MaxWarnings> const &unit,
+    elaborator::core_node<MaxNodes, MaxBody> const &node,
+    compiled_program<MaxCode, MaxWords> &out) -> status {
+    return std::visit(
+        [&](auto const &alt) -> status {
+            using T = std::decay_t<decltype(alt)>;
+
+            if constexpr (std::is_same_v<T, elaborator::core_push>) {
+                auto r = emit(out, op::push, alt.value, alt.pos);
+                if (!r.has_value()) {
+                    return r.error();
+                }
+                return std::monostate{};
+            } else if constexpr (std::is_same_v<T, elaborator::core_prim>) {
+                auto r =
+                    emit(out, op::prim, static_cast<cell>(alt.op), alt.pos);
+                if (!r.has_value()) {
+                    return r.error();
+                }
+                return std::monostate{};
+            } else if constexpr (std::is_same_v<T, elaborator::core_call>) {
+                auto const &entry = unit.dictionary.entry_at(alt.word_index);
+                auto const *cw = std::get_if<colon_word>(&entry.binding);
+                if (cw == nullptr) {
+                    return foundation::parse_error{
+                        alt.pos, "call target is not a colon word"};
+                }
+                int const target = out.entry_points[alt.word_index];
+                if (target < 0) {
+                    // Defensive only: the one-pass dictionary-order walk in
+                    // codegen() guarantees every colon-word call target has
+                    // already been emitted (see this header's own top
+                    // comment) -- unreachable in practice.
+                    return foundation::parse_error{
+                        alt.pos, "call target has no resolved entry point"};
+                }
+                auto r =
+                    emit(out, op::call, static_cast<cell>(target), alt.pos);
+                if (!r.has_value()) {
+                    return r.error();
+                }
+                return std::monostate{};
+            } else if constexpr (std::is_same_v<T, elaborator::core_var>) {
+                auto r = emit(out, op::push, static_cast<cell>(alt.address),
+                              alt.pos);
+                if (!r.has_value()) {
+                    return r.error();
+                }
+                return std::monostate{};
+            } else if constexpr (std::is_same_v<T, elaborator::core_const>) {
+                auto r = emit(out, op::push, alt.value, alt.pos);
+                if (!r.has_value()) {
+                    return r.error();
+                }
+                return std::monostate{};
+            } else if constexpr (std::is_same_v<T, elaborator::core_push_xt>) {
+                auto r = emit(out, op::push_xt,
+                              static_cast<cell>(alt.word_index), alt.pos);
+                if (!r.has_value()) {
+                    return r.error();
+                }
+                return std::monostate{};
+            } else if constexpr (std::is_same_v<T, elaborator::core_exit>) {
+                auto r = emit(out, op::ret, cell{0}, alt.pos);
+                if (!r.has_value()) {
+                    return r.error();
+                }
+                return std::monostate{};
+            } else if constexpr (std::is_same_v<T,
+                                                elaborator::core_loop_index>) {
+                // `I`/`J`: the level (0/1) is the operand; the VM reads the
+                // return-stack loop frame at offset 2*level.
+                auto r = emit(out, op::push_index, static_cast<cell>(alt.level),
+                              alt.pos);
+                if (!r.has_value()) {
+                    return r.error();
+                }
+                return std::monostate{};
+            } else if constexpr (std::is_same_v<T, elaborator::core_leave>) {
+                // A forward branch to the enclosing loop's exit. Its target is
+                // not known until that loop's own `loop_step` has been emitted,
+                // so it is emitted with a -1 sentinel operand and back-patched
+                // by the enclosing core_do_loop below. (-1 can never be a real
+                // instruction index, so the sentinel is unambiguous, and an
+                // inner nested loop patches its own leaves first, leaving only
+                // this loop's own leaves still at -1 for it to find.)
+                auto r = emit(out, op::leave, cell{-1}, alt.pos);
+                if (!r.has_value()) {
+                    return r.error();
+                }
+                return std::monostate{};
+            } else if constexpr (std::is_same_v<T, elaborator::core_unloop>) {
+                auto r = emit(out, op::unloop, cell{0}, alt.pos);
+                if (!r.has_value()) {
+                    return r.error();
+                }
+                return std::monostate{};
+            } else if constexpr (std::is_same_v<T, elaborator::core_if<
+                                                       MaxNodes, MaxBody>>) {
+                auto branch0_r = emit(out, op::branch0, cell{0}, alt.pos);
+                if (!branch0_r.has_value()) {
+                    return branch0_r.error();
+                }
+                int const branch0_index = branch0_r.value();
+
+                auto then_r = codegen_emit_body(unit, alt.then_body, out);
+                if (!then_r.has_value()) {
+                    return then_r;
+                }
+
+                if (alt.else_body.empty()) {
+                    out.code[branch0_index].operand =
+                        static_cast<cell>(out.code.size());
+                    return std::monostate{};
+                }
+
+                auto branch_r = emit(out, op::branch, cell{0}, alt.pos);
+                if (!branch_r.has_value()) {
+                    return branch_r.error();
+                }
+                int const branch_index = branch_r.value();
+                out.code[branch0_index].operand =
+                    static_cast<cell>(out.code.size());
+
+                auto else_r = codegen_emit_body(unit, alt.else_body, out);
+                if (!else_r.has_value()) {
+                    return else_r;
+                }
+                out.code[branch_index].operand =
+                    static_cast<cell>(out.code.size());
+                return std::monostate{};
+            } else if constexpr (std::is_same_v<T, elaborator::core_begin_until<
+                                                       MaxNodes, MaxBody>>) {
+                int const loop_start = out.code.size();
+                auto body_r = codegen_emit_body(unit, alt.body, out);
+                if (!body_r.has_value()) {
+                    return body_r;
+                }
+                // UNTIL: pop the flag; loop back while it is still false
+                // (branch0 branches when the popped flag is zero).
+                auto r = emit(out, op::branch0, static_cast<cell>(loop_start),
+                              alt.pos);
+                if (!r.has_value()) {
+                    return r.error();
+                }
+                return std::monostate{};
+            } else if constexpr (std::is_same_v<T, elaborator::core_begin_while<
+                                                       MaxNodes, MaxBody>>) {
+                int const loop_start = out.code.size();
+                auto cond_r = codegen_emit_body(unit, alt.condition, out);
+                if (!cond_r.has_value()) {
+                    return cond_r;
+                }
+                auto branch0_r = emit(out, op::branch0, cell{0}, alt.pos);
+                if (!branch0_r.has_value()) {
+                    return branch0_r.error();
+                }
+                int const branch0_index = branch0_r.value();
+
+                auto body_r = codegen_emit_body(unit, alt.body, out);
+                if (!body_r.has_value()) {
+                    return body_r;
+                }
+                auto branch_r = emit(out, op::branch,
+                                     static_cast<cell>(loop_start), alt.pos);
+                if (!branch_r.has_value()) {
+                    return branch_r.error();
+                }
+                out.code[branch0_index].operand =
+                    static_cast<cell>(out.code.size());
+                return std::monostate{};
+                // 5f3a8d1c-9b6e-4a20-8d4f-1c7b2e9a6f38
+            } else if constexpr (std::is_same_v<T, elaborator::core_do_loop<
+                                                       MaxNodes, MaxBody>>) {
+                // `limit start DO <body> LOOP/+LOOP` (F17):
+                //
+                //     do_setup                  ; frame <- (limit start)
+                //   start: <body>
+                //     loop_step | plus_loop_step  operand=start
+                //   exit: ...                   ; LEAVE branches here
+                //
+                // do_setup pops (limit start) into a return-stack frame;
+                // loop_step/plus_loop_step advance the index and either branch
+                // back to `start` or fall through (tearing the frame down) to
+                // `exit`. Every LEAVE emitted inside <body> is back-patched to
+                // `exit` here.
+                auto setup_r = emit(out, op::do_setup, cell{0}, alt.pos);
+                if (!setup_r.has_value()) {
+                    return setup_r.error();
+                }
+                int const loop_start = out.code.size();
+                auto body_r = codegen_emit_body(unit, alt.body, out);
+                if (!body_r.has_value()) {
+                    return body_r;
+                }
+                auto step_r = emit(
+                    out, alt.is_plus_loop ? op::plus_loop_step : op::loop_step,
+                    static_cast<cell>(loop_start), alt.pos);
+                if (!step_r.has_value()) {
+                    return step_r.error();
+                }
+                int const loop_exit = out.code.size();
+                // Back-patch this loop's own LEAVE branches (still at the -1
+                // sentinel; any inner loop's leaves were already patched).
+                for (int k = loop_start; k < loop_exit; ++k) {
+                    if (out.code[k].code == op::leave &&
+                        out.code[k].operand == cell{-1}) {
+                        out.code[k].operand = static_cast<cell>(loop_exit);
+                    }
+                }
+                return std::monostate{};
+                // 5f3a8d1c-9b6e-4a20-8d4f-1c7b2e9a6f38 end
+            } else {
+                // core_seq: never visited here in practice -- a core_call's
+                // target is unwrapped directly (see above), and core_seq is
+                // otherwise only ever the top-level wrapper a
+                // colon_word::core_id points at -- but std::visit must stay
+                // exhaustive. Mirrors eval_direct.hpp's identical
+                // defensive-only arm.
+                return foundation::parse_error{
+                    alt.pos, "unexpected nested sequence node"};
+            }
+        },
+        node.value);
+}
+#+end_src
+
+#+begin_src cpp
+/// Flattens @p unit (an elaborator::compiled_unit that has already passed
+/// F11 resolution and F12 stack-effect analysis) into a @ref
+/// compiled_program: every colon word in @p unit's dictionary becomes an
+/// entry point (walked in dictionary-index order, per this header's own top
+/// comment on why that ordering resolves every call without back-patching),
+/// followed by the top-level program body (@ref
+/// compiled_program::program_entry marks where it starts), followed by a
+/// trailing @ref op::halt.
+///
+/// @tparam MaxCode Instruction-array capacity of the produced @ref
+///                 compiled_program (see @ref compiled_program).
+template <int MaxCode = 4096, int MaxNodes = 1024, int MaxBody = 64,
+          int MaxName = 32, int MaxWords = 256, int MaxData = 1024,
+          int MaxWarnings = 64>
+constexpr auto
+codegen(elaborator::compiled_unit<MaxNodes, MaxBody, MaxName, MaxWords, MaxData,
+                                  MaxWarnings> const &unit)
+    -> foundation::result<compiled_program<MaxCode, MaxWords>> {
+    compiled_program<MaxCode, MaxWords> out{};
+
+    for (int i = 0; i < unit.dictionary.size(); ++i) {
+        out.entry_points.push_back(-1);
+    }
+
+    for (int i = 0; i < unit.dictionary.size(); ++i) {
+        auto const &entry = unit.dictionary.entry_at(i);
+        auto const *cw = std::get_if<colon_word>(&entry.binding);
+        if (cw == nullptr) {
+            continue;
+        }
+        // Recorded before emitting the body itself, so a RECURSE-produced
+        // self-call inside this very body already resolves (this header's
+        // own top comment).
+        out.entry_points[i] = out.code.size();
+
+        auto const &core = unit.arena.get(cw->core_id);
+        auto const *seq =
+            std::get_if<elaborator::core_seq<MaxNodes, MaxBody>>(&core.value);
+        if (seq == nullptr) {
+            return foundation::parse_error{
+                foundation::source_pos{},
+                "colon word's core is not a sequence"};
+        }
+        auto body_r = codegen_emit_body(unit, seq->items, out);
+        if (!body_r.has_value()) {
+            return body_r.error();
+        }
+        auto ret_r = emit(out, op::ret, cell{0}, seq->pos);
+        if (!ret_r.has_value()) {
+            return ret_r.error();
+        }
+    }
+
+    out.program_entry = out.code.size();
+    auto program_r = codegen_emit_body(unit, unit.program, out);
+    if (!program_r.has_value()) {
+        return program_r.error();
+    }
+    auto halt_r = emit(out, op::halt, cell{0}, foundation::source_pos{});
+    if (!halt_r.has_value()) {
+        return halt_r.error();
+    }
+
+    out.data_space_size = unit.data_space.size();
+    return out;
+}
+#+end_src
+
+The VM's own fetch-execute loop is the pay-off of compiling =EXIT= to a literal =ret= instruction rather than threading an =eval_signal= through nested C++ call frames the way F13's evaluator has to: the return stack (=forth_state::returns()=, already shared between calls and, later, loop parameters, per ordinary Forth convention) already holds exactly the call chain a =ret= needs to unwind, so "pop a return address, jump to it" is the whole of =EXIT='s runtime behavior — no propagation logic of its own is needed anywhere else in the loop.
+A plain decrementing =int= "fuel" counter, consumed once per instruction fetched, bounds execution exactly the way F13's own per-core-node fuel bounds a nonterminating =BEGIN ... UNTIL=; budget exhaustion is a diagnosed error at the VM level too, not a hang.
+As of F14 the loop and its own seeding-then-run entry point were one function, =run=; step F25 (Phase 8, below) split the loop itself out into =run_from= — an entry point that starts at an arbitrary instruction index against an already-live state, without F16's data-space seeding — and reduced =run= to a thin wrapper that seeds, then delegates.
+=run='s own signature and every observable behavior for an ordinary top-level call are unchanged by that split; the loop below (=run_from=) is byte-for-byte the loop F14 originally wrote, just no longer nested inside =run= itself.
+
+#+begin_src cpp
+/// Runs @p program against @p state, starting at @p entry (an arbitrary
+/// instruction index inside @p program -- not necessarily @p
+/// program.program_entry) and executing until @ref op::halt or a diagnosed
+/// error, *without* seeding @p state's own data space first: see @ref run,
+/// which does seed it and is the entry point ordinary callers want.
+///
+/// Step F25 (docs/forth-plan-2.md) adds this entry point for the colon
+/// compiler's own interpreter loop (`interpreter::compile_buffer::
+/// call_word`), which calls into an already-compiled word's body against a
+/// *live*, already-running @p state, potentially many times in a single
+/// session (once per top-level reference to a previously defined word).
+/// @ref run's own data-space seeding step is correct exactly once, before a
+/// whole compiled_program's own top-level execution starts (F16, D10); it
+/// would be wrong to repeat on every single interpreted word call, since
+/// each call would `allot` @p program.data_space_size more cells,
+/// unconditionally, growing the live data space without bound. @ref run is
+/// now implemented in terms of this function -- it seeds, then delegates to
+/// `run_from(program, state, program.program_entry, fuel)` -- so its own
+/// signature and every observable behavior are unchanged (D16: the VM loop
+/// is retained, not frozen; only the existing opcodes' semantics and @ref
+/// run's own existing entry-point behavior must not change, and neither
+/// has).
+///
+/// Every opcode @ref op currently gives real semantics to (@ref op::push,
+/// @ref op::push_xt, @ref op::prim, @ref op::call, @ref op::ret, @ref
+/// op::branch, @ref op::branch0, @ref op::halt) is handled below; the nine
+/// opcodes reserved for steps F17/F18a (@ref instruction.hpp's own doc
+/// comment lists them) are diagnosed if ever encountered rather than
+/// invoking undefined behavior (D7) -- unreachable in practice, since this
+/// step's own @ref codegen never emits any of them.
+///
+/// @tparam MaxCode      @p program's instruction-array capacity.
+/// @tparam MaxWords     @p program's word-table capacity.
+/// @tparam StackDepth   @p state's data stack capacity.
+/// @tparam RStackDepth  @p state's return stack capacity -- also the
+///                      call/return stack @ref op::call/@ref op::ret share,
+///                      per Forth convention (this header's own top
+///                      comment).
+/// @tparam MaxData      @p state's data-space capacity.
+/// @tparam MaxOut       @p state's output-buffer capacity.
+/// @param  program A successfully compiled program (@ref codegen), or any
+///                  other @ref compiled_program whose @c code array @p entry
+///                  indexes into.
+/// @param  state   The machine state to run against; mutated in place.
+/// @param  entry   The instruction index to start execution at.
+/// @param  fuel    The execution step budget: decremented once per
+///                 instruction fetched (@ref consume_vm_fuel); exhaustion is
+///                 a diagnosed error, never a hang, even for a
+///                 nonterminating loop.
+template <int MaxCode, int MaxWords, int StackDepth, int RStackDepth,
+          int MaxData, int MaxOut>
+constexpr auto
+run_from(compiled_program<MaxCode, MaxWords> const &program,
+         forth_state<StackDepth, RStackDepth, MaxData, MaxOut> &state,
+         int entry, int fuel = 100000) -> status {
+    int ip = entry;
+
+    for (;;) {
+        if (ip < 0 || ip >= program.code.size()) {
+            return foundation::parse_error{foundation::source_pos{},
+                                           "instruction pointer out of range"};
+        }
+        auto budget = consume_vm_fuel(fuel);
+        if (!budget.has_value()) {
+            return budget;
+        }
+
+        instr const &in = program.code[ip];
+        switch (in.code) {
+        case op::push:
+        case op::push_xt: {
+            auto r = state.data().push(in.operand);
+            if (!r.has_value()) {
+                return r;
+            }
+            ++ip;
+            break;
+        }
+        case op::prim: {
+            auto r = apply_primitive(static_cast<primitive>(in.operand), state);
+            if (!r.has_value()) {
+                return r;
+            }
+            ++ip;
+            break;
+        }
+        case op::call: {
+            auto r = state.returns().push(static_cast<cell>(ip + 1));
+            if (!r.has_value()) {
+                return r.error();
+            }
+            ip = static_cast<int>(in.operand);
+            break;
+        }
+        case op::ret: {
+            auto r = state.returns().pop();
+            if (!r.has_value()) {
+                return r.error();
+            }
+            ip = static_cast<int>(r.value());
+            break;
+        }
+        case op::branch: {
+            ip = static_cast<int>(in.operand);
+            break;
+        }
+        case op::branch0: {
+            auto flag = state.data().pop();
+            if (!flag.has_value()) {
+                return flag.error();
+            }
+            if (flag.value() == 0) {
+                ip = static_cast<int>(in.operand);
+            } else {
+                ++ip;
+            }
+            break;
+        }
+        case op::halt:
+            return std::monostate{};
+        case op::do_setup: {
+            // ( limit start -- ) ( R: -- limit index ); index (=start) on top
+            // so I/J read it by offset and loops nest correctly. Shares the
+            // return stack with call frames -- the frame sits above the
+            // caller's return address and is torn down before the matching
+            // ret.
+            auto start = state.data().pop();
+            if (!start.has_value()) {
+                return start.error();
+            }
+            auto limit = state.data().pop();
+            if (!limit.has_value()) {
+                return limit.error();
+            }
+            if (auto r = state.returns().push(limit.value()); !r.has_value()) {
+                return r;
+            }
+            if (auto r = state.returns().push(start.value()); !r.has_value()) {
+                return r;
+            }
+            ++ip;
+            break;
+        }
+        case op::push_index: {
+            // `I`/`J`: read the level-L loop index at return-stack offset 2*L.
+            int const level = static_cast<int>(in.operand);
+            auto v = state.returns().peek(2 * level);
+            if (!v.has_value()) {
+                return v.error();
+            }
+            auto r = state.data().push(v.value());
+            if (!r.has_value()) {
+                return r;
+            }
+            ++ip;
+            break;
+        }
+        case op::loop_step: {
+            // `LOOP`: index += 1; terminate when it reaches the limit.
+            auto index = state.returns().pop();
+            if (!index.has_value()) {
+                return index.error();
+            }
+            auto limit = state.returns().peek(0);
+            if (!limit.has_value()) {
+                return limit.error();
+            }
+            cell const next = index.value() + 1;
+            if (next == limit.value()) {
+                if (auto r = state.returns().pop(); !r.has_value()) {
+                    return r.error();
+                }
+                ++ip;
+            } else {
+                if (auto r = state.returns().push(next); !r.has_value()) {
+                    return r;
+                }
+                ip = static_cast<int>(in.operand);
+            }
+            break;
+        }
+        // 2d8b6f4a-7c1e-4b93-9a5d-6e0f3c8a1d54
+        case op::plus_loop_step: {
+            // `+LOOP`: pop the increment; index += n; terminate when the index
+            // crosses the boundary between limit-1 and limit (Forth-2012),
+            // i.e. when the sign of (index - limit) flips.
+            auto incr = state.data().pop();
+            if (!incr.has_value()) {
+                return incr.error();
+            }
+            auto index = state.returns().pop();
+            if (!index.has_value()) {
+                return index.error();
+            }
+            auto limit = state.returns().peek(0);
+            if (!limit.has_value()) {
+                return limit.error();
+            }
+            cell const before = index.value() - limit.value();
+            cell const next = index.value() + incr.value();
+            cell const after = next - limit.value();
+            if (((before ^ after) < 0)) {
+                if (auto r = state.returns().pop(); !r.has_value()) {
+                    return r.error();
+                }
+                ++ip;
+            } else {
+                if (auto r = state.returns().push(next); !r.has_value()) {
+                    return r;
+                }
+                ip = static_cast<int>(in.operand);
+            }
+            break;
+        }
+        // 2d8b6f4a-7c1e-4b93-9a5d-6e0f3c8a1d54 end
+        case op::leave: {
+            // `LEAVE`: discard this loop's frame (index then limit) and branch
+            // past the loop.
+            if (auto r = state.returns().pop(); !r.has_value()) {
+                return r.error();
+            }
+            if (auto r = state.returns().pop(); !r.has_value()) {
+                return r.error();
+            }
+            ip = static_cast<int>(in.operand);
+            break;
+        }
+        case op::unloop: {
+            // `UNLOOP`: discard this loop's frame without branching, leaving
+            // the return stack as it was before do_setup (so a following ret
+            // pops the real return address).
+            if (auto r = state.returns().pop(); !r.has_value()) {
+                return r.error();
+            }
+            if (auto r = state.returns().pop(); !r.has_value()) {
+                return r.error();
+            }
+            ++ip;
+            break;
+        }
+        case op::execute:
+        case op::catch_mark:
+        case op::throw_op:
+            return foundation::parse_error{
+                foundation::source_pos{},
+                "execution-token/exception opcode not implemented until "
+                "F18a"};
+        }
+    }
+}
+#+end_src
+
+#+begin_src cpp
+/// Runs @p program against @p state, starting at @p program.program_entry
+/// and executing until @ref op::halt or a diagnosed error -- the entry point
+/// ordinary callers want (a whole compiled program's own top-level run).
+///
+/// Before delegating to @ref run_from, @p state's own data space is seeded
+/// from @p program.data_space_size (F16, D10) -- see this function's own
+/// leading comment -- so `@`/`!`/`+!` against a `VARIABLE`/`CREATE` address
+/// codegen already inlined as a push literal, and any address a later
+/// runtime `ALLOT` extends past it, are both valid from the first
+/// instruction onward.
+///
+/// @tparam MaxCode      @p program's instruction-array capacity.
+/// @tparam MaxWords     @p program's word-table capacity.
+/// @tparam StackDepth   @p state's data stack capacity.
+/// @tparam RStackDepth  @p state's return stack capacity.
+/// @tparam MaxData      @p state's data-space capacity.
+/// @tparam MaxOut       @p state's output-buffer capacity.
+/// @param  program A successfully compiled program (@ref codegen).
+/// @param  state   The machine state to run against; mutated in place.
+/// @param  fuel    The execution step budget; see @ref run_from.
+template <int MaxCode, int MaxWords, int StackDepth, int RStackDepth,
+          int MaxData, int MaxOut>
+constexpr auto run(compiled_program<MaxCode, MaxWords> const &program,
+                   forth_state<StackDepth, RStackDepth, MaxData, MaxOut> &state,
+                   int fuel = 100000) -> status {
+    // f1514ad1-894c-4812-9ccc-2bdecd54a986
+    // F16: seed state's own data space with program.data_space_size -- the
+    // high-water mark the source compiled_unit's data space reached during
+    // elaboration (every VARIABLE/CREATE allotment) -- so the addresses
+    // codegen already inlined as push literals are valid for @/!/+! from the
+    // first instruction onward. Reuses allot itself (discarding the
+    // returned address) rather than adding a second way to advance the
+    // high-water mark, exactly like eval_direct.hpp's eval_program does for
+    // the direct evaluator.
+    auto data_init = state.data_space().allot(program.data_space_size);
+    if (!data_init.has_value()) {
+        return data_init.error();
+    }
+    // f1514ad1-894c-4812-9ccc-2bdecd54a986 end
+
+    return run_from(program, state, program.program_entry, fuel);
+}
+#+end_src
+
+F14's own merge criterion is the "survives-to-runtime proof": every one of F13's own merge-criterion programs (=SQUARED=, =ABS=, =COUNTDOWN=, and =SPIN='s budget exhaustion) is compiled once into a =constexpr compiled_program= declared at namespace scope, then run through the VM twice against that *same* object — once inside a =static_assert= (compile time) and once inside a Catch2 =TEST_CASE= (ordinary runtime) — proving the identical compiled artifact works both ways, not merely that the same source text re-compiles identically twice (=vm.test.cpp=).
+
+** Counted loops (step F17)
+
+Step F17 makes =DO LOOP +LOOP I J LEAVE UNLOOP= real through both backends, using the return stack for loop parameters.
+=I=/=J=/=LEAVE=/=UNLOOP= are dedicated elaborated-core nodes (=core_loop_index= with a =level= field for =I=/=J=, =core_leave=, =core_unloop=), recognized in =elaborate_word_ref= before any dictionary lookup exactly like =EXIT=/=RECURSE= — never dictionary entries or primitives, which keeps them clear of the =primitive= enum (F16's territory).
+=DO= establishes a two-cell frame on the return stack, =limit= then =index= (index on top), so =I= reads return-stack offset 0 and =J= offset 2; a loop frame nests directly above the caller's own =call=/=ret= return address and is torn down before the matching =ret=.
+Plain =LOOP= terminates on the Forth-2012 equality test (=index + 1 == limit=); =+LOOP= uses the boundary-crossing rule (terminate when the sign of =index - limit= flips after adding the increment the body left on the data stack), not a simple comparison.
+
+=LEAVE= is one-shot, dynamic-extent nonlocal control (D11), handled differently by the two backends but with identical observable behavior.
+In the direct evaluator it is a new =eval_signal::left= that propagates up through nested control bodies just as =eval_signal::exited= does, but is absorbed by the nearest enclosing =core_do_loop= (which discards the loop frame and continues past the loop) rather than by a =core_call=.
+In the VM it compiles to a =leave= opcode emitted with a =-1= sentinel operand and back-patched by the enclosing loop to the instruction just past =loop_step=/=plus_loop_step=; an inner nested loop patches its own leaves first, so an outer loop's back-patch scan only ever finds its own still-sentinel leaves.
+=UNLOOP= discards the innermost loop frame without branching, so a following =EXIT= (compiled to =ret=) pops the real return address rather than a loop-parameter cell; F12's diagnosis 4 requires exactly this =UNLOOP= before any =EXIT= that leaves a definition from inside a =DO= loop.
+DIV-0010 records the supporting changes: the added =1+= primitive (F17's =SUMTO= criterion needs it, and only =1-= existed — the same kind of gap DIV-0007 filled for F13), and the two =DO...LOOP= stack-effect-model corrections (modelling the =( limit start )= =DO= consumes, so nested loops balance; requiring a net =+1= =+LOOP= body).
+
+This section will transclude the sender backend once step F18 lands.
+
+** Memory words end-to-end (step F16)
+
+=VARIABLE=, =CONSTANT=, and =CREATE= (step F11) already resolved to a dictionary entry and, for the two address-carrying forms, to a =core_var= node whose address is baked in at elaboration time; nothing before this step ever actually read or wrote through that address at runtime, and =ALLOT= did not exist as a word at all.
+=@=, =!=, and =+!= are four new =machine::primitive= enumerators (=fetch=, =store=, =plus_store=) plus =allot=, dispatched through =apply_primitive= exactly like every arithmetic or stack primitive before them — there is no new node kind in the elaborated core and no new opcode in =instruction.hpp=, because a memory access is, mechanically, just another primitive that happens to touch =forth_state::data_space()= instead of only the data stack.
+=ALLOT= in particular is an *ordinary primitive*, resolved through the same dictionary/=core_prim= path as =+= or =DUP=, not a new grammar production: it pops a cell count and calls =data_space::allot= at *runtime*, against whichever backend (=eval_direct.hpp= or the VM) is currently executing — this is why =CREATE BUF 4 ALLOT= works even though =elaborate_create= (F11) allots nothing of its own for =BUF=, and why =ALLOT='s own effect-table entry (=known(1, 0)=) is unremarkable, unlike the genuinely input-dependent =?DUP=.
+The default dictionary now installs 46 primitives, not 42 (=machine::default_dictionary=, =dictionary.hpp=); every table this project keeps keyed by primitive count — =elaborator::primitive_data_effect='s exhaustiveness comment, the dictionary/codegen tests that hardcode a colon word's post-primitive index — moved from 42 to 46 in lockstep.
+
+The one genuinely new piece of machinery this step adds is *data-space seeding*: a =VARIABLE=/=CREATE= address baked into the elaborated core as a literal is only valid to fetch or store through once the executing =forth_state='s own =data_space= has actually reserved that many cells — a freshly constructed =forth_state= starts with a data space whose high-water mark is zero, regardless of how much the source =compiled_unit='s own (elaboration-time) data space had allotted.
+Both backends' entry points close this gap the same way, by calling =data_space::allot= once with the already-known allotted size and discarding the returned address — reusing the one existing way to advance the high-water mark rather than adding a second: =eval_direct.hpp='s =eval_program= seeds from =unit.data_space.size()= before its first =eval_body= call, and =vm.hpp='s =run= seeds from =compiled_program::data_space_size= before its fetch-execute loop starts (both transcluded above, under 4caeb07c-70eb-4256-9a53-f48d9fd89fe1 and 3b356d6c-c4c1-4676-b16a-48e975b5d46b respectively — this step's addition to each is the =data_space().allot(...)= call near the top).
+Because a runtime =ALLOT= extends the very same =data_space= object from wherever this seeding left off, a =CREATE=d address remains a valid base address for cells a *later* =ALLOT= reserves past it, even though =elaborate_create= itself never touched the elaboration-time data space.
+An out-of-bounds =@=/=!=/=+!= (an address past what has actually been allotted so far, at either elaboration or runtime) is diagnosed through the same =foundation::result= channel =data_space::fetch=/=store= already used before this step (D7) — this step added no new bounds-checking logic of its own, only real callers that can reach the checks F10 already wrote (=eval_direct.test.cpp='s and =vm.test.cpp='s =OutOfBoundsStoreIsDiagnosed= exercise this through a real compiled program, not just =data_space.hpp='s own unit tests).
+
+F16's own merge criterion, verbatim: =VARIABLE X  5 X !  X @ 3 + X !  X @= leaves =[8]=, =7 CONSTANT LUCKY  LUCKY LUCKY += leaves =[14]=, and =CREATE BUF 4 ALLOT= leaves =BUF= usable as a base address across all four cells it reserves — all three verified through both =eval_direct.hpp= and the codegen+VM backend (=EvalDirectTest=/=VmTest - MemoryWordsMergeCriterion= and =-CreateAllotMergeCriterion=), plus once more through the public one-shot API (=ForthTest - MemoryWordsMergeCriterion=, =forth.test.cpp=) to confirm =forth.hpp= itself needed no change: data-space seeding lives entirely inside =machine::run=, which =forth_program::run=/=stack=/=output= already call for every fresh state.
+

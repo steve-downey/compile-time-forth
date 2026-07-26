@@ -8,11 +8,9 @@ target_sources(
             TYPE HEADERS
             FILES
                 cell.hpp
-                codegen.hpp
                 data_space.hpp
                 dictionary.hpp
                 emit.hpp
-                eval_direct.hpp
                 forth_state.hpp
                 instruction.hpp
                 stacks.hpp
@@ -26,11 +24,9 @@ if(FORTH_ENABLE_TESTING)
         machine_test
         PRIVATE
             cell.test.cpp
-            codegen.test.cpp
             data_space.test.cpp
             dictionary.test.cpp
             emit.test.cpp
-            eval_direct.test.cpp
             forth_state.test.cpp
             instruction.test.cpp
             stacks.test.cpp
