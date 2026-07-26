@@ -68,8 +68,9 @@ TEST_CASE("DictionaryTest - DefaultDictionaryInstallsAllPrimitives") {
     // 54 primitives (47 + step F28's `,` + step F29's `PARSE WORD CHAR
     // COUNT TYPE` and the runtime half of `ABORT"`) + 20 step F27 control
     // words (D17) + 9 step F28 control words (D18) + 6 step F29 control
-    // words (D19/D21).
-    CHECK(dict.size() == 89);
+    // words (D19/D21) + 3 step F31 control words (`CATCH THROW ABORT`,
+    // D11/D18).
+    CHECK(dict.size() == 92);
     auto const *entry = dict.lookup("SWAP");
     REQUIRE(entry != nullptr);
     REQUIRE(std::holds_alternative<primitive>(entry->binding));
@@ -392,4 +393,32 @@ TEST_CASE("DictionaryTest - DefaultDictionaryF28WordsAreInstalled") {
         REQUIRE(entry != nullptr);
         CHECK_FALSE(entry->immediate);
     }
+}
+
+TEST_CASE("DictionaryTest - DefaultDictionaryF31WordsAreInstalled") {
+    // CATCH/THROW/ABORT (step F31, D11/D18) are all ordinary, non-immediate
+    // control words -- none needs to run at compile time, exactly like
+    // EXECUTE.
+    auto dict = default_dictionary<>();
+
+    auto const *catch_entry = dict.lookup("CATCH");
+    REQUIRE(catch_entry != nullptr);
+    CHECK_FALSE(catch_entry->immediate);
+    REQUIRE(std::holds_alternative<control_word>(catch_entry->binding));
+    CHECK(std::get<control_word>(catch_entry->binding).which ==
+          control_builtin::catch_);
+
+    auto const *throw_entry = dict.lookup("THROW");
+    REQUIRE(throw_entry != nullptr);
+    CHECK_FALSE(throw_entry->immediate);
+    REQUIRE(std::holds_alternative<control_word>(throw_entry->binding));
+    CHECK(std::get<control_word>(throw_entry->binding).which ==
+          control_builtin::throw_);
+
+    auto const *abort_entry = dict.lookup("ABORT");
+    REQUIRE(abort_entry != nullptr);
+    CHECK_FALSE(abort_entry->immediate);
+    REQUIRE(std::holds_alternative<control_word>(abort_entry->binding));
+    CHECK(std::get<control_word>(abort_entry->binding).which ==
+          control_builtin::abort_);
 }

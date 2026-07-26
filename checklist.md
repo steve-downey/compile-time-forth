@@ -37,7 +37,7 @@
 - [x] Step F28: execution tokens and defining words
 - [x] Step F29: parsing words and strings
 - [ ] Step F30: effect lint
-- [ ] Step F31: CATCH and THROW
+- [x] Step F31: CATCH and THROW
 - [ ] Step F32: conformance
 - [ ] Step F33: sender backend
 - [ ] Step F34: foreign function interface

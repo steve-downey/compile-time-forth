@@ -51,6 +51,138 @@ constexpr auto consume_vm_fuel(int &fuel) -> status {
     return std::monostate{};
 }
 
+// Step F31 (docs/forth-plan-2.md), D11/D18: CATCH and THROW. See DIV-0018
+// for the full design record; the shape in brief, because it is the answer
+// to Part 11's own recorded-but-unverified return-stack teardown gap (F17):
+// a `CATCH` handler frame is *found by depth*, never by scanning. `machine::
+// forth_state::handler_depth` (a scalar register alongside `BASE`/`STATE`,
+// not a stack slot) always names the return-stack depth *at which* the
+// innermost active handler's own 3-cell frame begins. `THROW` reads that
+// depth directly and calls @ref cell_stack::truncate once to discard
+// *everything* above it -- whatever mix of call frames, `DO`-loop frames,
+// and `>R` values the caught execution built, all at once, without ever
+// having to identify any individual one of them. This is what makes `CATCH`/
+// `THROW` correct regardless of F17's own still-unverified assumption that a
+// `DO`-loop's own teardown (`op::loop_step`/`op::leave`/`op::unloop`) always
+// finds its own frame at the very top of the return stack: `THROW`'s own
+// unwind never relies on that assumption, or on any assumption about what is
+// above the target depth -- it simply is not there anymore.
+//
+// A handler frame's own 3 cells, pushed in this order by @ref op::catch_mark
+// (so they are popped in the reverse order below): the handler-depth
+// register's own previous value (the next-outer handler, restored when this
+// one is consumed either way), the data-stack depth `CATCH` itself recorded
+// (restored on a caught `THROW`, ignored on normal completion), and the
+// instruction index execution resumes at afterward (used only by a caught
+// `THROW`; normal completion resumes there too, but by physically falling
+// into it via `op::prim primitive::catch_ok`, emitted right after
+// `op::catch_mark` by both of interp.hpp's own `CATCH` cases, not by reading
+// this cell).
+
+// 5e8b3a1c-6d2f-4c9e-8b7a-3f1d9c6e2a4b
+/// Unwinds to the innermost active `CATCH` handler and pushes @p n, or
+/// diagnoses an uncaught `THROW` carrying @p n if `state.handler_depth()` is
+/// `-1` (no handler active) -- the one place both @ref op::throw_op and the
+/// `ABORT"`/machine-fault-mapping paths in @ref run_from's own `op::prim`
+/// case perform the actual unwind, so both stay in exact agreement.
+///
+/// @p n must be nonzero: @ref op::throw_op's own `n == 0` no-op case (per
+/// Forth-2012) is handled by its caller, before this function is ever
+/// called.
+///
+/// On success, mutates @p ip to the resumed instruction index; @p state's
+/// data and return stacks, and its own handler-depth register, are restored
+/// to exactly what they were when the matching `CATCH` began running its own
+/// execution token.
+template <int MaxDepth, int MaxRDepth, int MaxData, int MaxOut>
+constexpr auto
+perform_throw(forth_state<MaxDepth, MaxRDepth, MaxData, MaxOut> &state, cell n,
+              int &ip) -> status {
+    int const handler = state.handler_depth();
+    if (handler < 0) {
+        // Uncaught: foundation::parse_error::message must stay a static
+        // string literal (it does not own or copy what it points to, per
+        // its own doc comment -- the exact wall DIV-0017's own F29 finding
+        // named), so the thrown code cannot ride along in the message text.
+        // where.offset carries it instead: a deliberate, documented reuse of
+        // a field that already means nothing for a condition with no real
+        // source position of its own.
+        return foundation::parse_error{
+            foundation::source_pos{.offset = static_cast<int>(n)},
+            "uncaught THROW (code in foundation::parse_error::where.offset)"};
+    }
+    auto tr = state.returns().truncate(handler + 3);
+    if (!tr.has_value()) {
+        return tr;
+    }
+    auto resume_ip = state.returns().pop();
+    if (!resume_ip.has_value()) {
+        return resume_ip.error();
+    }
+    auto saved_data_depth = state.returns().pop();
+    if (!saved_data_depth.has_value()) {
+        return saved_data_depth.error();
+    }
+    auto prev_handler = state.returns().pop();
+    if (!prev_handler.has_value()) {
+        return prev_handler.error();
+    }
+    auto td = state.data().truncate(static_cast<int>(saved_data_depth.value()));
+    if (!td.has_value()) {
+        return td;
+    }
+    auto push_r = state.data().push(n);
+    if (!push_r.has_value()) {
+        return push_r;
+    }
+    state.set_handler_depth(static_cast<int>(prev_handler.value()));
+    ip = static_cast<int>(resume_ip.value());
+    return std::monostate{};
+}
+// 5e8b3a1c-6d2f-4c9e-8b7a-3f1d9c6e2a4b end
+
+/// True iff @p e is specifically `ABORT"`'s own "condition met" failure
+/// (`machine::primitive::abort_quote`, `forth_state.hpp`) -- the one
+/// primitive failure @ref run_from's own `op::prim` case always routes
+/// through `THROW -2` (DIV-0017's revisit, DIV-0018), whether or not a
+/// handler is active, rather than only when one is (see @ref
+/// machine_fault_throw_code for the "only when caught" ones).
+[[nodiscard]] constexpr auto
+is_abort_quote_condition(foundation::parse_error const &e) -> bool {
+    return e.message != nullptr &&
+           std::string_view{e.message} == "ABORT\" condition met";
+}
+
+/// Maps a handful of `apply_primitive` diagnoses to their standard
+/// Forth-2012 `THROW` code (D7: "machine faults ... mapped to standard
+/// THROW codes where sensible"), by matching @p e's own static message text.
+/// Unmapped otherwise -- @p e is returned unchanged, and @ref run_from's own
+/// `op::prim` case only consults this mapping at all when a handler is
+/// already active (`state.handler_depth() >= 0`), so every uncaught
+/// diagnosis anywhere in this project keeps its original, more specific
+/// message verbatim (DIV-0018 records exactly which faults are mapped and
+/// why the rest are not).
+[[nodiscard]] constexpr auto
+machine_fault_throw_code(foundation::parse_error const &e)
+    -> foundation::result<cell> {
+    if (e.message != nullptr) {
+        std::string_view const msg{e.message};
+        if (msg == "stack overflow") {
+            return cell{-3}; // Forth-2012: stack overflow.
+        }
+        if (msg == "stack underflow") {
+            return cell{-4}; // Forth-2012: stack underflow.
+        }
+        if (msg == "division by zero") {
+            return cell{-10}; // Forth-2012: division by zero.
+        }
+        if (msg == "data space address out of bounds") {
+            return cell{-9}; // Forth-2012: invalid memory address.
+        }
+    }
+    return e;
+}
+
 // 7f3a9c1e-4b8d-4e2a-9c6f-1d8b3a7e5f2c
 /// `CREATE`'s own action (step F28, D18/D10): scan the next name off @p
 /// state's own SOURCE/>IN, allot @p cells_to_allot cells past the current
@@ -116,14 +248,15 @@ create_here(dictionary<MaxWords, MaxName> &dict,
 /// run's own existing entry-point behavior must not change, and neither
 /// has).
 ///
-/// Every opcode @ref op currently gives real semantics to (@ref op::push,
-/// @ref op::push_xt, @ref op::prim, @ref op::call, @ref op::ret, @ref
-/// op::branch, @ref op::branch0, @ref op::execute, @ref op::create_word,
-/// @ref op::does_enter, @ref op::halt) is handled below; the opcodes
-/// reserved for steps F17/F31 (@ref instruction.hpp's own doc comment lists
-/// them) are diagnosed if ever encountered rather than invoking undefined
-/// behavior (D7) -- unreachable in practice, since this step's own @ref
-/// codegen never emits any of them.
+/// Every @ref op enumerator now has real semantics, handled below: @ref
+/// op::push/@ref op::push_xt/@ref op::prim/@ref op::call/@ref op::ret/@ref
+/// op::branch/@ref op::branch0/@ref op::halt (step F14), @ref op::do_setup/
+/// @ref op::loop_step/@ref op::plus_loop_step/@ref op::push_index/@ref
+/// op::leave/@ref op::unloop (step F17), @ref op::execute/@ref
+/// op::create_word/@ref op::does_enter (step F28), and @ref op::catch_mark/
+/// @ref op::throw_op (step F31, D11 -- @ref perform_throw is the shared
+/// unwind logic both this switch's own `op::throw_op` case and its
+/// `op::prim` case's machine-fault mapping call into).
 ///
 /// @p dict is step F28's own addition (D18): `nullptr` by default, exactly
 /// as every caller before this step already implicitly assumed (none of
@@ -196,6 +329,34 @@ run_from(compiled_program<MaxCode, MaxWords> const &program,
         case op::prim: {
             auto r = apply_primitive(static_cast<primitive>(in.operand), state);
             if (!r.has_value()) {
+                // ABORT" (step F31, DIV-0017's revisit/DIV-0018): its own
+                // "condition met" failure always means THROW -2, whether or
+                // not a handler is active -- perform_throw itself produces
+                // the correct uncaught diagnosis when handler_depth() < 0.
+                if (is_abort_quote_condition(r.error())) {
+                    auto th = perform_throw(state, cell{-2}, ip);
+                    if (!th.has_value()) {
+                        return th;
+                    }
+                    break;
+                }
+                // Every other primitive-level machine fault (stack
+                // over/underflow, division by zero, an out-of-bounds data-
+                // space address) is mapped to its standard THROW code only
+                // when a handler is active (D7): with no CATCH anywhere,
+                // every existing diagnosis keeps its original, more
+                // specific message verbatim -- see machine_fault_throw_code
+                // and DIV-0018.
+                if (state.handler_depth() >= 0) {
+                    auto mapped = machine_fault_throw_code(r.error());
+                    if (mapped.has_value()) {
+                        auto th = perform_throw(state, mapped.value(), ip);
+                        if (!th.has_value()) {
+                            return th;
+                        }
+                        break;
+                    }
+                }
                 return r;
             }
             ++ip;
@@ -422,11 +583,70 @@ run_from(compiled_program<MaxCode, MaxWords> const &program,
             ip = static_cast<int>(ret_addr.value());
             break;
         }
-        case op::catch_mark:
-        case op::throw_op:
-            return foundation::parse_error{
-                foundation::source_pos{},
-                "exception opcode not implemented until F31"};
+        // c4a7e9d2-3f6b-4e1a-9c8d-5b2f7a4e6c1d
+        case op::catch_mark: {
+            // `CATCH` (step F31, D11/D18): xt CATCH ( xt -- 0 | n ). Pops
+            // the execution token, pushes a 3-cell handler frame [prev
+            // handler-depth, saved data-stack depth, resume ip] onto the
+            // return stack (`in.operand` is the resume ip -- either
+            // interp.hpp's own compiled or interpreting CATCH case computes
+            // it, see each one's own comment), points handler_depth() at
+            // this frame's own base, then pushes this instruction's own
+            // return address (`ip + 1`, where `prim primitive::catch_ok` --
+            // the normal-completion epilogue -- always sits, emitted right
+            // after this instruction by both of interp.hpp's own CATCH
+            // cases) and jumps to the token, exactly like @ref op::execute.
+            // See this header's own top comment (by perform_throw) for how
+            // this composes with @ref op::throw_op to unwind correctly
+            // through an arbitrary mix of call/DO-loop/`>R`/handler frames
+            // sharing this same return stack.
+            auto xt = state.data().pop();
+            if (!xt.has_value()) {
+                return xt.error();
+            }
+            int const frame_base = state.returns().depth();
+            int const saved_data_depth = state.data().depth();
+            int const prev_handler = state.handler_depth();
+            if (auto r = state.returns().push(static_cast<cell>(prev_handler));
+                !r.has_value()) {
+                return r;
+            }
+            if (auto r =
+                    state.returns().push(static_cast<cell>(saved_data_depth));
+                !r.has_value()) {
+                return r;
+            }
+            if (auto r = state.returns().push(in.operand); !r.has_value()) {
+                return r;
+            }
+            state.set_handler_depth(frame_base);
+            if (auto r = state.returns().push(static_cast<cell>(ip + 1));
+                !r.has_value()) {
+                return r;
+            }
+            ip = static_cast<int>(xt.value());
+            break;
+        }
+        case op::throw_op: {
+            // `THROW` (step F31, D11): n THROW ( n -- ). Zero is a no-op
+            // per Forth-2012; otherwise unwind to the innermost active
+            // handler (@ref perform_throw), or diagnose an uncaught THROW
+            // carrying n.
+            auto n = state.data().pop();
+            if (!n.has_value()) {
+                return n.error();
+            }
+            if (n.value() == 0) {
+                ++ip;
+                break;
+            }
+            auto r = perform_throw(state, n.value(), ip);
+            if (!r.has_value()) {
+                return r;
+            }
+            break;
+        }
+            // c4a7e9d2-3f6b-4e1a-9c8d-5b2f7a4e6c1d end
         }
     }
 }

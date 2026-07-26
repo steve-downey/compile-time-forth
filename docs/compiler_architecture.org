@@ -353,8 +353,9 @@ All three are immediate control words (`apply_control_word`, interp.hpp): each m
 
 #+transclude: [[file:../src/smd/forth/machine/forth_state.hpp::4beb6ab5-f28e-4b2f-8a21-3d4ba8575f55]] :lines 2- :src cpp :end "4beb6ab5-f28e-4b2f-8a21-3d4ba8575f55 end"
 
-`ABORT"` is compile-only (Forth-2012: its interpretation semantics are undefined) and, per DIV-0017, is not yet the real `THROW -2` Forth-2012 calls for — `THROW`/`CATCH` do not exist until F31.
-Its compiled form stores the message and compiles a push-address/push-length/`abort_quote` sequence; the `abort_quote` primitive prints the message (if the runtime flag is nonzero) and then returns a diagnosed `foundation::parse_error` — a hard stop of the whole interpretation, not a silent no-op, and not yet an unwind to a `CATCH`.
+`ABORT"` is compile-only (Forth-2012: its interpretation semantics are undefined); at this step (F29), per DIV-0017, it was not yet the real `THROW -2` Forth-2012 calls for — `THROW`/`CATCH` did not exist until F31.
+Its compiled form stores the message and compiles a push-address/push-length/`abort_quote` sequence; at this step, the `abort_quote` primitive printed the message (if the runtime flag was nonzero) and then returned a diagnosed `foundation::parse_error` — a hard stop of the whole interpretation, not a silent no-op, but not yet an unwind to a `CATCH`.
+**Resolved at step F31** (Phase 13, below): `abort_quote` now fails with a distinguished condition that is always routed through a real `THROW -2`, caught by an enclosing `CATCH` if one is active.
 See DIV-0017 for the full record and its own revisit condition.
 
 ** `[CHAR]`: compile-only `CHAR`
@@ -374,3 +375,47 @@ The demonstration D19 exists for: `: ECHO-WORD 32 WORD COUNT TYPE ;  ECHO-WORD F
 `S"` round-trips through `TYPE` directly (its own Forth-2012 runtime shape); `WORD`'s own counted-string output round-trips through `COUNT`/`TYPE` — both exercised together in one program (`StringRoundTripMergeCriterion`, both files).
 
 See DIV-0017 (=docs/divergences/DIV-0017-f29-parsing-words-and-strings.md=) for the complete record of this step's own design choices, including the ones this section only summarizes.
+
+* Phase 13: CATCH and THROW (step F31, docs/forth-plan-2.md)
+
+Part 11 (F17) recorded, but never checked, that loop-frame teardown assumes the top of the return stack is the loop's own frame.
+This step is where that gap gets paid: `THROW` must unwind an arbitrary mix of call frames (a return address), `DO`-loop frames (two cells, above the caller's own return address), whatever a user's `>R` pushed, and `CATCH`'s own handler frames, all sharing one return stack, without ever mis-identifying one for another.
+
+** A handler is found by depth, never by scanning
+
+`machine::forth_state` gains a scalar register, `handler_depth()`/`set_handler_depth(int)` — not a stack slot, alongside `BASE`/`STATE` — naming the return-stack depth *at which* the innermost active `CATCH` handler's own 3-cell frame begins, or `-1` if none is active.
+`op::catch_mark` (`xt CATCH`) pops the execution token, pushes that 3-cell frame — the handler-depth register's own previous value, the data-stack depth at the moment of the call, and the instruction index execution resumes at afterward — points the register at this frame's own base, pushes its own return address (the `catch_ok` primitive that follows it, the same "push return address, jump" convention `op::call`/`op::execute` already use), and jumps to the token.
+
+#+transclude: [[file:../src/smd/forth/machine/vm.hpp::5e8b3a1c-6d2f-4c9e-8b7a-3f1d9c6e2a4b]] :lines 2- :src cpp :end "5e8b3a1c-6d2f-4c9e-8b7a-3f1d9c6e2a4b end"
+
+`perform_throw` is the one place `op::throw_op`, `ABORT"`'s own unconditional routing, and the general machine-fault mapping (both below) all unwind: it reads `handler_depth()` directly, calls the new `cell_stack::truncate(int)` *once* to discard everything above the frame — whatever mix of call/`DO`-loop/`>R` cells the caught execution built, all at once, without inspecting any of it — then pops the frame's own 3 cells, truncates the *data* stack to the recorded depth, pushes the thrown code, restores the handler-depth register, and jumps to the resume instruction.
+This is what makes `CATCH`/`THROW` correct regardless of F17's own still-unverified assumption: `THROW`'s own unwind never relies on it, or on any assumption about what is between its own target depth and the current top — by the time it is done, that is simply not there anymore.
+A caught execution's own normal completion (no `THROW`) reaches the identical frame a different way: its own final `ret` lands on `catch_ok` (a new `machine::primitive`, not a third opcode — no `ip` manipulation is needed for a normal return), which pops the frame, restores the register, and pushes `0`.
+
+** Interpreting-time CATCH/THROW/ABORT reuse the compiled shape
+
+`CATCH`/`THROW`/`ABORT` are ordinary, non-immediate `machine::control_builtin` tags — none is compile-only, and none needs to run early, exactly like `EXECUTE` (D14).
+`interp.hpp`'s own `compile_entry` gives each a compiled form (`op::catch_mark`+`prim catch_ok`; a bare `op::throw_op`; `op::push -1`+`op::throw_op` for `ABORT`, literally `-1 THROW`); `apply_control_word`'s own interpreting-time cases append the identical instructions to the live code space — guarded by a leading unconditional branch exactly like `resolve_execution_token` already does for `'` — and run them once via `machine::run_from`, so a `CATCH`/`THROW` typed directly at the top level behaves identically to one compiled into a colon definition (D14's "one semantics" again).
+Interpreting `CATCH`'s own resume ip is `compile_buffer::halt_pad` (instruction 0, always `op::halt`) rather than "one past this call's own appended code," since nothing genuinely follows it there; both the normal-completion path and a matching `THROW` need an explicit trailing `branch halt_pad` to land on it.
+
+** Machine faults, mapped where sensible
+
+`run_from`'s own `op::prim` case, on any primitive failure, checks whether a handler is active before consulting `machine_fault_throw_code` — a message-text match against a small table (`"stack overflow"` → `-3`, `"stack underflow"` → `-4`, `"division by zero"` → `-10`, `"data space address out of bounds"` → `-9`) — so every uncaught diagnosis anywhere in this project keeps its original, more specific message verbatim, unchanged from every test that predates this step.
+`ABORT"`'s own runtime primitive (`machine::primitive::abort_quote`) is different: its "condition met" failure always routes through `THROW -2`, whether or not a handler is active, because `ABORT"` *is* `THROW -2` (Forth-2012), not merely a fault this project chooses to make catchable — DIV-0017's own revisit condition closes here.
+Fuel exhaustion (D22) is deliberately never mapped: it signals a runaway computation the VM itself gave up bounding, not an ordinary condition a `CATCH` should be able to swallow and keep going past.
+
+** `default_dictionary` grows to 92 entries
+
+54 primitives (53 from before this step, plus `catch_ok`) plus 38 control words (35 from before this step, plus `CATCH THROW ABORT`, none immediate).
+`effect_lint.hpp`'s own `primitive_data_effect` switch gains one case (`catch_ok`, `known(0, 1)`: it touches only the return stack, pushing exactly one flag).
+
+** Merge criteria
+
+BOOM/SAFE/TRY, the conventional shapes R1's own retired F18a step never wrote as code: `: BOOM 42 THROW ; : SAFE 99 ; : TRY CATCH DUP IF ." CAUGHT " . ELSE DROP ." OK " . THEN ; ' BOOM TRY ' SAFE TRY` outputs `"CAUGHT 42 OK 99 "` in both worlds — through `interpret()` directly (`interp.test.cpp`'s `BoomSafeTryMergeCriterion`) and through the public API (`forth.test.cpp`'s own criterion of the same name).
+Depth restoration: whatever a thrown word pushed *after* `CATCH` began is discarded; whatever was on the stack *before* survives untouched, with the thrown code on top (`CatchRestoresDataStackDepth`).
+Nested `CATCH`: an inner handler catches its own throw and completes; a later throw from the same word escapes past that already-completed inner handler straight to the right outer one (`NestedCatchEscapesToTheRightHandler`).
+The interaction battery Part 11's own gap named: a call frame, a `>R` value, and a `DO`-loop frame all sit above a `CATCH` frame when `THROW` fires inside the loop body; unwinding through all three in one `truncate` leaves the return stack exactly at depth 0 afterward, and an unrelated `DO`/`LEAVE` word run immediately afterward still works normally (`CatchUnwindsThroughToRDoLoopAndCallFrames`).
+A machine fault (division by zero) mapped to its standard code and caught like any explicit `THROW` (`DivisionByZeroCaughtByCatch`); the same fault, uncaught, keeps its original message verbatim (`UncaughtDivisionByZeroKeepsItsOwnMessage`).
+`ABORT"` caught by an enclosing `CATCH` (`AbortQuoteCaughtByCatch`); `ABORT` as `-1 THROW` (`AbortIsMinusOneThrow`); `0 THROW` as a no-op (`ThrowZeroIsANoOp`); an uncaught `THROW` diagnosed carrying its own code in `foundation::parse_error::where.offset` (`UncaughtThrowWhileInterpreting`).
+
+See DIV-0018 (=docs/divergences/DIV-0018-f31-catch-throw-design.md=) for the complete record of this step's own design choices, including the ones this section only summarizes.

@@ -417,6 +417,15 @@ TEST_CASE("ForthStateTest - DataAndReturnStacksAreIndependent") {
     CHECK(state.returns().depth() == 1);
 }
 
+TEST_CASE("ForthStateTest - HandlerDepthDefaultsToNoActiveHandler") {
+    small_state state;
+    CHECK(state.handler_depth() == -1);
+    state.set_handler_depth(3);
+    CHECK(state.handler_depth() == 3);
+    state.set_handler_depth(-1);
+    CHECK(state.handler_depth() == -1);
+}
+
 TEST_CASE("ForthStateTest - DataSpaceIsPresentAndSized") {
     small_state state;
     CHECK(state.data_space().size() == 0);

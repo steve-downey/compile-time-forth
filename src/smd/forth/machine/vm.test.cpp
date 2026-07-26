@@ -159,11 +159,64 @@ constexpr auto create_does_program() -> test_program {
     return p;
 }
 
+/// Step F31 (D11): `op::catch_mark`/`op::throw_op` hand-built directly,
+/// independent of interp.hpp's own `CATCH`/`THROW` (which produce this same
+/// shape from source text). `BOOM` (instruction 0) pushes 7 and `THROW`s
+/// it; the top level pushes 3 (representing whatever was already on the
+/// stack before `CATCH` ran), pushes `BOOM`'s own entry point as an
+/// execution token, `CATCH`es it, and halts. `xt CATCH` leaves `[3 7]`: the
+/// pre-existing 3 survives untouched, and the thrown code (7) is on top --
+/// CATCH's own `0 | n` contract.
+constexpr auto catch_boom_program() -> test_program {
+    test_program p{};
+    int const boom_entry = p.code.size(); // 0
+    (void)emit(p, op::push, cell{7}, source_pos{});
+    (void)emit(p, op::throw_op, cell{0}, source_pos{});
+    (void)emit(p, op::ret, cell{0}, source_pos{}); // unreached: n != 0 here.
+    p.program_entry = p.code.size();
+    (void)emit(p, op::push, cell{3}, source_pos{});
+    (void)emit(p, op::push_xt, static_cast<cell>(boom_entry), source_pos{});
+    int const mark_idx = p.code.size();
+    (void)emit(p, op::catch_mark, static_cast<cell>(mark_idx + 2),
+               source_pos{});
+    (void)emit(p, op::prim, static_cast<cell>(primitive::catch_ok),
+               source_pos{});
+    (void)emit(p, op::halt, cell{0}, source_pos{});
+    return p;
+}
+
+/// Step F31 (D11): the normal-completion counterpart to @ref
+/// catch_boom_program -- `SAFE` (instruction 0, `DUP *`) returns normally.
+/// The top level pushes 3 (again, whatever was already on the stack), then
+/// 4 (`SAFE`'s own argument), `CATCH`es `SAFE`, and halts: `xt CATCH` leaves
+/// `[3 16 0]` -- the pre-existing 3 untouched, `SAFE`'s own left-behind
+/// result (`4 * 4`), and `CATCH`'s own "no exception" flag on top.
+constexpr auto catch_safe_program() -> test_program {
+    test_program p{};
+    int const safe_entry = p.code.size(); // 0
+    (void)emit(p, op::prim, static_cast<cell>(primitive::dup), source_pos{});
+    (void)emit(p, op::prim, static_cast<cell>(primitive::star), source_pos{});
+    (void)emit(p, op::ret, cell{0}, source_pos{});
+    p.program_entry = p.code.size();
+    (void)emit(p, op::push, cell{3}, source_pos{});
+    (void)emit(p, op::push, cell{4}, source_pos{});
+    (void)emit(p, op::push_xt, static_cast<cell>(safe_entry), source_pos{});
+    int const mark_idx = p.code.size();
+    (void)emit(p, op::catch_mark, static_cast<cell>(mark_idx + 2),
+               source_pos{});
+    (void)emit(p, op::prim, static_cast<cell>(primitive::catch_ok),
+               source_pos{});
+    (void)emit(p, op::halt, cell{0}, source_pos{});
+    return p;
+}
+
 constexpr test_program squared = squared_program();
 constexpr test_program spin = spin_program();
 constexpr test_program memory = memory_program();
 constexpr test_program execute_prog = execute_program();
 constexpr test_program create_does = create_does_program();
+constexpr test_program catch_boom = catch_boom_program();
+constexpr test_program catch_safe = catch_safe_program();
 
 } // namespace
 
@@ -443,4 +496,63 @@ TEST_CASE("VmTest - CreateWithoutADictionaryIsDiagnosed") {
     REQUIRE(state.data().push(42).has_value());
     auto r = run_from(create_does, state, 0, 1000);
     CHECK_FALSE(r.has_value());
+}
+
+// -- op::catch_mark/op::throw_op (step F31, D11) -----------------------------
+
+static_assert([] {
+    test_state state{};
+    auto r = run(catch_boom, state, 1000);
+    return r.has_value() && state.data().depth() == 2 &&
+           state.data().peek(1).value() == 3 &&
+           state.data().peek(0).value() == 7 && state.returns().depth() == 0;
+}());
+
+TEST_CASE("VmTest - CatchMarkAndThrowOpCatchAThrownCode") {
+    test_state state{};
+    auto r = run(catch_boom, state, 1000);
+    REQUIRE(r.has_value());
+    REQUIRE(state.data().depth() == 2);
+    CHECK(state.data().peek(1).value() == 3);
+    CHECK(state.data().peek(0).value() == 7);
+    // The return stack is exactly back to where it started: no leftover
+    // handler frame.
+    CHECK(state.returns().depth() == 0);
+}
+
+static_assert([] {
+    test_state state{};
+    auto r = run(catch_safe, state, 1000);
+    return r.has_value() && state.data().depth() == 3 &&
+           state.data().peek(2).value() == 3 &&
+           state.data().peek(1).value() == 16 &&
+           state.data().peek(0).value() == 0 && state.returns().depth() == 0;
+}());
+
+TEST_CASE("VmTest - CatchMarkPushesZeroOnNormalCompletion") {
+    test_state state{};
+    auto r = run(catch_safe, state, 1000);
+    REQUIRE(r.has_value());
+    REQUIRE(state.data().depth() == 3);
+    CHECK(state.data().peek(2).value() == 3);
+    CHECK(state.data().peek(1).value() == 16);
+    CHECK(state.data().peek(0).value() == 0);
+    CHECK(state.returns().depth() == 0);
+}
+
+// An uncaught THROW (handler_depth() still -1, the default -- no CATCH ran
+// in this call at all, since it starts directly at BOOM's own entry point
+// rather than going through catch_boom's own program_entry) is diagnosed,
+// carrying n in foundation::parse_error::where.offset.
+static_assert([] {
+    test_state state{};
+    auto r = run_from(catch_boom, state, /* BOOM's own entry point */ 0, 1000);
+    return !r.has_value() && r.error().where.offset == 7;
+}());
+
+TEST_CASE("VmTest - UncaughtThrowOpIsDiagnosedCarryingN") {
+    test_state state{};
+    auto r = run_from(catch_boom, state, 0, 1000);
+    REQUIRE_FALSE(r.has_value());
+    CHECK(r.error().where.offset == 7);
 }

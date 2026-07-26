@@ -51,6 +51,17 @@ class cell_stack {
     /// Returns the current number of cells on the stack.
     [[nodiscard]] constexpr auto depth() const -> int;
 
+    /// Shrinks the stack to exactly @p new_depth cells, discarding whatever
+    /// was above that depth without inspecting it (step F31, D11): the
+    /// primitive `THROW`'s own unwind needs, since a handler frame's own
+    /// return-stack depth is recorded once, at `CATCH` time, and everything
+    /// pushed above it since -- call frames, `DO`-loop frames, `>R` values,
+    /// nested handler frames, in any mix -- must be discarded in one step
+    /// rather than popped one shape-aware frame at a time (see `vm.hpp`'s own
+    /// `perform_throw`). Diagnoses @p new_depth outside `[0, depth()]` rather
+    /// than under- or over-shrinking (D7).
+    constexpr auto truncate(int new_depth) -> status;
+
   private:
     foundation::static_vector<cell, MaxDepth> storage_{};
     int depth_{};
@@ -97,6 +108,16 @@ constexpr auto cell_stack<MaxDepth>::peek(int offset) const
 template <int MaxDepth>
 constexpr auto cell_stack<MaxDepth>::depth() const -> int {
     return depth_;
+}
+
+template <int MaxDepth>
+constexpr auto cell_stack<MaxDepth>::truncate(int new_depth) -> status {
+    if (new_depth < 0 || new_depth > depth_) {
+        return foundation::parse_error{foundation::source_pos{},
+                                       "stack truncate: depth out of range"};
+    }
+    depth_ = new_depth;
+    return std::monostate{};
 }
 
 /// The Forth data stack (D7).

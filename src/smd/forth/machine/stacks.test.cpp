@@ -74,6 +74,42 @@ static_assert([] {
     return top.has_value() && top.value() == 7 && r.depth() == 0;
 }());
 
+// Step F31 (docs/forth-plan-2.md): truncate discards everything above
+// new_depth in one step, without inspecting what it discards -- exactly what
+// THROW's own unwind needs, regardless of what shape (call frame, DO-loop
+// frame, >R value, handler frame) is sitting there.
+
+static_assert([] {
+    data_stack<8> s;
+    (void)s.push(1);
+    (void)s.push(2);
+    (void)s.push(3);
+    (void)s.push(4);
+    return s.truncate(1).has_value() && s.depth() == 1 && s.peek().value() == 1;
+}());
+
+static_assert([] {
+    // Truncating to the current depth is a no-op.
+    data_stack<4> s;
+    (void)s.push(9);
+    return s.truncate(1).has_value() && s.depth() == 1;
+}());
+
+static_assert([] {
+    // Truncating to 0 empties the stack.
+    data_stack<4> s;
+    (void)s.push(1);
+    (void)s.push(2);
+    return s.truncate(0).has_value() && s.depth() == 0;
+}());
+
+static_assert([] {
+    // Diagnosed, not UB: a negative depth or a depth beyond the current one.
+    data_stack<4> s;
+    (void)s.push(1);
+    return !s.truncate(-1).has_value() && !s.truncate(2).has_value();
+}());
+
 TEST_CASE("StacksTest - HeaderIsIdempotent") { REQUIRE(true); }
 
 TEST_CASE("StacksTest - PushPopOrder") {
@@ -119,4 +155,26 @@ TEST_CASE("StacksTest - ReturnStackIsIndependent") {
     (void)r.push(1);
     CHECK(r.depth() == 1);
     CHECK(d.depth() == 0);
+}
+
+TEST_CASE("StacksTest - TruncateDiscardsAboveNewDepth") {
+    data_stack<8> s;
+    CHECK(s.push(10).has_value());
+    CHECK(s.push(20).has_value());
+    CHECK(s.push(30).has_value());
+    auto r = s.truncate(1);
+    REQUIRE(r.has_value());
+    CHECK(s.depth() == 1);
+    CHECK(s.peek().value() == 10);
+}
+
+TEST_CASE("StacksTest - TruncateOutOfRangeIsDiagnosed") {
+    data_stack<8> s;
+    CHECK(s.push(1).has_value());
+    auto too_deep = s.truncate(5);
+    CHECK(!too_deep.has_value());
+    auto negative = s.truncate(-1);
+    CHECK(!negative.has_value());
+    // Neither failed attempt mutated the stack.
+    CHECK(s.depth() == 1);
 }
