@@ -239,6 +239,7 @@ TEST_CASE("ForthTest - DotQuoteMergeCriterion") {
 // WORD -- FOO exists nowhere near ECHO-WORD's own definition, only at its
 // own call site -- working at constexpr, through the same public API every
 // other step's own merge criterion uses.
+// b4097bfd-0f64-4d11-8a5a-8bb92271f996
 static_assert([] {
     auto out = compiled_forth<": ECHO-WORD 32 WORD COUNT TYPE ;  "
                              "ECHO-WORD FOO">.output();
@@ -254,6 +255,7 @@ TEST_CASE("ForthTest - UserDefinedParsingWordMergeCriterion") {
     CHECK(std::string_view{out.begin(), static_cast<std::size_t>(out.size())} ==
           "FOO");
 }
+// b4097bfd-0f64-4d11-8a5a-8bb92271f996 end
 
 // `S"` round-trips through `COUNT`/`TYPE` (S" itself through TYPE directly,
 // per Forth-2012's own ( c-addr u -- ) runtime shape; COUNT is what turns a
