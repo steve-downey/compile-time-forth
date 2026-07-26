@@ -61,7 +61,7 @@
 - [x] Blog: F29 parsing words and strings (Part 18)
 - [x] Blog: F31 CATCH and THROW (Part 19)
 - [x] Blog: F30 effect lint (Part 20)
-- [ ] Blog: F32 conformance (Part 21)
+- [x] Blog: F32 conformance (Part 21)
 - [ ] Blog: F33 sender backend (Part 22)
 - [ ] Blog: F34 foreign function interface (Part 23)
 - [ ] Blog: F35 bootstrap prelude (Part 24)
