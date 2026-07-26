@@ -16,6 +16,8 @@ namespace foundation = smd::forth::foundation;
 using smd::forth::machine::addr;
 using smd::forth::machine::compiled_colon_word;
 using smd::forth::machine::constant_word;
+using smd::forth::machine::control_builtin;
+using smd::forth::machine::control_word;
 using smd::forth::machine::default_dictionary;
 using smd::forth::machine::dictionary;
 using smd::forth::machine::foreign_word;
@@ -61,7 +63,8 @@ static_assert([] {
 
 TEST_CASE("DictionaryTest - DefaultDictionaryInstallsAllPrimitives") {
     auto dict = default_dictionary<>();
-    CHECK(dict.size() == 47);
+    // 47 primitives + 20 step F27 control words (D17).
+    CHECK(dict.size() == 67);
     auto const *entry = dict.lookup("SWAP");
     REQUIRE(entry != nullptr);
     REQUIRE(std::holds_alternative<primitive>(entry->binding));
@@ -203,4 +206,85 @@ TEST_CASE("DictionaryTest - LookupIndexAndEntryAt") {
     REQUIRE(std::holds_alternative<primitive>(entry.binding));
     CHECK(std::get<primitive>(entry.binding) == primitive::swap);
     CHECK(dict.lookup_index("NOSUCHWORD") == -1);
+}
+
+// -- Step F27: control words and IMMEDIATE (D17/D18) ------------------------
+
+// Every ordinary define_* installs a non-immediate entry by default.
+static_assert([] {
+    dictionary<4> dict;
+    (void)dict.define_constant("X", constant_word{1});
+    return dict.lookup("X")->immediate == false;
+}());
+
+// define_control installs the requested control_builtin tag, immediate flag
+// and all.
+static_assert([] {
+    dictionary<4> dict;
+    (void)dict.define_control("IF", control_word{control_builtin::if_},
+                              /* immediate */ true);
+    auto const *entry = dict.lookup("IF");
+    return entry != nullptr && entry->immediate &&
+           std::holds_alternative<control_word>(entry->binding) &&
+           std::get<control_word>(entry->binding).which == control_builtin::if_;
+}());
+
+// mark_last_immediate flags whichever entry was defined most recently,
+// regardless of binding kind, and diagnoses an empty dictionary rather than
+// indexing before the first entry.
+static_assert([] {
+    dictionary<4> dict;
+    (void)dict.define_constant("X", constant_word{1});
+    if (dict.lookup("X")->immediate) {
+        return false;
+    }
+    auto r = dict.mark_last_immediate();
+    return r.has_value() && dict.lookup("X")->immediate;
+}());
+
+static_assert([] {
+    dictionary<4> dict;
+    auto r = dict.mark_last_immediate();
+    return !r.has_value();
+}());
+
+TEST_CASE("DictionaryTest - DefaultDictionaryControlWordsAreInstalled") {
+    auto dict = default_dictionary<>();
+
+    auto const *if_entry = dict.lookup("IF");
+    REQUIRE(if_entry != nullptr);
+    REQUIRE(std::holds_alternative<control_word>(if_entry->binding));
+    CHECK(std::get<control_word>(if_entry->binding).which ==
+          control_builtin::if_);
+    CHECK(if_entry->immediate);
+
+    auto const *then_entry = dict.lookup("THEN");
+    REQUIRE(then_entry != nullptr);
+    CHECK(then_entry->immediate);
+
+    auto const *plus_loop_entry = dict.lookup("+LOOP");
+    REQUIRE(plus_loop_entry != nullptr);
+    REQUIRE(std::holds_alternative<control_word>(plus_loop_entry->binding));
+    CHECK(std::get<control_word>(plus_loop_entry->binding).which ==
+          control_builtin::plus_loop_);
+
+    // `]` and `IMMEDIATE` are the two control words installed non-immediate
+    // (see default_dictionary's own doc comment).
+    auto const *close_bracket_entry = dict.lookup("]");
+    REQUIRE(close_bracket_entry != nullptr);
+    CHECK_FALSE(close_bracket_entry->immediate);
+
+    auto const *immediate_entry = dict.lookup("IMMEDIATE");
+    REQUIRE(immediate_entry != nullptr);
+    CHECK_FALSE(immediate_entry->immediate);
+}
+
+TEST_CASE("DictionaryTest - MarkLastImmediateFlagsNewestEntry") {
+    dictionary<4> dict;
+    CHECK(dict.define_compiled_colon("ENDIF",
+                                     compiled_colon_word{.entry_point = 1})
+              .has_value());
+    CHECK_FALSE(dict.lookup("ENDIF")->immediate);
+    CHECK(dict.mark_last_immediate().has_value());
+    CHECK(dict.lookup("ENDIF")->immediate);
 }

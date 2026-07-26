@@ -20,7 +20,7 @@ Steps F5 through F15 (=docs/forth-plan.md=, the superseded R1 plan) built a clas
 DIV-0011 (=docs/divergences/DIV-0011-true-forth-pivot.md=) retired that design in favor of D13: the Forth-2012 section 3.4 text interpreter, with no reader phase and no elaboration phase, is the architecture.
 Steps F24/F25 built the new front end alongside the old one; step F26 ("the cut", =docs/forth-plan-2.md=) deleted the R1 pipeline outright once the new one could stand on its own.
 Phases 2 through 5 below described the deleted pipeline (grammar, syntax tree, elaboration, and two of its three codegen backends) and have moved to =docs/history/architecture-grammar-era.org=, a frozen one-time snapshot — they are no longer part of this living document's own read path.
-As of this revision the lexical layer (Phase 1), the public one-shot API (Phase 6), the text interpreter (Phase 7), the colon compiler and session image (Phase 8), and the cut itself (Phase 9) are current.
+As of this revision the lexical layer (Phase 1), the public one-shot API (Phase 6), the text interpreter (Phase 7), the colon compiler and session image (Phase 8), the cut itself (Phase 9), and immediacy and control flow (Phase 10) are current.
 
 * Pipeline overview
 
@@ -88,6 +88,8 @@ This is a strictly *wider* net than R1's own contract caught: since building a s
 F15's own merge criterion, verbatim, still holds after the retarget: =compiled_forth<": SQUARED DUP * ;  4 SQUARED">.stack()= static-asserts to =[16]= — a one-element stack snapshot whose only cell is =16= (=forth.test.cpp='s =SquaredMergeCriterion=).
 The =hello= example (=src/examples/hello.cpp=) runs a small program through =compiled_forth= and prints its =.output()=; =src/examples/godbolt_forth.cpp= is the Godbolt single-file extraction example modeled on =~/src/compile-time-scheme/main/src/examples/godbolt_arithmetic.cpp='s own shape.
 Neither example needed to change for the retarget: both use =.output()=/=.stack()= with default arguments and no control flow.
+That was a real, if temporary, gap in this header's own public surface: between F26 and F27, =compiled_forth<Source>= could not run *any* control-flow program at all (=interpret= had none yet), and =SPIN= itself specifically still cannot, control flow or not, since a program that never terminates is a hard compile error under D13/D14 either way (a budget-exhaustion diagnosis rather than an unknown-word one).
+Step F27 (Phase 10) closes the reachable half of that gap: =forth.test.cpp='s own =AbsControlFlowMergeCriterion=/=CountdownControlFlowMergeCriterion=/=SumtoControlFlowMergeCriterion= run =IF=/=THEN=, =BEGIN=/=UNTIL=, and =DO=/=LOOP= programs through =compiled_forth<Source>= directly, both at compile time and at runtime.
 
 * Phase 7: The Text Interpreter, Interpret State Only (step F24, docs/forth-plan-2.md)
 
@@ -139,7 +141,7 @@ Instruction 0 is reserved at construction as a permanent =halt= landing pad.
 =run= itself is implemented in terms of =run_from= (seed, then delegate to =run_from(program, state, program.program_entry, fuel)=); DIV-0013 records why an earlier draft that instead pointed =compile_buffer='s own =compiled_program::program_entry= at the word being called and reused =machine::run= unmodified was rejected on review (mutating shared, conceptually-const program state to fake an entry point, correct only by an incidental invariant rather than by construction).
 
 =interpret= itself branches on =st.state()=: interpreting (0) runs a primitive, calls a =compiled_colon_word=, or pushes a =variable_word=/=constant_word='s address/value (both against the same live =st=, D14 — there is no second evaluator); compiling (1, entered by `:`) emits =op::prim=/=op::call=/=op::push= into the =compile_buffer= instead of running/pushing.
-`:`, `;`, `EXIT`, `RECURSE` (step F25), and `VARIABLE`/`CREATE`/`CONSTANT` (step F26) are all recognized by direct name comparison before any dictionary lookup — generalized immediate-word dispatch through the dictionary itself is still F27's own job, not this one.
+`:`, `;`, `EXIT`, `RECURSE` (step F25), and `VARIABLE`/`CREATE`/`CONSTANT` (step F26) are all recognized by direct name comparison before any dictionary lookup; step F27 (Phase 10) generalizes this into real immediate-word dispatch through the dictionary for every control word, `IMMEDIATE`, `POSTPONE`, `LITERAL`, `[`, `]`, and `COMPILE,`, without touching this handful of direct-name special cases (they stay exactly as described here).
 `:` records the entry point (=compile_buffer::here()=) *before* compiling the body, so `RECURSE` (a self-`call` to that same entry point) resolves without any back-patching — F14's discipline, carried forward unchanged.
 A declared `( ... -- ... )` effect comment immediately after the name is captured as a =foundation::source_span= (=scan_colon_header=, D20: stored, unverified until F30) rather than silently vanishing as ordinary intertoken space the way any other comment does — capturing it needs its own name scan that skips =parser::scan_word='s usual trailing comment-swallow, since the comment must still be visible afterward to capture.
 =VARIABLE=/=CREATE= (step F26) allot one cell or zero, respectively, from =st.machine().data_space()= directly (no elaboration-time data space to coordinate with any more — Phase 4's old =elaborate_variable=/=elaborate_create= are history) and install a =machine::variable_word=; =CONSTANT= pops the data stack's own top cell — ordinary Forth-2012 semantics, not R1's own elaboration-time constant-folding, which required a syntactically preceding literal token.
@@ -195,6 +197,7 @@ D20's own effect-gate carries a real gap across this step, recorded in full in D
 
 DIV-0013 named this step as where its own binding-shape question closes: once =colon_word= and its R1 consumers are gone, =compiled_colon_word= is the only colon-definition binding left in =dictionary_binding= (five alternatives, not six).
 Phase 8's own section above records the closure directly; DIV-0013 and DIV-0014 both carry it for the historical record.
+(Step F27, Phase 10 below, adds a sixth alternative back, =control_word= — a different binding kind for a different reason, not a reopening of this closure: colon definitions still have exactly one binding kind between them.)
 
 ** DIV-0012's fold: closed in one half, deferred in the other
 
@@ -203,7 +206,49 @@ This step does *not* do the second fold.
 DIV-0012's own orchestrator amendment names F28 (uniform execution tokens) and F29 (parsing words as primitives) as the steps that actually need it — a parsing-word primitive executes as =machine::apply_primitive(op, machine::forth_state&)=, which cannot see an =input_source= that lives only on the interpreter's own wrapper.
 F26 itself has no merge criterion that needs the fold, and this step's own scope — the deletion itself, the =forth.hpp= retarget, and the =VARIABLE=/=CREATE=/=CONSTANT= addition the F16 memory-word merge criteria require — is already at the edge of one mergeable change; folding =machine::forth_state= touches every one of its remaining consumers (=machine::run=/=run_from=, every =machine/*.test.cpp=, =forth.hpp=, all of =interpreter/=) on top of that.
 This is filed as a concrete reason against D13 per DIV-0012's own instruction, not settled silently: see DIV-0014's own record, and DIV-0012's revisit condition, updated in place to point at F28 rather than F26.
+Step F27 did not need the fold either, and leaves it exactly where DIV-0012 pointed it: F28.
 
 ** DIV-0014
 
 See DIV-0014 (=docs/divergences/DIV-0014-the-cut.md=) for the complete record of this step's own decisions: the =forth.hpp= retarget's exact shape (why =.run()= now returns the session image itself rather than a =foundation::result=, and why the old R1-era "runtime error distinct from compile error" distinction does not survive the retarget), the =VARIABLE=/=CREATE=/=CONSTANT= addition, the =session::stack= field, the effect-gate suspension window, and the DIV-0012 deferral above.
+
+* Phase 10: Immediacy and Control Flow (step F27, docs/forth-plan-2.md)
+
+D17 makes every control word an *immediate* word on the standard orig/dest discipline, rather than another handful of direct-name special cases alongside `:`/`;`/`EXIT`/`RECURSE` (Phase 8): `IF ELSE THEN`, `BEGIN UNTIL`, `BEGIN WHILE REPEAT`, `DO LOOP +LOOP LEAVE UNLOOP I J`, `LITERAL`, `POSTPONE`, `IMMEDIATE`, `[`, `]`, and `COMPILE,` are all real =machine::dictionary= entries now, found by the same =dict.lookup= every other word goes through, distinguished only by a new binding kind (=control_word=, carrying a =control_builtin= tag) and a new per-entry =immediate= flag (D18's own header-unification direction, narrowly: just the one flag this step needs, not the full classical header F28 owns).
+
+#+transclude: [[file:../src/smd/forth/machine/dictionary.hpp::0d3b390a-1051-4f76-867c-b4f161264827]] :lines 2- :src cpp :end "0d3b390a-1051-4f76-867c-b4f161264827 end"
+
+A =control_word= carries no VM entry point, unlike a primitive (inlined as =op::prim= at every reference site) or a =compiled_colon_word= (real instructions in the code space): its whole job is to mutate the interpreter's own =compile_buffer= directly while a definition is being compiled, which needs C++ code with direct access to that buffer, not anything a VM instruction stream can represent.
+That is also why =control_builtin=/=control_word= live in =machine/dictionary.hpp= as a plain data tag rather than as a function pointer: the dispatch logic itself (=interpreter::apply_control_word=) lives one layer up, in =interp.hpp=, which already depends on =machine/=.
+
+D13's own rule — "execute a word when interpreting, or when immediate; otherwise compile it" — is now genuinely uniform across every binding kind, not special-cased per kind the way Phase 8 left it.
+=interpreter::execute_entry= is "run this entry's execution semantics against the live state" (a primitive via =apply_primitive=, a colon word via =call_word=, a variable/constant by pushing its address/value, a control word via =apply_control_word=); =interpreter::compile_entry= is "append this entry's own compiled form" (the same four non-control-word cases, minus running); =interpret='s own loop calls =execute_entry= unconditionally while interpreting, and while compiling calls =execute_entry= for an immediate entry or =compile_entry= for an ordinary one.
+=POSTPONE=/=COMPILE,= reuse =compile_entry= directly for any target that has a compiled form, which is what gives =POSTPONE= its correct "dual behavior": appending a call/push is the same action whether or not the target happens to be immediate, since immediacy only ever changes what happens when a name is met *without* =POSTPONE=.
+
+#+transclude: [[file:../src/smd/forth/interpreter/interp.hpp::b4e7b8e3-3275-47e2-81da-1c7eb25ae1db]] :lines 2- :src cpp :end "b4e7b8e3-3275-47e2-81da-1c7eb25ae1db end"
+
+=apply_control_word= is where the orig/dest discipline itself lives, D17's "the data stack serving as the control-flow stack as the standard permits" read literally: `IF`/`WHILE` emit a sentinel =op::branch0= (operand =-1=, never a real instruction index) and push the emitted instruction's own index onto the *live* data stack; `THEN`/`ELSE`/`REPEAT` pop that same stack and patch the sentinel to the current code-space position; `BEGIN` pushes a backward-branch target with no instruction of its own.
+`DO`/`LOOP`/`+LOOP` carry the F17 counted-loop opcodes verbatim (=do_setup=/=loop_step=/=plus_loop_step=, Phase 9's own instruction-set transclusions, unchanged) and replay F17's own =LEAVE= sentinel-scan token-by-token instead of tree-structured: `DO` pushes its own dest; `LOOP`/`+LOOP` pop it, emit the step instruction, and scan every =op::leave= between dest and the new code-space position still carrying its own =-1= sentinel, patching each to land just past the loop — bounded to exactly this `DO`'s own body, since an inner nested loop's own `LOOP`/`+LOOP` already resolved its own =LEAVE=s first.
+`LEAVE`/`UNLOOP`/`I`/`J` outside a `DO ... LOOP` are diagnosed via a private =loop_depth= counter (=interpreter::compiling_context=, transcluded above) rather than by inspecting the control-flow stack's own untyped contents.
+
+#+transclude: [[file:../src/smd/forth/interpreter/interp.hpp::d1a4f7b2-6c8e-4a3d-9b5f-2e7c4a9d1b6e]] :lines 2- :src cpp :end "d1a4f7b2-6c8e-4a3d-9b5f-2e7c4a9d1b6e end"
+
+**`POSTPONE` of a C++-native control word: a deliberate scope cut.**
+`: ENDIF POSTPONE THEN ; IMMEDIATE` is this step's own stated example, and it works — but not by compiling anything: since a =control_word= has no VM entry point, "append code that runs `THEN`'s own action later" is not representable as VM bytecode at all.
+=apply_control_word='s own =postpone_= case instead records the target on =compiling_context= (=has_postponed_alias=/=postponed_target=), and =interpret='s own `;` handling, seeing that flag, installs the word being closed as a plain =control_word= alias for the same tag — =ENDIF= becomes, for every purpose, indistinguishable from =THEN= itself — rather than as a =compiled_colon_word=.
+This only works when the *entire* body of the definition is that one =POSTPONE=; anything else compiled before or after it is diagnosed rather than silently dropped.
+Full Forth-2012 =POSTPONE= permits postponing a control word freely mixed with arbitrary other code in the same definition; that would need a unified code/data representation this project does not have before F28's own header unification, so it is out of scope here and diagnosed, not silently miscompiled.
+
+**An unsound check, tried and reverted.**
+An early draft of this step also tried to diagnose an unresolved `IF`/`BEGIN` at `;` by checking that the data stack returned to the depth it had at `:`.
+That check is unsound: an immediate word's own body can legitimately leave real data behind when it runs at compile time (`: DOUBLE-IT 21 ; IMMEDIATE` used inside another definition being compiled genuinely leaves a =21= on the stack right then, exactly as `[ ... ] LITERAL`'s own bracketed computation does), which a plain depth comparison cannot tell apart from a genuinely unresolved `IF`.
+The final design keeps only the =loop_depth= check for an unresolved `DO` (private bookkeeping, not the shared data stack, so it cannot collide with genuine data); a `THEN`/`REPEAT` with no matching `IF`/`BEGIN` is still diagnosed, just later, when the data stack does not hold what they expect to pop — the "mismatched THEN without IF" merge criterion this step names explicitly.
+
+`LITERAL` pops the top of the data stack and emits it as an =op::push= literal into the definition being compiled; `[`/`]` set `STATE` to 0/1 directly, which is what lets an interpreted computation run between them and leave a value for `LITERAL` to pick up; `IMMEDIATE` flags the dictionary's own most recently defined entry via =machine::dictionary::mark_last_immediate=, regardless of binding kind; `COMPILE,` pops a dictionary index (the =op::push_xt= convention =instruction.hpp= already documented, ahead of F28's own fuller execution-token story) and appends that entry's compiled form via =compile_entry=.
+
+**Merge criteria.**
+The complete F13/F16/F17 program battery (=interpreter/control_flow_corpus.hpp=, preserved verbatim by F26 for exactly this) passes through =interpret= unchanged, both at compile time (=static_assert=) and at runtime (Catch2): =ABS= ([7]), =COUNTDOWN= (output ="3 2 1 "=), =SPIN= (budget exhaustion diagnosed under a small VM fuel, not a hang), =UPTO3= ([3]), the =EXIT=-boundary program ([-3 99]), =SUMTO= ([15]), =FIND5= ([5]), =TENS= ([9]), =SUMEVEN= ([20]), and =FIRST= ([3]), plus the two memory-word programs (unaffected, still passing).
+=forth.test.cpp= closes the public-API half of the same gap: =AbsControlFlowMergeCriterion=/=CountdownControlFlowMergeCriterion=/=SumtoControlFlowMergeCriterion= run the same shapes through =compiled_forth<Source>= directly.
+=: ENDIF POSTPONE THEN ; IMMEDIATE= followed by =: ABS2 DUP 0< IF NEGATE ENDIF ;  -7 ABS2= leaves =[7]=, proving the alias genuinely behaves like `THEN` (=interp.test.cpp='s =PostponeAliasesAControlWord=); a mismatched `THEN` with no matching `IF` is diagnosed (=MismatchedThenWithoutIfIsDiagnosed=).
+
+See DIV-0015 (=docs/divergences/DIV-0015-f27-control-word-design.md=) for the full record of this step's own design choices: the =control_word= binding shape and why it carries no VM entry point, the =execute_entry=/=compile_entry= split, the =POSTPONE=-of-a-control-word alias mechanism and its scope cut, and the reverted data-stack-depth balance check.

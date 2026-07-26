@@ -23,7 +23,7 @@ TEST_CASE("SessionTest - HeaderIsIdempotent") { REQUIRE(true); }
 namespace {
 
 constexpr auto built_squared =
-    build_session<64, 64, 256, 128>(": SQUARED DUP * ;");
+    build_session<64, 96, 256, 128>(": SQUARED DUP * ;");
 static_assert(built_squared.has_value());
 
 /// A session built once, at namespace-scope constexpr initialization --
@@ -68,7 +68,7 @@ TEST_CASE("SessionTest - RoundTripsAtRuntimeFromTheSameConstexprObject") {
 // -- Other session behavior --------------------------------------------
 
 TEST_CASE("SessionTest - BuildSessionDiagnosesMalformedProgram") {
-    auto built = build_session<64, 64, 256, 128>("1 2 + BOGUS");
+    auto built = build_session<64, 96, 256, 128>("1 2 + BOGUS");
     REQUIRE_FALSE(built.has_value());
 }
 
@@ -78,13 +78,13 @@ TEST_CASE("SessionTest - DataSpaceHighWaterMarkTracksAllotment") {
     // high-water mark alone, independent of the defining words that also
     // advance it. interpret() *does* resolve VARIABLE/CREATE/CONSTANT as of
     // this step (DIV-0014); the memory-word merge criterion covers that path.
-    auto built = build_session<64, 64, 256, 128>("3 ALLOT");
+    auto built = build_session<64, 96, 256, 128>("3 ALLOT");
     REQUIRE(built.has_value());
     CHECK(built.value().data_space_high_water == 3);
 }
 
 TEST_CASE("SessionTest - OutputIsCaptured") {
-    auto built = build_session<64, 64, 256, 128>("1 2 + .");
+    auto built = build_session<64, 96, 256, 128>("1 2 + .");
     REQUIRE(built.has_value());
     auto const &out = built.value().output;
     CHECK(std::string_view{out.begin(), static_cast<std::size_t>(out.size())} ==
@@ -92,7 +92,7 @@ TEST_CASE("SessionTest - OutputIsCaptured") {
 }
 
 TEST_CASE("SessionTest - CallDefinedWordMissingNameIsDiagnosed") {
-    auto built = build_session<64, 64, 256, 128>(": SQUARED DUP * ;");
+    auto built = build_session<64, 96, 256, 128>(": SQUARED DUP * ;");
     REQUIRE(built.has_value());
     auto sess = built.value();
     smd::forth::machine::forth_state<64, 64, 256, 128> state{};

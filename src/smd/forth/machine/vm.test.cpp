@@ -255,7 +255,7 @@ TEST_CASE("VmTest - RunFromDoesNotSeedDataSpace") {
 namespace {
 
 constexpr auto built_session =
-    build_session<64, 64, 256, 128>(": SQUARED DUP * ;");
+    build_session<64, 96, 256, 128>(": SQUARED DUP * ;");
 static_assert(built_session.has_value());
 
 inline constexpr auto squared_session = built_session.value();

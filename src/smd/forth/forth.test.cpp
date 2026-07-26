@@ -7,6 +7,8 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <string_view>
+
 using smd::forth::compiled_forth;
 
 TEST_CASE("ForthTest - HeaderIsIdempotent") { REQUIRE(true); }
@@ -126,4 +128,55 @@ TEST_CASE("ForthTest - MemoryWordsMergeCriterion") {
     REQUIRE(s.size() == 2);
     CHECK(s[0] == 8);
     CHECK(s[1] == 14);
+}
+
+// Step F27: the public one-shot API can run control-flow programs again --
+// F26 retargeted compiled_forth onto the session image before interpret()
+// had any control flow at all, so every program below was unreachable
+// through this header until this step (see this file's own SPIN comment,
+// above, for why SPIN itself specifically -- a program that never
+// terminates -- still cannot go through compiled_forth<Source>, control
+// flow or not: a hard compile error is the correct outcome for it either
+// way, just for budget exhaustion rather than an unknown-word diagnosis).
+
+static_assert([] {
+    auto s = compiled_forth<": ABS DUP 0< IF NEGATE THEN ;  -7 ABS">.stack();
+    return s.size() == 1 && s[0] == 7;
+}());
+
+TEST_CASE("ForthTest - AbsControlFlowMergeCriterion") {
+    auto s = compiled_forth<": ABS DUP 0< IF NEGATE THEN ;  -7 ABS">.stack();
+    REQUIRE(s.size() == 1);
+    CHECK(s[0] == 7);
+}
+
+static_assert([] {
+    auto out =
+        compiled_forth<": COUNTDOWN BEGIN DUP . 1- DUP 0= UNTIL DROP ;  "
+                       "3 COUNTDOWN">.output();
+    return out.size() == 6 &&
+           std::string_view{out.begin(),
+                            static_cast<std::size_t>(out.size())} == "3 2 1 ";
+}());
+
+TEST_CASE("ForthTest - CountdownControlFlowMergeCriterion") {
+    auto out =
+        compiled_forth<": COUNTDOWN BEGIN DUP . 1- DUP 0= UNTIL DROP ;  "
+                       "3 COUNTDOWN">.output();
+    REQUIRE(out.size() == 6);
+    CHECK(std::string_view{out.begin(), static_cast<std::size_t>(out.size())} ==
+          "3 2 1 ");
+}
+
+static_assert([] {
+    auto s =
+        compiled_forth<": SUMTO 0 SWAP 1+ 0 DO I + LOOP ;  5 SUMTO">.stack();
+    return s.size() == 1 && s[0] == 15;
+}());
+
+TEST_CASE("ForthTest - SumtoControlFlowMergeCriterion") {
+    auto s =
+        compiled_forth<": SUMTO 0 SWAP 1+ 0 DO I + LOOP ;  5 SUMTO">.stack();
+    REQUIRE(s.size() == 1);
+    CHECK(s[0] == 15);
 }
