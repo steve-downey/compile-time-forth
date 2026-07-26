@@ -37,8 +37,11 @@ inline constexpr auto squared_session = built_squared.value();
 } // namespace
 
 static_assert([] {
-    auto sess = squared_session; // call_defined_word mutates sess.code's own
-                                 // program_entry field; copy first.
+    auto sess = squared_session; // call_defined_word takes a mutable session;
+                                 // squared_session is constexpr, so copy it.
+                                 // (It does NOT mutate program_entry --
+                                 // call_word goes through machine::run_from
+                                 // precisely so that it never has to.)
     smd::forth::machine::forth_state<64, 64, 256, 128> state{};
     if (!seed_from_session(sess, state).has_value()) {
         return false;
@@ -70,10 +73,11 @@ TEST_CASE("SessionTest - BuildSessionDiagnosesMalformedProgram") {
 }
 
 TEST_CASE("SessionTest - DataSpaceHighWaterMarkTracksAllotment") {
-    // ALLOT is an ordinary primitive (F16); VARIABLE/CREATE are R1-pipeline
-    // (elaborator) constructs this step's own interpret() does not resolve
-    // (not in scope -- see this step's own step-brief), so this test
-    // exercises ALLOT directly rather than through VARIABLE.
+    // ALLOT is an ordinary primitive (F16). This test drives it directly
+    // rather than through VARIABLE/CREATE so what it asserts is the
+    // high-water mark alone, independent of the defining words that also
+    // advance it. interpret() *does* resolve VARIABLE/CREATE/CONSTANT as of
+    // this step (DIV-0014); the memory-word merge criterion covers that path.
     auto built = build_session<64, 64, 256, 128>("3 ALLOT");
     REQUIRE(built.has_value());
     CHECK(built.value().data_space_high_water == 3);

@@ -140,6 +140,22 @@ than the small, targeted, direct-name addition this step makes instead.
 
 ## Consequences
 
+- **Orchestrator note on the negative-compile merge criterion.** F26's own
+  criterion reads "the F15 negative-compile test still fails compilation for
+  an *unknown word*." The retargeted `test_neg_syntax_error.cpp` instead
+  fails on an unterminated colon definition — the nearest analogue of the
+  syntax error F15's test actually exercised, now that there is no grammar
+  left to produce one. The criterion's intent (a malformed program is a hard
+  compile error, proven by a test whose passing condition is that the build
+  fails) is met, and the unknown-word path itself is covered as a recoverable
+  diagnosis one layer down (`SessionTest -
+  BuildSessionDiagnosesMalformedProgram`, `"1 2 + BOGUS"`). What is *not*
+  covered is an unknown word specifically as a negative-compile translation
+  unit. That is a real, small gap against the criterion as literally worded,
+  accepted here rather than expanded into F26's scope at its merge gate.
+  **F36 owns closing it** — its own step text already calls for
+  "negative-compile tests for syntax error, declared-effect mismatch,
+  capacity overflow," and an unknown-word TU belongs in that set.
 - `forth.test.cpp`'s `RunSucceeds`/`RunPropagatesRuntimeError` tests are
   replaced: `RunReturnsTheBuiltSessionImage` covers the successful case
   against the new return shape; the runtime-error case has no replacement
