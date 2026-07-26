@@ -1869,6 +1869,7 @@ TEST_CASE("EffectLintTest - DivergentExitPathsAreUnknownNotAnError") {
     CHECK(cw->peak_depth == -1);
 }
 
+// 69a12328-23de-42ab-8797-4f40f4d5b441
 // A hand-computed required/peak-depth merge criterion: `DUP DUP DROP DROP`
 // has net effect zero (one input, one output) but peaks at three cells
 // (entry's own one, plus two more DUPs) before the two DROPs bring it back
@@ -1900,6 +1901,7 @@ TEST_CASE(
     // its own peak.
     CHECK(buf.program().required_stack_depth == 3);
 }
+// 69a12328-23de-42ab-8797-4f40f4d5b441 end
 
 // A definition that reaches EXECUTE has an unknown computed effect (this
 // header's own doc comment: EXECUTE poisons like CATCH/?DUP) -- advisory,

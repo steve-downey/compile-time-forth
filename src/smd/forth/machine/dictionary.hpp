@@ -100,6 +100,7 @@ struct compiled_colon_word {
     /// Forth-2012 does not require one.
     bool has_effect = false;
 
+    // 2376475d-afe5-40c2-b91b-3e4e3f62ced5
     /// Step F30 (D20): the *computed* (or, when @ref has_effect is true and
     /// it parsed, declared-and-verified) net data-stack effect, filled by
     /// `interpreter::effect_lint`'s own `;`-time check
@@ -127,6 +128,7 @@ struct compiled_colon_word {
     /// partial/best-effort number for one that touches `unknown` anywhere
     /// (DIV-0019's own disposition of DIV-0008's "peak depth" gap).
     int peak_depth = -1;
+    // 2376475d-afe5-40c2-b91b-3e4e3f62ced5 end
 
     friend constexpr auto operator==(compiled_colon_word const &,
                                      compiled_colon_word const &)

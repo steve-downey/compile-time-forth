@@ -905,6 +905,7 @@ template <int MaxCode, int MaxProgWords, int MaxDictWords, int MaxName,
         }
         flow_node &node = nodes[idx - entry];
 
+        // 12d079f3-4f81-41dd-b5bd-377428c31663
         bool ret_changed = false;
         if (!node.ret_visited) {
             node.ret_visited = true;
@@ -954,6 +955,7 @@ template <int MaxCode, int MaxProgWords, int MaxDictWords, int MaxName,
             }
         }
         // else: node already unknown -- stays unknown regardless of item.
+        // 12d079f3-4f81-41dd-b5bd-377428c31663 end
 
         if (!ret_changed && !data_changed) {
             continue;
