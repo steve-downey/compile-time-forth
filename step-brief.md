@@ -34,12 +34,27 @@ opening any of the source below wholesale.
   append to a `compile_buffer`'s own `.program()` directly instead of
   through `.emit()`.
 - `call_word` (same file) is how interpreting a defined word runs the VM
-  (D14): pushes `halt_pad()` as a return address, points the buffer's own
-  `compiled_program::program_entry` at the callee, calls `machine::run`
-  **completely unmodified**. `vm.hpp` has zero lines changed by F25 — see
-  DIV-0013 for why a `run_at`-style loop extraction was drafted and then
-  reverted (it would have silently invalidated Phase 5's existing prose,
-  which transcludes `vm.hpp::run`'s current anchor verbatim).
+  (D14): it pushes `halt_pad()` as a return address and calls
+  **`machine::run_from`** at the callee's entry point. It never touches
+  `program_entry` or `data_space_size`.
+- **`vm.hpp` gained `machine::run_from`** — an additive entry point that
+  executes from a caller-supplied instruction index against an already-live
+  `forth_state`, *without* `run`'s F16 data-space seeding. `machine::run` is
+  now a thin wrapper: seed, then delegate to
+  `run_from(program, state, program.program_entry, fuel)`. Its signature and
+  every observable behavior are unchanged, so the R1 pipeline and all its
+  tests are unaffected. An earlier draft instead transiently pointed
+  `program_entry` at the callee and called `run` unmodified; that was
+  **rejected on review** — it is correct only by the incidental invariant
+  that `compile_buffer` never raises `data_space_size` (making `run`'s seed a
+  no-op `allot(0)`), so any later step giving the buffer a real high-water
+  mark would silently reintroduce unbounded reseeding on every word call.
+  DIV-0013 records this in full. **Reach for `run_from`, not a third way, if
+  you need to start execution mid-program** — F27's immediate words and
+  F31's `THROW` unwind will both want it. The `vm.hpp` `run` anchor was split
+  to keep Phase 5's transclusions honest: `3b356d6c-…` now covers only
+  `run`'s seed-and-delegate body, and the fetch-execute loop moved verbatim
+  under `e2a7c9f4-5d1b-4e8a-9c3f-7b2d6a4e1f8c` on `run_from`.
 - `interpreter::session` (`interpreter/session.hpp`, anchors
   `b4d8e2a6-7c1f-4e3a-9d5b-2a8f6c1e4d9b` covers `call_defined_word`,
   `c6e9f1b3-8a2d-4c7e-9f1a-3b6d8e2c5a7f` covers `build_session`) — D15's
@@ -70,6 +85,18 @@ opening any of the source below wholesale.
   for you, and neither should you guess it silently; if the plan text you
   are pasted does not resolve this, it is a real open question to raise,
   not paper over.
+- **Preserve the program battery you are about to delete.** F27's merge
+  criteria require the complete F13/F16/F17 program set — `ABS`,
+  `COUNTDOWN`, `SPIN` (budget exhaustion), the memory-word programs,
+  `SUMTO`, `EVENS`, `FIND5`, `TENS`, `SUMEVEN`, `FIRST` — to pass
+  **verbatim** through the interpreter path. Those programs live today
+  inside the R1-pipeline tests this step deletes. Deleting the tests is
+  correct; losing the programs is not. Before you delete, lift the source
+  strings and their expected stacks/output into a corpus F27 can consume
+  (a header of `constexpr` string_view/expected pairs next to the
+  interpreter tests is enough). If you delete them with their tests, F27
+  has nothing to reproduce and its own merge criterion becomes
+  unverifiable.
 - **`interpreter::forth_state` is still a composed wrapper**, not a fold-in
   (DIV-0012). DIV-0012's own revisit condition names this step as where
   both halves close: relocate `reader/forth_chars.hpp` (D19's own
