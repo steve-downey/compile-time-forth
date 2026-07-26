@@ -24,19 +24,23 @@ namespace smd::forth::machine {
 /// Only the opcodes this step's own codegen (`codegen.hpp`) actually emits
 /// and this step's own VM (`vm.hpp`) actually executes have real semantics
 /// yet: `push`, `prim`, `call`, `ret`, `branch`, `branch0`, `push_xt`,
-/// `halt`. The remaining nine enumerators reserve opcode space for later
+/// `halt`. The remaining seven enumerators reserve opcode space for later
 /// steps per the plan's own instruction-set shape, so the enum itself never
 /// has to change once those steps land: `do_setup`, `loop_step`,
 /// `plus_loop_step`, `push_index` (`I`/`J`), `leave`, and `unloop` are all
 /// `DO ... LOOP` machinery (step F17's own deliverable -- F14's codegen
 /// diagnoses `core_do_loop` as "not implemented" rather than emitting any of
 /// these, mirroring F13's identical choice for the direct evaluator); and
-/// `execute` (`EXECUTE`), `catch_mark`, and `throw_op` are step F18a's
-/// (execution tokens and exceptions). The VM diagnoses any of these nine if
-/// it ever encounters one in a compiled program, rather than treating an
-/// unimplemented opcode as undefined behavior (D7) -- codegen simply never
-/// emits them yet, so this path is defensive, not currently reachable from
-/// `codegen(compiled_unit)`.
+/// `catch_mark`/`throw_op` are step F31's (`CATCH`/`THROW`). The VM
+/// diagnoses any of these seven if it ever encounters one in a compiled
+/// program, rather than treating an unimplemented opcode as undefined
+/// behavior (D7) -- codegen simply never emits them yet, so this path is
+/// defensive, not currently reachable from `codegen(compiled_unit)`.
+///
+/// `execute`, `create_word`, and `does_enter` are step F28's own additions
+/// (D18, D10): see each enumerator's own doc comment; `interp.hpp`'s
+/// `compile_entry` is what actually emits them (`EXECUTE`/`CREATE`/`DOES>`
+/// respectively).
 ///
 /// `branch0` pops a flag and branches only when that flag is zero (Forth's
 /// "false" -- see `cell.hpp`'s `flag_false`/`flag_true`); this is the
@@ -63,22 +67,49 @@ enum class op : std::uint8_t {
     push_index,     ///< Reserved for step F17 (`I`/`J`): not emitted yet.
     leave,          ///< Reserved for step F17 (`LEAVE`): not emitted yet.
     unloop,         ///< Reserved for step F17 (`UNLOOP`): not emitted yet.
-    push_xt,        ///< Push @ref instr::operand (a dictionary word index)
-                    ///< onto the data stack as an execution token (D11) --
-                    ///< the elaborated form of `' NAME`. Distinct from
-                    ///< @ref push only for documentation/extensibility;
-                    ///< runtime behavior is identical.
-    execute,        ///< Reserved for step F18a (`EXECUTE`): not emitted yet.
-    catch_mark,     ///< Reserved for step F18a (`CATCH`): not emitted yet.
-    throw_op,       ///< Reserved for step F18a (`THROW`): not emitted yet.
+    push_xt,        ///< Push @ref instr::operand onto the data stack as an
+                    ///< execution token (step F28, D18): a code-space
+                    ///< instruction index that @ref execute can later jump
+                    ///< to exactly like @ref call would -- the compiled form
+                    ///< of `[']` (`interp.hpp`'s own `resolve_execution_
+                    ///< token`). Distinct from @ref push only for
+                    ///< documentation; runtime behavior is identical.
+    execute,        ///< Pop an execution token (an instruction index, @ref
+                    ///< push_xt's own convention) and jump to it exactly as
+                    ///< @ref call would (push the return address, then jump)
+                    ///< -- step F28's own `EXECUTE` (D18). No dictionary
+                    ///< lookup: the popped value already *is* a code-space
+                    ///< address, resolved once by whatever produced it
+                    ///< (`'`/`[']`/`IS`).
+    create_word,    ///< `CREATE`/step F28's own `does_entry`-aware
+                    ///< `variable_word` install: scan the next name from
+                    ///< @ref forth_state::source, allot @ref instr::operand
+                    ///< cells past @ref data_space::here, and define that
+                    ///< name in the dictionary passed to @ref run_from
+                    ///< (`CREATE` uses operand 0; nothing yet reuses this
+                    ///< for `VARIABLE`, which keeps step F26's own
+                    ///< direct-name interpret()-level install). Diagnoses if
+                    ///< @ref run_from was not given a dictionary.
+    does_enter,     ///< `DOES>`: attaches the very next instruction index
+                    ///< (this instruction's own index + 1) as the most
+                    ///< recently defined dictionary entry's own does-field
+                    ///< (@ref variable_word::does_entry), then acts exactly
+                    ///< like @ref ret (pops the return stack and jumps
+                    ///< there) -- ending the *defining* word's own
+                    ///< execution right here, per Forth-2012. Diagnoses if
+                    ///< @ref run_from was not given a dictionary, or if the
+                    ///< most recent entry was not `CREATE`d.
+    catch_mark,     ///< Reserved for step F31 (`CATCH`): not emitted yet.
+    throw_op,       ///< Reserved for step F31 (`THROW`): not emitted yet.
     halt,           ///< Stop the VM's fetch-execute loop successfully.
 };
 
 /// One flat instruction: an opcode plus a single immediate @ref cell
 /// operand. Every operand's meaning is opcode-dependent: an instruction
-/// index for `call`/`branch`/`branch0`, a literal value for `push`, a
-/// `primitive` enumerator (cast to @ref cell) for `prim`, a dictionary word
-/// index for `push_xt`, and unused (left zero) for `ret`/`halt`.
+/// index for `call`/`branch`/`branch0`/`push_xt`, a literal value for
+/// `push`, a `primitive` enumerator (cast to @ref cell) for `prim`, a cell
+/// count for `create_word`, and unused (left zero) for `ret`/`halt`/
+/// `execute`/`does_enter`.
 ///
 /// A plain aggregate, trivially copyable and a literal type by construction
 /// -- there is nothing here for the compiler to have to prove trivial.

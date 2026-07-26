@@ -1,24 +1,29 @@
-// src/smd/forth/interpreter/input_source.hpp                        -*-C++-*-
+// src/smd/forth/machine/input_source.hpp                             -*-C++-*-
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
-#ifndef SRC_SMD_FORTH_INTERPRETER_INPUT_SOURCE_HPP
-#define SRC_SMD_FORTH_INTERPRETER_INPUT_SOURCE_HPP
+#ifndef SRC_SMD_FORTH_MACHINE_INPUT_SOURCE_HPP
+#define SRC_SMD_FORTH_MACHINE_INPUT_SOURCE_HPP
 
 #include <smd/forth/parser/cursor.hpp>
 
 #include <string_view>
 #include <type_traits>
 
-namespace smd::forth::interpreter {
+namespace smd::forth::machine {
 
-// Step F24 (docs/forth-plan-2.md): the Forth-2012 SOURCE/>IN pair (D13). The
-// text interpreter's outer loop (interp.hpp) is what actually advances >IN;
-// this type is only the storage -- a non-owning view over the program text
-// (D3: no heap-backed types) plus a plain byte offset -- so >IN is ordinary,
-// inspectable machine state rather than a cursor buried inside a scanner's
-// local variables. That is what F29's user-defined parsing words will later
-// need: a word like PARSE reads and writes >IN exactly the way the outer
-// loop itself does, through this same interface, not through some
-// interpreter-private mechanism a Forth-level word could never reach.
+// Step F24 (docs/forth-plan-2.md) introduced this type under
+// interpreter/input_source.hpp, composed alongside machine::forth_state
+// rather than folded into it (DIV-0012's own F24 disposition: reader/ and the
+// R1 elaborator were still alive, and machine/ depending on parser/ would
+// have been a new layering edge with no F24 benefit). Step F28 relocates it
+// here, unchanged in every observable respect but its own namespace: D13 says
+// SOURCE/>IN "are machine state in forth_state", and DIV-0012's own
+// orchestrator amendment names exactly this step as the one that cannot defer
+// the fold any further -- machine::apply_primitive and machine::run_from only
+// ever see a machine::forth_state, so a parsing/defining word reached through
+// EXECUTE (D18) or compiled into another word's own body (CREATE, DOES>) can
+// only reach the input stream if forth_state itself carries it. See
+// docs/compiler_architecture.org's Phase 11 section and DIV-0012's F28
+// addendum for the full record.
 
 // 6a8b2e4f-1c9d-4a3e-8f5b-2d7c9e1a4b6f
 /// The input source an interpreter loop scans: @ref text is the whole
@@ -40,8 +45,8 @@ class input_source {
     [[nodiscard]] constexpr auto in() const -> int;
 
     /// Sets `>IN` directly. What the interpreter loop does after consuming
-    /// a token, and what a parsing word (`WORD`, `PARSE`, F29) does to claim
-    /// or release input for itself.
+    /// a token, and what a parsing word (`WORD`, `PARSE`, F29) or a defining
+    /// word (`CREATE`, F28) does to claim or release input for itself.
     constexpr auto set_in(int value) -> void;
 
     /// A @ref parser::cursor positioned at `>IN`, built by replaying
@@ -75,9 +80,8 @@ constexpr auto input_source::cursor_at_in() const -> parser::cursor {
 namespace detail {
 
 // input_source must stay a literal, trivially destructible type: it is a
-// field of interpreter::forth_state (interp.hpp), which in turn must stay
-// usable as a constexpr local exactly like machine::forth_state already is
-// (D3).
+// field of machine::forth_state (forth_state.hpp), which must stay usable as
+// a constexpr local (D3).
 static_assert(std::is_trivially_destructible_v<input_source>);
 
 } // namespace detail
@@ -107,6 +111,6 @@ static_assert([] {
            pos.column == 1;
 }());
 
-} // namespace smd::forth::interpreter
+} // namespace smd::forth::machine
 
 #endif

@@ -7,11 +7,14 @@
 #include <smd/forth/foundation/source_pos.hpp>
 #include <smd/forth/interpreter/session.hpp>
 #include <smd/forth/machine/cell.hpp>
+#include <smd/forth/machine/dictionary.hpp>
 #include <smd/forth/machine/emit.hpp>
 #include <smd/forth/machine/forth_state.hpp>
 #include <smd/forth/machine/instruction.hpp>
 
 #include <catch2/catch_test_macros.hpp>
+
+#include <variant>
 
 using smd::forth::foundation::source_pos;
 using smd::forth::interpreter::build_session;
@@ -19,12 +22,14 @@ using smd::forth::interpreter::call_defined_word;
 using smd::forth::interpreter::seed_from_session;
 using smd::forth::machine::cell;
 using smd::forth::machine::compiled_program;
+using smd::forth::machine::dictionary;
 using smd::forth::machine::emit;
 using smd::forth::machine::forth_state;
 using smd::forth::machine::op;
 using smd::forth::machine::primitive;
 using smd::forth::machine::run;
 using smd::forth::machine::run_from;
+using smd::forth::machine::variable_word;
 
 TEST_CASE("VmTest - HeaderIsIdempotent") { REQUIRE(true); }
 
@@ -113,9 +118,52 @@ constexpr auto memory_program() -> test_program {
     return p;
 }
 
+/// Step F28 (D18): `op::execute` hand-built directly, independent of `'`/
+/// `[']` (which live in interp.hpp and produce these same values by scanning
+/// a name): a squared-shaped stub at instruction 0 (`prim dup`, `prim star`,
+/// `ret`), then a top level that pushes 6, pushes that stub's own index as
+/// an execution token (`push_xt`), and `execute`s it.
+constexpr auto execute_program() -> test_program {
+    test_program p{};
+    int const squared_entry = p.code.size(); // 0
+    (void)emit(p, op::prim, static_cast<cell>(primitive::dup), source_pos{});
+    (void)emit(p, op::prim, static_cast<cell>(primitive::star), source_pos{});
+    (void)emit(p, op::ret, cell{0}, source_pos{});
+    p.program_entry = p.code.size();
+    (void)emit(p, op::push, cell{6}, source_pos{});
+    (void)emit(p, op::push_xt, static_cast<cell>(squared_entry), source_pos{});
+    (void)emit(p, op::execute, cell{0}, source_pos{});
+    (void)emit(p, op::halt, cell{0}, source_pos{});
+    return p;
+}
+
+/// Step F28 (D18/D10): `op::create_word`/`op::does_enter` hand-built
+/// directly -- the VM-level shape of `: CONSTANT2 CREATE , DOES> @ ;`'s own
+/// body (`interp.hpp`'s own `compile_entry` is what actually emits this
+/// sequence from source text; this is the same four instructions, by hand).
+/// Instruction 0 is `CONSTANT2`'s own entry point; the trailing `halt` at
+/// @ref compiled_program::program_entry doubles as the "halt landing pad" a
+/// caller pushes as its own return address, exactly like `interpreter::
+/// compile_buffer::halt_pad` does for the real front end.
+constexpr auto create_does_program() -> test_program {
+    test_program p{};
+    int const constant2_entry = p.code.size(); // 0
+    (void)emit(p, op::create_word, cell{0}, source_pos{});
+    (void)emit(p, op::prim, static_cast<cell>(primitive::comma), source_pos{});
+    (void)emit(p, op::does_enter, cell{0}, source_pos{});
+    (void)emit(p, op::prim, static_cast<cell>(primitive::fetch), source_pos{});
+    (void)emit(p, op::ret, cell{0}, source_pos{});
+    (void)constant2_entry; // == 0; named for the comment above, unused here.
+    p.program_entry = p.code.size();
+    (void)emit(p, op::halt, cell{0}, source_pos{});
+    return p;
+}
+
 constexpr test_program squared = squared_program();
 constexpr test_program spin = spin_program();
 constexpr test_program memory = memory_program();
+constexpr test_program execute_prog = execute_program();
+constexpr test_program create_does = create_does_program();
 
 } // namespace
 
@@ -286,4 +334,113 @@ TEST_CASE("VmTest - SurvivesToRuntimeProofOnASessionImage") {
     REQUIRE(r.has_value());
     REQUIRE(state.data().depth() == 1);
     CHECK(state.data().peek().value() == 16);
+}
+
+// -- Step F28: op::execute/op::create_word/op::does_enter (D18/D10), hand-
+// built directly at the VM level, independent of interp.hpp's own `'`/
+// `[']`/`CREATE`/`DOES>` ---------------------------------------------------
+
+static_assert([] {
+    test_state state{};
+    auto r = run(execute_prog, state, /*fuel=*/1000);
+    return r.has_value() && state.data().depth() == 1 &&
+           state.data().peek().value() == 36;
+}());
+
+TEST_CASE("VmTest - ExecuteJumpsToAPoppedExecutionToken") {
+    test_state state{};
+    auto r = run(execute_prog, state, 1000);
+    REQUIRE(r.has_value());
+    REQUIRE(state.data().depth() == 1);
+    CHECK(state.data().peek().value() == 36);
+}
+
+// create_word/does_enter, given a real dictionary: CREATE scans "LIFE" off
+// state's own SOURCE, `,` stores the pushed value, DOES> attaches the
+// does-field, and invoking LIFE's own does-action afterward (a second
+// run_from call, at the attached entry point) leaves the stored value.
+static_assert([] {
+    test_state state{"LIFE"};
+    dictionary<8> dict;
+
+    auto push_ret =
+        state.returns().push(static_cast<cell>(create_does.program_entry));
+    auto push_val = state.data().push(42);
+    if (!push_ret.has_value() || !push_val.has_value()) {
+        return false;
+    }
+    auto r = run_from(create_does, state, 0, 1000, &dict);
+    if (!r.has_value()) {
+        return false;
+    }
+
+    auto const *entry = dict.lookup("LIFE");
+    if (entry == nullptr) {
+        return false;
+    }
+    auto const *vw = std::get_if<variable_word>(&entry->binding);
+    if (vw == nullptr || vw->does_entry < 0) {
+        return false;
+    }
+
+    auto push_ret2 =
+        state.returns().push(static_cast<cell>(create_does.program_entry));
+    auto push_addr = state.data().push(static_cast<cell>(vw->address));
+    if (!push_ret2.has_value() || !push_addr.has_value()) {
+        return false;
+    }
+    auto r2 = run_from(create_does, state, vw->does_entry, 1000, &dict);
+    return r2.has_value() && state.data().depth() == 1 &&
+           state.data().peek().value() == 42;
+}());
+
+TEST_CASE("VmTest - CreateWordAndDoesEnterDefineAndRunANewWord") {
+    test_state state{"LIFE"};
+    dictionary<8> dict;
+
+    REQUIRE(state.returns()
+                .push(static_cast<cell>(create_does.program_entry))
+                .has_value());
+    REQUIRE(state.data().push(42).has_value());
+    auto r = run_from(create_does, state, 0, 1000, &dict);
+    REQUIRE(r.has_value());
+
+    auto const *entry = dict.lookup("LIFE");
+    REQUIRE(entry != nullptr);
+    auto const *vw = std::get_if<variable_word>(&entry->binding);
+    REQUIRE(vw != nullptr);
+    REQUIRE(vw->does_entry >= 0);
+
+    REQUIRE(state.returns()
+                .push(static_cast<cell>(create_does.program_entry))
+                .has_value());
+    REQUIRE(state.data().push(static_cast<cell>(vw->address)).has_value());
+    auto r2 = run_from(create_does, state, vw->does_entry, 1000, &dict);
+    REQUIRE(r2.has_value());
+    REQUIRE(state.data().depth() == 1);
+    CHECK(state.data().peek().value() == 42);
+}
+
+// CREATE/DOES> without a dictionary (the default run_from/run argument, what
+// every caller before this step implicitly assumed) is diagnosed, not UB.
+static_assert([] {
+    test_state state{"LIFE"};
+    auto push_ret =
+        state.returns().push(static_cast<cell>(create_does.program_entry));
+    auto push_val = state.data().push(42);
+    if (!push_ret.has_value() || !push_val.has_value()) {
+        return false;
+    }
+    auto r = run_from(create_does, state, 0, 1000);
+    return !r.has_value();
+}());
+
+TEST_CASE("VmTest - CreateWithoutADictionaryIsDiagnosed") {
+    test_state state{"LIFE"};
+    REQUIRE(state.returns()
+                .push(static_cast<cell>(create_does.program_entry))
+                .has_value());
+    REQUIRE(state.data().push(42).has_value());
+    auto r = run_from(create_does, state, 0, 1000);
+    CHECK_FALSE(r.has_value());
 }

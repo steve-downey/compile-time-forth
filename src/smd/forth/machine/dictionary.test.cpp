@@ -19,9 +19,11 @@ using smd::forth::machine::constant_word;
 using smd::forth::machine::control_builtin;
 using smd::forth::machine::control_word;
 using smd::forth::machine::default_dictionary;
+using smd::forth::machine::defer_word;
 using smd::forth::machine::dictionary;
 using smd::forth::machine::foreign_word;
 using smd::forth::machine::primitive;
+using smd::forth::machine::value_word;
 using smd::forth::machine::variable_word;
 
 TEST_CASE("DictionaryTest - HeaderIsIdempotent") { REQUIRE(true); }
@@ -63,8 +65,9 @@ static_assert([] {
 
 TEST_CASE("DictionaryTest - DefaultDictionaryInstallsAllPrimitives") {
     auto dict = default_dictionary<>();
-    // 47 primitives + 20 step F27 control words (D17).
-    CHECK(dict.size() == 67);
+    // 48 primitives (47 + step F28's `,`) + 20 step F27 control words (D17)
+    // + 9 step F28 control words (D18).
+    CHECK(dict.size() == 77);
     auto const *entry = dict.lookup("SWAP");
     REQUIRE(entry != nullptr);
     REQUIRE(std::holds_alternative<primitive>(entry->binding));
@@ -287,4 +290,104 @@ TEST_CASE("DictionaryTest - MarkLastImmediateFlagsNewestEntry") {
     CHECK_FALSE(dict.lookup("ENDIF")->immediate);
     CHECK(dict.mark_last_immediate().has_value());
     CHECK(dict.lookup("ENDIF")->immediate);
+}
+
+// -- Step F28: execution tokens and defining words (D18) --------------------
+
+// variable_word gains a does-field (default -1, "no DOES> yet").
+static_assert([] {
+    dictionary<4> dict;
+    (void)dict.define_variable("X", variable_word{.address = addr{3}});
+    auto const *entry = dict.lookup("X");
+    return entry != nullptr &&
+           std::get<variable_word>(entry->binding).does_entry == -1;
+}());
+
+// attach_does installs a does-field onto the most recently defined entry,
+// and only that one: an earlier CREATE'd word is untouched.
+static_assert([] {
+    dictionary<4> dict;
+    (void)dict.define_variable("EARLIER", variable_word{.address = addr{1}});
+    (void)dict.define_variable("LATEST", variable_word{.address = addr{2}});
+    auto r = dict.attach_does(9);
+    if (!r.has_value()) {
+        return false;
+    }
+    return std::get<variable_word>(dict.lookup("LATEST")->binding).does_entry ==
+               9 &&
+           std::get<variable_word>(dict.lookup("EARLIER")->binding)
+                   .does_entry == -1;
+}());
+
+// attach_does diagnoses an empty dictionary and a most-recent entry that was
+// not CREATE'd (DOES> misapplied to the wrong kind of word).
+static_assert([] {
+    dictionary<4> dict;
+    return !dict.attach_does(9).has_value();
+}());
+
+static_assert([] {
+    dictionary<4> dict;
+    (void)dict.define_constant("X", constant_word{1});
+    return !dict.attach_does(9).has_value();
+}());
+
+// define_value/define_defer round-trip like every other define_*.
+static_assert([] {
+    dictionary<4> dict;
+    (void)dict.define_value("SPEED", value_word{.address = addr{5}});
+    (void)dict.define_defer("HOOK", defer_word{.address = addr{6}});
+    auto const *value_entry = dict.lookup("SPEED");
+    auto const *defer_entry = dict.lookup("HOOK");
+    return value_entry != nullptr &&
+           std::get<value_word>(value_entry->binding).address == addr{5} &&
+           defer_entry != nullptr &&
+           std::get<defer_word>(defer_entry->binding).address == addr{6};
+}());
+
+TEST_CASE("DictionaryTest - DefaultDictionaryF28WordsAreInstalled") {
+    auto dict = default_dictionary<>();
+
+    auto const *comma_entry = dict.lookup(",");
+    REQUIRE(comma_entry != nullptr);
+    REQUIRE(std::holds_alternative<primitive>(comma_entry->binding));
+    CHECK(std::get<primitive>(comma_entry->binding) == primitive::comma);
+
+    // `[']` and `TO` are the two step F28 control words installed immediate
+    // (default_dictionary's own doc comment); `'`/`EXECUTE`/`CREATE`/
+    // `DOES>`/`VALUE`/`DEFER`/`IS` are ordinary.
+    auto const *bracket_tick_entry = dict.lookup("[']");
+    REQUIRE(bracket_tick_entry != nullptr);
+    CHECK(bracket_tick_entry->immediate);
+    REQUIRE(std::holds_alternative<control_word>(bracket_tick_entry->binding));
+    CHECK(std::get<control_word>(bracket_tick_entry->binding).which ==
+          control_builtin::bracket_tick_);
+
+    auto const *to_entry = dict.lookup("TO");
+    REQUIRE(to_entry != nullptr);
+    CHECK(to_entry->immediate);
+
+    auto const *tick_entry = dict.lookup("'");
+    REQUIRE(tick_entry != nullptr);
+    CHECK_FALSE(tick_entry->immediate);
+    REQUIRE(std::holds_alternative<control_word>(tick_entry->binding));
+    CHECK(std::get<control_word>(tick_entry->binding).which ==
+          control_builtin::tick_);
+
+    auto const *create_entry = dict.lookup("CREATE");
+    REQUIRE(create_entry != nullptr);
+    CHECK_FALSE(create_entry->immediate);
+    REQUIRE(std::holds_alternative<control_word>(create_entry->binding));
+    CHECK(std::get<control_word>(create_entry->binding).which ==
+          control_builtin::create_);
+
+    auto const *does_entry_word = dict.lookup("DOES>");
+    REQUIRE(does_entry_word != nullptr);
+    CHECK_FALSE(does_entry_word->immediate);
+
+    for (auto const *name : {"EXECUTE", "VALUE", "DEFER", "IS"}) {
+        auto const *entry = dict.lookup(name);
+        REQUIRE(entry != nullptr);
+        CHECK_FALSE(entry->immediate);
+    }
 }

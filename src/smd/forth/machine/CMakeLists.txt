@@ -12,6 +12,7 @@ target_sources(
                 dictionary.hpp
                 emit.hpp
                 forth_state.hpp
+                input_source.hpp
                 instruction.hpp
                 stacks.hpp
                 vm.hpp
@@ -28,6 +29,7 @@ if(FORTH_ENABLE_TESTING)
             dictionary.test.cpp
             emit.test.cpp
             forth_state.test.cpp
+            input_source.test.cpp
             instruction.test.cpp
             stacks.test.cpp
             vm.test.cpp

@@ -1,8 +1,8 @@
 # DIV-0012: F24's interpreter state is composed, not an in-place edit of `machine::forth_state`; the D19 token-layer move is deferred to F26
 
-- **Status:** half-closed at F26 — the token-layer move is closed (see the
-  F26 addendum below); the composed-`forth_state` fold is deferred to F28,
-  not closed, per that same addendum's own filed reason
+- **Status:** closed at F28 — the token-layer move closed at F26 (see that
+  addendum below); the composed-`forth_state` fold closes at F28 (see the
+  F28 addendum below)
 - **Date:** 2026-07-25
 - **Step:** F24 (the interpreter, interpret state only), docs/forth-plan-2.md
 - **Authority diverged from:** docs/forth-plan-2.md (F24's own step text and D19)
@@ -156,13 +156,29 @@ deferring it costs nothing beyond leaving `interpreter::forth_state` a thin
 composed wrapper for two more steps. See DIV-0014 for F26's own complete
 record.
 
+## F28 addendum: the composed-`forth_state` fold, closed
+
+Step F28 does the fold this record's own revisit condition anticipated.
+`interpreter::forth_state` (the composed wrapper) is deleted outright;
+`input_source`, `BASE`, and `STATE` are now fields directly on
+`machine::forth_state` (`machine/forth_state.hpp`). `input_source` itself
+relocates from `interpreter/input_source.hpp` to `machine/input_source.hpp`,
+re-namespaced `smd::forth::machine` — the same kind of mechanical relocation
+this record's own F26 addendum already did for `forth_chars.hpp`, now one
+layer further down. Every function that took the wrapper (`interpret`,
+`apply_control_word`, `execute_entry`) now takes `machine::forth_state`
+directly, and every `st.machine().foo()` call site becomes plain `st.foo()`.
+
+The reason this could not wait past F28, concretely: this step's own two
+central deliverables, `EXECUTE` (D18) and `CREATE`/`DOES>` (D10) invoked
+from *inside* another word's own compiled body, both need `state.source()`
+reachable from `machine::run_from`'s own fetch-execute loop — a colon word's
+compiled body has no other channel back to the input stream once it is
+running as pure VM bytecode. See DIV-0016 (`docs/divergences/DIV-0016-f28-execution-tokens-and-defining-words.md`)
+for the full record of what F28 built on top of this fold.
+
 ## Revisit condition
 
-The token-layer move is closed, as of F26 (see addendum above).
-The composed-`forth_state` fold is deferred, not closed: it should happen no
-later than immediately before F28 begins (D18's uniform execution tokens
-need `machine::forth_state` itself to carry the input stream, per the
-orchestrator amendment above), and may happen as its own small step before
-then if a future agent finds it convenient. If F28 itself finds a further
-reason the fold should not happen even then, that reason supersedes this
-record and must be filed against D13 in its own right.
+Both halves are closed, as of F26 (token-layer move) and F28 (the fold
+itself). Nothing further to revisit here; DIV-0016 is where any future
+question about the fold's own consequences should be filed.

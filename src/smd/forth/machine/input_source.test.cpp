@@ -1,12 +1,12 @@
-// src/smd/forth/interpreter/input_source.test.cpp                   -*-C++-*-
+// src/smd/forth/machine/input_source.test.cpp                       -*-C++-*-
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 
-#include <smd/forth/interpreter/input_source.hpp>
-#include <smd/forth/interpreter/input_source.hpp> // test 2nd include OK
+#include <smd/forth/machine/input_source.hpp>
+#include <smd/forth/machine/input_source.hpp> // test 2nd include OK
 
 #include <catch2/catch_test_macros.hpp>
 
-using smd::forth::interpreter::input_source;
+using smd::forth::machine::input_source;
 
 TEST_CASE("InputSourceTest - HeaderIsIdempotent") { REQUIRE(true); }
 

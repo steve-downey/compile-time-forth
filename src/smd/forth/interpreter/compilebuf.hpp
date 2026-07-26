@@ -6,6 +6,7 @@
 #include <smd/forth/foundation/result.hpp>
 #include <smd/forth/foundation/source_pos.hpp>
 #include <smd/forth/machine/cell.hpp>
+#include <smd/forth/machine/dictionary.hpp>
 #include <smd/forth/machine/emit.hpp>
 #include <smd/forth/machine/forth_state.hpp>
 #include <smd/forth/machine/instruction.hpp>
@@ -160,18 +161,26 @@ static_assert(std::is_trivially_destructible_v<compile_buffer<64, 32>>);
 ///                     machine::compiled_colon_word::entry_point).
 /// @param fuel         The VM's own execution step budget (@ref
 ///                     machine::consume_vm_fuel).
+/// @param dict         Step F28's own addition: forwarded to @ref
+///                     machine::run_from unchanged (`nullptr` by default, as
+///                     every caller before this step already implicitly
+///                     assumed) -- only needed if @p entry_point's own body
+///                     reaches `CREATE`/`DOES>` (@ref machine::op::
+///                     create_word/@ref machine::op::does_enter).
 template <int MaxCode, int MaxWords, int MaxDepth, int MaxRDepth, int MaxData,
-          int MaxOut>
+          int MaxOut, int DictWords = 256, int DictName = 32>
 constexpr auto
 call_word(compile_buffer<MaxCode, MaxWords> &buf,
           machine::forth_state<MaxDepth, MaxRDepth, MaxData, MaxOut> &state,
-          int entry_point, int fuel) -> machine::status {
+          int entry_point, int fuel,
+          machine::dictionary<DictWords, DictName> *dict = nullptr)
+    -> machine::status {
     auto push_return =
         state.returns().push(static_cast<machine::cell>(buf.halt_pad()));
     if (!push_return.has_value()) {
         return push_return;
     }
-    return machine::run_from(buf.program(), state, entry_point, fuel);
+    return machine::run_from(buf.program(), state, entry_point, fuel, dict);
 }
 // f7a3c9e1-6d4b-4a2f-8c1e-9b5d7a3f2e6c end
 

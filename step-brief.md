@@ -1,103 +1,96 @@
-# step-brief.md — Step F28: execution tokens and defining words
+# step-brief.md — Step F29: parsing words and strings
 
 Forward-only brief for the next clean agent. Bounded; not a log. Prior-step
 narrative lives in `git log`; architecture lives in
 `docs/compiler_architecture.org` — consult it only where pointed, by anchor.
 Your orchestrator pastes your own step section from `docs/forth-plan-2.md`
-plus the decision records it cites (most relevantly D18, "header
-unification"); this brief does not attempt to restate that section from
-memory — F27 was not given F28's own plan text either, only checklist.md's
-title ("execution tokens and defining words") and D18's own context
-paragraph, so treat the goal/merge-criterion section below as orientation,
-not authority.
+plus the decision records it cites; this brief does not attempt to restate
+that section from memory.
 
-## What F27 built, by anchor
+## What F28 built, by anchor
 
-`docs/compiler_architecture.org`'s Phase 10 section ("Immediacy and Control
-Flow") covers this in prose, with three transcluded code anchors. Read it
-before opening any source below wholesale.
+`docs/compiler_architecture.org`'s Phase 11 section ("Execution Tokens and
+Defining Words") covers this in full, with several transcluded code anchors.
+Read it before opening any source below wholesale.
 
-- **Every control word is a real dictionary entry now**: `IF ELSE THEN`,
-  `BEGIN UNTIL`, `BEGIN WHILE REPEAT`, `DO LOOP +LOOP LEAVE UNLOOP I J`,
-  `LITERAL`, `POSTPONE`, `IMMEDIATE`, `[`, `]`, `COMPILE,` — a new
-  `machine::dictionary_binding` alternative, `control_word` (a
-  `control_builtin` tag, `machine/dictionary.hpp`, anchor
-  `0d3b390a-1051-4f76-867c-b4f161264827`), dispatched by
-  `interpreter::apply_control_word` (`interp.hpp`, anchor
-  `d1a4f7b2-6c8e-4a3d-9b5f-2e7c4a9d1b6e`). `dictionary_entry` also gained a
-  `bool immediate` field (D18's own narrow slice: "you need an IMMEDIATE
-  flag; you do not need the full unification" — F27 took exactly that and
-  no more) and `dictionary::mark_last_immediate`/`define_control`.
-- **D13's "execute when interpreting or immediate, else compile" is now one
-  rule, not a special case per binding kind**: `interpreter::execute_entry`
-  and `interpreter::compile_entry` (`interp.hpp`, both just above the
-  `d1a4f7b2` anchor) are the two halves; `interpret`'s own loop calls
-  `execute_entry` unconditionally while interpreting, and while compiling
-  calls `execute_entry` for an immediate entry or `compile_entry` for an
-  ordinary one. If F28's own execution-token/header work adds a new binding
-  kind, extending these two functions (rather than re-special-casing inside
-  `interpret` itself) is almost certainly the right shape to follow.
-- **`:`/`;`/`EXIT`/`RECURSE`/`VARIABLE`/`CREATE`/`CONSTANT` are still direct-
-  name special cases**, deliberately not folded into the new dispatch (D13's
-  own rule already covered them correctly as-is; folding them was optional,
-  and F27 left them alone rather than touching working code without a
-  reason). If F28's defining words need to change how `VARIABLE`/`CREATE`
-  install their bindings (e.g. `CREATE ... DOES>`), this is the code to
-  read first — `interp.hpp`'s own `interpret()`, the `VARIABLE`/`CREATE`
-  branch inside the `STATE == 0` half.
-- **`POSTPONE` of a C++-native control word only works when it is the
-  *entire* body of the definition** (`: ENDIF POSTPONE THEN ; IMMEDIATE`):
-  the word being closed becomes a plain `control_word` alias, not a
-  `compiled_colon_word`, because a control word has no VM entry point to
-  compile a call to. Mixing a postponed control word with any other code in
-  the same definition is diagnosed, not supported — see DIV-0015 for the
-  full rationale and its own revisit condition (closes if F28's own header
-  unification gives control words a representation that composes with
-  ordinary compiled code).
-- **`COMPILE,` treats a dictionary index as an execution token** — the same
-  convention `op::push_xt` already documented (`instruction.hpp`, since
-  F14, never wired to anything before now): pop a `machine::cell`, treat it
-  as a `dictionary::entry_at` index, append that entry's compiled form. F28
-  is where this convention presumably gets a real producer (`'`/`tick`,
-  `EXECUTE`); nothing before this step ever pushed a genuine execution
-  token onto the data stack from Forth source (F27's own `COMPILE,` test
-  drives it directly in C++, not through source text, for exactly that
-  reason — see `interp.test.cpp`'s `CompileCommaAppendsAnEntrysCompiledForm`).
-- **`default_dictionary`'s entry count is 67 now** (47 primitives + 20
-  control words), not 47. Every hand-sized `dictionary<MaxWords, ...>` or
-  `build_session<..., MaxWords, ...>` call built close to the old count with
-  no headroom needs auditing before adding more default-dictionary entries
-  — DIV-0015's own Consequences section names the two call sites F27 itself
-  had to fix (`vm.test.cpp`, `session.test.cpp`, both `MaxWords` 64 → 96).
+- **DIV-0012's fold is done.** `machine::forth_state` (`machine/
+  forth_state.hpp`) now carries `SOURCE`/`>IN` (`source()`, an `input_source`
+  relocated to `machine/input_source.hpp`), `BASE`, and `STATE` directly —
+  `interpreter::forth_state`, the composed wrapper every prior step used, no
+  longer exists. Every function that took it now takes `machine::forth_state`
+  directly. **This is exactly what makes F29 possible**: `PARSE`/`WORD`/
+  `CHAR` only need `state.source()` and `state.data_space()`, both plain
+  fields of `machine::forth_state` now — they can be real `machine::
+  primitive` enumerators, dispatched through `apply_primitive` exactly like
+  `DUP`/`@`/`ALLOT`, with no dictionary access and no new opcode needed. Do
+  not reach for the `CREATE`/`DOES>`-style `dictionary`-pointer-through-
+  `run_from` machinery (next bullet) unless a specific parsing word turns out
+  to need the dictionary itself, not just the input stream.
+- **Two new VM opcodes exist for the one case that *does* need dictionary
+  access mid-body**: `machine::op::create_word`/`op::does_enter`
+  (`machine/instruction.hpp`), consulted via a new nullable, non-owning
+  `dictionary<DictWords, DictName> *dict = nullptr` parameter on
+  `machine::run_from`/`run` and `interpreter::call_word` (defaulted, so no
+  existing call site needed to change). `machine::create_here` (`vm.hpp`) is
+  the shared "scan a name, install a variable_word" action both the VM
+  opcode and `interpreter::apply_control_word`'s own `create_` case call.
+  Reuse this exact pattern (a shared free function in `machine/`, called
+  from both an interpreting-time control-word case and a VM opcode case) if
+  F29 needs a word usable both directly and from inside a compiled body.
+- **`interpreter::resolve_execution_token`** (`interp.hpp`, anchor
+  `1c9e6a4f-7b3d-4e8a-9c2f-6a1d8b4e3f7c`) is D18's primitive-XT encoding
+  decision made concrete: an execution token is a code-space instruction
+  index; `'`/`[']` produce one by returning a colon word's own entry point
+  directly, or by building a small `ret`-terminated stub *guarded by a
+  leading unconditional branch* for anything else (primitive/variable/
+  constant/value_word) — the guard is required because the code space may be
+  positioned inside a still-open colon definition's own body when this runs.
+  If F29's own `S"` needs to store a string literal and later produce
+  something callable from it, this guard discipline is the model to copy;
+  do not emit unguarded instructions into `buf` from any context that might
+  run mid-definition.
+- **New binding kinds**: `machine::value_word`/`machine::defer_word`
+  (`dictionary.hpp`) both hold a single data-space `addr` rather than a
+  value stored on the entry itself, specifically so a *compiled* reference
+  needs no dictionary access at runtime — reuse this shape if F29 needs to
+  store a parsed string's own address/length as a dictionary binding (e.g. a
+  `S"`-defined constant string).
+- **`default_dictionary` is 77 entries now** (48 primitives + 29 control
+  words), not 67. `MaxWords` values already in use (96, 256) still clear
+  this with room; audit again if F29 adds enough new entries to threaten a
+  smaller `MaxWords` somewhere.
+- **`,` is primitive 48** (`machine::primitive::comma`, `( x -- )`): reserves
+  one data-space cell and stores into it. `interpreter/effect_lint.hpp`'s
+  `primitive_data_effect` switch is exhaustive over `machine::primitive` —
+  add a case there for any new primitive F29 introduces, or the build warns
+  (`-Wswitch`) under clang.
 
-## Gotchas F28 needs and cannot get from its own pasted section
+## Gotchas F29 needs and cannot get from its own pasted section
 
-- **The data stack doubles as the control-flow stack while compiling**
-  (D17, Phase 10): `IF`/`BEGIN`/`WHILE`/`DO` push orig/dest markers onto the
-  *live* `st.machine().data()`, popped by their own closing word. F28's own
-  work should not assume the data stack is untouched during compilation of
-  a definition that uses control flow — it is, between control-flow words,
-  but not always exactly at every token boundary.
-- **`compiling_context<MaxName>` (`interp.hpp`) is the per-definition
-  compile-time bookkeeping struct** (name/entry/effect/has_effect/
-  loop_depth/has_postponed_alias/postponed_target) that replaced four loose
-  locals at F27. Extend it, do not reintroduce loose locals, if F28 needs
-  more per-definition state (e.g. tracking a `CREATE ... DOES>` word's own
-  does-field entry point).
-- **An unresolved `IF`/`BEGIN` (no matching `THEN`/`REPEAT`) is *not*
-  diagnosed at `;`** — only an unresolved `DO` is (via `loop_depth`). DIV-
-  0015 records why a general data-stack-depth balance check was tried and
-  reverted (it rejects legitimate immediate-word side effects, like
-  `: DOUBLE-IT 21 ; IMMEDIATE` leaving real data behind on purpose). Do not
-  reintroduce that check without re-reading DIV-0015 first.
-- **`interp.test.cpp`/`forth.test.cpp` now carry direct control-flow merge-
-  criterion coverage** (`InterpTest - AbsMergeCriterion` etc.,
-  `ForthTest - AbsControlFlowMergeCriterion` etc.) — the full corpus in
-  `interpreter/control_flow_corpus.hpp` passes through both `interpret()`
-  and `compiled_forth<Source>` now. `SPIN` still cannot go through
-  `compiled_forth<Source>` (a program that never terminates is a hard
-  compile error under D13/D14 regardless of control flow existing), and
-  that is correct, not a gap to close.
+- **`CREATE`, uniquely among F26/F28's defining words, is a real dictionary
+  entry (`control_word` tag `create_`) reachable from inside a compiled
+  body; `VARIABLE`/`CONSTANT` are still direct-name special cases** in
+  `interpret()`'s own interpreting branch, unchanged since F26. If F29's own
+  parsing words need similar "usable both top-level and inside a running
+  colon word" behavior, `CREATE`'s shape (non-immediate `control_word`,
+  `compile_entry` case emitting a real opcode, `execute_entry`/
+  `apply_control_word` case running the interpreting-time action directly)
+  is the template — not a new direct-name special case.
+- **`interpreter::compile_entry`/`execute_entry` are the two dispatch
+  points every new binding kind or control word needs a case in**, per
+  D13's "execute when interpreting or immediate, else compile" rule,
+  unchanged in shape since F27. Extend these two functions; do not
+  special-case further inside `interpret()`'s own loop body.
+- **The guarded-branch stub pattern in `resolve_execution_token` costs one
+  wasted instruction whenever emission happens somewhere already safe to
+  append inline** (true top-level, most of the time) — this is deliberate
+  (uniform safety over minimizing instruction count); do not try to detect
+  "is this actually safe without a guard" and skip it.
+- **`'`/`[']` cannot currently produce an execution token for a
+  `control_word`, `foreign_word`, or `defer_word` target** (diagnosed: "word
+  has no execution token") — DIV-0016's own Revisit condition names
+  `defer_word` as the one case that could be added later if a merge
+  criterion needs it; nothing before F29 does.
 
 ## Standing constraints
 
@@ -109,7 +102,7 @@ before opening any source below wholesale.
 - Compile-time tests use the immediately-invoked-lambda `static_assert`
   pattern; every public constexpr API gets one.
 - Do not pick your own DIV number; the orchestrator allocates it at
-  dispatch. F27 used DIV-0015.
+  dispatch. F28 used DIV-0016.
 
 ## Before handoff
 
@@ -117,5 +110,5 @@ before opening any source below wholesale.
 `make check-transclusions` green; `smoke.sh gcc-16` and `smoke.sh clang-21`
 both end `SMOKE OK`; `checklist.md` ticked; durable facts recorded in
 `docs/compiler_architecture.org` in place, by anchor; `step-brief.md`
-rewritten for F29; DIV filed for any deviation, using the number you are
+rewritten for F30; DIV filed for any deviation, using the number you are
 given.

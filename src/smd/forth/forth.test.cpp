@@ -180,3 +180,34 @@ TEST_CASE("ForthTest - SumtoControlFlowMergeCriterion") {
     REQUIRE(s.size() == 1);
     CHECK(s[0] == 15);
 }
+
+// Step F28: execution tokens and defining words, through the public one-shot
+// API -- no forth_program/compiled_forth change was needed here either, for
+// the same reason as F27's own control-flow criteria above: interpret()
+// itself is what gained `CREATE`/`DOES>`/`'`/`EXECUTE` (interp.hpp, D18), and
+// compiled_forth<Source> already runs any program through interpret()
+// unchanged.
+
+static_assert([] {
+    auto s = compiled_forth<": CONSTANT2 CREATE , DOES> @ ;  "
+                            "42 CONSTANT2 LIFE  LIFE">.stack();
+    return s.size() == 1 && s[0] == 42;
+}());
+
+TEST_CASE("ForthTest - ConstantTwoDoesMergeCriterion") {
+    auto s = compiled_forth<": CONSTANT2 CREATE , DOES> @ ;  "
+                            "42 CONSTANT2 LIFE  LIFE">.stack();
+    REQUIRE(s.size() == 1);
+    CHECK(s[0] == 42);
+}
+
+static_assert([] {
+    auto s = compiled_forth<": SQUARED DUP * ;  5 ' SQUARED EXECUTE">.stack();
+    return s.size() == 1 && s[0] == 25;
+}());
+
+TEST_CASE("ForthTest - TickExecuteMergeCriterion") {
+    auto s = compiled_forth<": SQUARED DUP * ;  5 ' SQUARED EXECUTE">.stack();
+    REQUIRE(s.size() == 1);
+    CHECK(s[0] == 25);
+}

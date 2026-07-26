@@ -14,9 +14,9 @@
 #include <string_view>
 
 using smd::forth::interpreter::compile_buffer;
-using smd::forth::interpreter::forth_state;
 using smd::forth::interpreter::interpret;
 using smd::forth::machine::default_dictionary;
+using smd::forth::machine::forth_state;
 namespace corpus = smd::forth::interpreter::corpus;
 
 namespace {
@@ -24,11 +24,11 @@ namespace {
 /// Views a state's accumulated output as a @c std::string_view, the same
 /// convenience @ref smd::forth::parser::forth_chars.test.cpp's own
 /// @c view_of provides for scanned tokens.
-template <int MaxDepth, int MaxRDepth, int MaxData, int MaxOut, int MaxName>
+template <int MaxDepth, int MaxRDepth, int MaxData, int MaxOut>
 constexpr auto
-output_of(forth_state<MaxDepth, MaxRDepth, MaxData, MaxOut, MaxName> const &st)
+output_of(forth_state<MaxDepth, MaxRDepth, MaxData, MaxOut> const &st)
     -> std::string_view {
-    auto const &out = st.machine().output();
+    auto const &out = st.output();
     return std::string_view{out.begin(), static_cast<std::size_t>(out.size())};
 }
 
@@ -44,8 +44,7 @@ static_assert([] {
     auto dict = default_dictionary<>();
     compile_buffer<> buf;
     auto r = interpret(st, dict, buf);
-    return r.has_value() && output_of(st) == "3 " &&
-           st.machine().data().depth() == 0;
+    return r.has_value() && output_of(st) == "3 " && st.data().depth() == 0;
 }());
 
 // BASE plumbed and tested directly: BASE defaults to 10 ...
@@ -104,8 +103,8 @@ static_assert([] {
     auto dict = default_dictionary<>();
     compile_buffer<> buf;
     auto r = interpret(st, dict, buf);
-    return r.has_value() && st.machine().data().depth() == 1 &&
-           st.machine().data().peek().value() == -1;
+    return r.has_value() && st.data().depth() == 1 &&
+           st.data().peek().value() == -1;
 }());
 
 static_assert([] {
@@ -113,8 +112,8 @@ static_assert([] {
     auto dict = default_dictionary<>();
     compile_buffer<> buf;
     auto r = interpret(st, dict, buf);
-    return r.has_value() && st.machine().data().depth() == 1 &&
-           st.machine().data().peek().value() == 4;
+    return r.has_value() && st.data().depth() == 1 &&
+           st.data().peek().value() == 4;
 }());
 
 // `\` and `( ... )` comments are consumed like any other intertoken space.
@@ -133,8 +132,7 @@ static_assert([] {
     auto dict = default_dictionary<>();
     compile_buffer<> buf;
     auto r = interpret(st, dict, buf);
-    return r.has_value() && st.machine().data().depth() == 0 &&
-           output_of(st).empty();
+    return r.has_value() && st.data().depth() == 0 && output_of(st).empty();
 }());
 
 // Redefinition shadows: the dictionary's own newest-first lookup means the
@@ -146,8 +144,8 @@ static_assert([] {
     forth_state<64, 64, 1024, 256> st{"3 1 +"};
     compile_buffer<> buf;
     auto r = interpret(st, dict, buf);
-    return r.has_value() && st.machine().data().depth() == 1 &&
-           st.machine().data().peek().value() == 2; // "+" resolved to minus
+    return r.has_value() && st.data().depth() == 1 &&
+           st.data().peek().value() == 2; // "+" resolved to minus
 }());
 
 // -- Step F25 merge criteria: the colon compiler ----------------------------
@@ -158,9 +156,8 @@ static_assert([] {
     auto dict = default_dictionary<>();
     compile_buffer<> buf;
     auto r = interpret(st, dict, buf);
-    return r.has_value() && st.state() == 0 &&
-           st.machine().data().depth() == 1 &&
-           st.machine().data().peek().value() == 16;
+    return r.has_value() && st.state() == 0 && st.data().depth() == 1 &&
+           st.data().peek().value() == 16;
 }());
 
 // `: QUAD SQUARED SQUARED ; 3 QUAD` leaves `[81]` -- a colon word calling
@@ -171,8 +168,8 @@ static_assert([] {
     auto dict = default_dictionary<>();
     compile_buffer<> buf;
     auto r = interpret(st, dict, buf);
-    return r.has_value() && st.machine().data().depth() == 1 &&
-           st.machine().data().peek().value() == 81;
+    return r.has_value() && st.data().depth() == 1 &&
+           st.data().peek().value() == 81;
 }());
 
 // -- Step F26 merge criteria: VARIABLE/CONSTANT/CREATE ----------------------
@@ -190,9 +187,8 @@ static_assert([] {
     auto dict = default_dictionary<>();
     compile_buffer<> buf;
     auto r = interpret(st, dict, buf);
-    return r.has_value() && st.machine().data().depth() == 2 &&
-           st.machine().data().peek(1).value() == 8 &&
-           st.machine().data().peek(0).value() == 14;
+    return r.has_value() && st.data().depth() == 2 &&
+           st.data().peek(1).value() == 8 && st.data().peek(0).value() == 14;
 }());
 
 TEST_CASE("InterpTest - MemoryWordsMergeCriterion") {
@@ -202,9 +198,9 @@ TEST_CASE("InterpTest - MemoryWordsMergeCriterion") {
     compile_buffer<> buf;
     auto r = interpret(st, dict, buf);
     REQUIRE(r.has_value());
-    REQUIRE(st.machine().data().depth() == 2);
-    CHECK(st.machine().data().peek(1).value() == 8);
-    CHECK(st.machine().data().peek(0).value() == 14);
+    REQUIRE(st.data().depth() == 2);
+    CHECK(st.data().peek(1).value() == 8);
+    CHECK(st.data().peek(0).value() == 14);
 }
 
 // `CREATE BUF 4 ALLOT` -- BUF is usable as a base address across all four
@@ -217,8 +213,8 @@ static_assert([] {
     auto dict = default_dictionary<>();
     compile_buffer<> buf;
     auto r = interpret(st, dict, buf);
-    return r.has_value() && st.machine().data().depth() == 1 &&
-           st.machine().data().peek().value() == 30;
+    return r.has_value() && st.data().depth() == 1 &&
+           st.data().peek().value() == 30;
 }());
 
 TEST_CASE("InterpTest - CreateAllotMergeCriterion") {
@@ -229,8 +225,8 @@ TEST_CASE("InterpTest - CreateAllotMergeCriterion") {
     compile_buffer<> buf;
     auto r = interpret(st, dict, buf);
     REQUIRE(r.has_value());
-    REQUIRE(st.machine().data().depth() == 1);
-    CHECK(st.machine().data().peek().value() == 30);
+    REQUIRE(st.data().depth() == 1);
+    CHECK(st.data().peek().value() == 30);
 }
 
 // A variable's address is also usable from inside a colon definition,
@@ -242,8 +238,8 @@ static_assert([] {
     auto dict = default_dictionary<>();
     compile_buffer<> buf;
     auto r = interpret(st, dict, buf);
-    return r.has_value() && st.machine().data().depth() == 1 &&
-           st.machine().data().peek().value() == 5;
+    return r.has_value() && st.data().depth() == 1 &&
+           st.data().peek().value() == 5;
 }());
 
 // `;` while interpreting is compile-only misuse: diagnosed, not silently
@@ -273,8 +269,8 @@ static_assert([] {
     auto dict = default_dictionary<>();
     compile_buffer<> buf;
     auto r = interpret(st, dict, buf);
-    if (!r.has_value() || st.machine().data().depth() != 1 ||
-        st.machine().data().peek().value() != 25) {
+    if (!r.has_value() || st.data().depth() != 1 ||
+        st.data().peek().value() != 25) {
         return false;
     }
     auto const *entry = dict.lookup("SQUARED");
@@ -326,8 +322,8 @@ static_assert([] {
     auto dict = default_dictionary<>();
     compile_buffer<> buf;
     auto r = interpret(st, dict, buf);
-    return r.has_value() && st.machine().data().depth() == 1 &&
-           st.machine().data().peek().value() == 7;
+    return r.has_value() && st.data().depth() == 1 &&
+           st.data().peek().value() == 7;
 }());
 
 static_assert([] {
@@ -335,8 +331,7 @@ static_assert([] {
     auto dict = default_dictionary<>();
     compile_buffer<> buf;
     auto r = interpret(st, dict, buf);
-    return r.has_value() && st.machine().data().depth() == 0 &&
-           output_of(st) == "3 2 1 ";
+    return r.has_value() && st.data().depth() == 0 && output_of(st) == "3 2 1 ";
 }());
 
 // SPIN never terminates: a small VM fuel diagnoses budget exhaustion rather
@@ -354,8 +349,8 @@ static_assert([] {
     auto dict = default_dictionary<>();
     compile_buffer<> buf;
     auto r = interpret(st, dict, buf);
-    return r.has_value() && st.machine().data().depth() == 1 &&
-           st.machine().data().peek().value() == 3;
+    return r.has_value() && st.data().depth() == 1 &&
+           st.data().peek().value() == 3;
 }());
 
 static_assert([] {
@@ -363,9 +358,8 @@ static_assert([] {
     auto dict = default_dictionary<>();
     compile_buffer<> buf;
     auto r = interpret(st, dict, buf);
-    return r.has_value() && st.machine().data().depth() == 2 &&
-           st.machine().data().peek(1).value() == -3 &&
-           st.machine().data().peek(0).value() == 99;
+    return r.has_value() && st.data().depth() == 2 &&
+           st.data().peek(1).value() == -3 && st.data().peek(0).value() == 99;
 }());
 
 static_assert([] {
@@ -373,8 +367,8 @@ static_assert([] {
     auto dict = default_dictionary<>();
     compile_buffer<> buf;
     auto r = interpret(st, dict, buf);
-    return r.has_value() && st.machine().data().depth() == 1 &&
-           st.machine().data().peek().value() == 15;
+    return r.has_value() && st.data().depth() == 1 &&
+           st.data().peek().value() == 15;
 }());
 
 static_assert([] {
@@ -382,8 +376,8 @@ static_assert([] {
     auto dict = default_dictionary<>();
     compile_buffer<> buf;
     auto r = interpret(st, dict, buf);
-    return r.has_value() && st.machine().data().depth() == 1 &&
-           st.machine().data().peek().value() == 5;
+    return r.has_value() && st.data().depth() == 1 &&
+           st.data().peek().value() == 5;
 }());
 
 static_assert([] {
@@ -391,8 +385,8 @@ static_assert([] {
     auto dict = default_dictionary<>();
     compile_buffer<> buf;
     auto r = interpret(st, dict, buf);
-    return r.has_value() && st.machine().data().depth() == 1 &&
-           st.machine().data().peek().value() == 9;
+    return r.has_value() && st.data().depth() == 1 &&
+           st.data().peek().value() == 9;
 }());
 
 static_assert([] {
@@ -400,8 +394,8 @@ static_assert([] {
     auto dict = default_dictionary<>();
     compile_buffer<> buf;
     auto r = interpret(st, dict, buf);
-    return r.has_value() && st.machine().data().depth() == 1 &&
-           st.machine().data().peek().value() == 20;
+    return r.has_value() && st.data().depth() == 1 &&
+           st.data().peek().value() == 20;
 }());
 
 static_assert([] {
@@ -409,8 +403,8 @@ static_assert([] {
     auto dict = default_dictionary<>();
     compile_buffer<> buf;
     auto r = interpret(st, dict, buf);
-    return r.has_value() && st.machine().data().depth() == 1 &&
-           st.machine().data().peek().value() == 3;
+    return r.has_value() && st.data().depth() == 1 &&
+           st.data().peek().value() == 3;
 }());
 
 // IMMEDIATE and POSTPONE, D17's own stated example: a user-defined immediate
@@ -423,8 +417,8 @@ static_assert([] {
     auto dict = default_dictionary<>();
     compile_buffer<> buf;
     auto r = interpret(st, dict, buf);
-    return r.has_value() && st.machine().data().depth() == 1 &&
-           st.machine().data().peek().value() == 7;
+    return r.has_value() && st.data().depth() == 1 &&
+           st.data().peek().value() == 7;
 }());
 
 // POSTPONE's other half: postponing an ordinary (non-immediate) word appends
@@ -436,8 +430,8 @@ static_assert([] {
     auto dict = default_dictionary<>();
     compile_buffer<> buf;
     auto r = interpret(st, dict, buf);
-    return r.has_value() && st.machine().data().depth() == 1 &&
-           st.machine().data().peek().value() == 25;
+    return r.has_value() && st.data().depth() == 1 &&
+           st.data().peek().value() == 25;
 }());
 
 // `[ ... ] LITERAL`: an interpreted computation inside the brackets is baked
@@ -447,8 +441,8 @@ static_assert([] {
     auto dict = default_dictionary<>();
     compile_buffer<> buf;
     auto r = interpret(st, dict, buf);
-    return r.has_value() && st.machine().data().depth() == 1 &&
-           st.machine().data().peek().value() == 7;
+    return r.has_value() && st.data().depth() == 1 &&
+           st.data().peek().value() == 7;
 }());
 
 // Mismatched THEN without IF: diagnosed via the orig/dest discipline itself
@@ -494,7 +488,7 @@ TEST_CASE("InterpTest - SimpleArithmeticAndOutput") {
     auto r = interpret(st, dict, buf);
     REQUIRE(r.has_value());
     CHECK(output_of(st) == "3 ");
-    CHECK(st.machine().data().depth() == 0);
+    CHECK(st.data().depth() == 0);
 }
 
 TEST_CASE("InterpTest - MultipleWordsAndDotS") {
@@ -504,7 +498,7 @@ TEST_CASE("InterpTest - MultipleWordsAndDotS") {
     auto r = interpret(st, dict, buf);
     REQUIRE(r.has_value());
     CHECK(output_of(st) == "1 2 3 ");
-    CHECK(st.machine().data().depth() == 3);
+    CHECK(st.data().depth() == 3);
 }
 
 TEST_CASE("InterpTest - CaseInsensitiveWordLookup") {
@@ -566,8 +560,8 @@ TEST_CASE("InterpTest - NegativeOneIsANumberOneMinusIsAWord") {
         compile_buffer<> buf;
         auto r = interpret(st, dict, buf);
         REQUIRE(r.has_value());
-        REQUIRE(st.machine().data().depth() == 1);
-        CHECK(st.machine().data().peek().value() == -1);
+        REQUIRE(st.data().depth() == 1);
+        CHECK(st.data().peek().value() == -1);
     }
     {
         forth_state<64, 64, 1024, 256> st{"5 1-"};
@@ -575,8 +569,8 @@ TEST_CASE("InterpTest - NegativeOneIsANumberOneMinusIsAWord") {
         compile_buffer<> buf;
         auto r = interpret(st, dict, buf);
         REQUIRE(r.has_value());
-        REQUIRE(st.machine().data().depth() == 1);
-        CHECK(st.machine().data().peek().value() == 4);
+        REQUIRE(st.data().depth() == 1);
+        CHECK(st.data().peek().value() == 4);
     }
 }
 
@@ -606,8 +600,8 @@ TEST_CASE("InterpTest - SquaredMergeCriterion") {
     compile_buffer<> buf;
     auto r = interpret(st, dict, buf);
     REQUIRE(r.has_value());
-    REQUIRE(st.machine().data().depth() == 1);
-    CHECK(st.machine().data().peek().value() == 16);
+    REQUIRE(st.data().depth() == 1);
+    CHECK(st.data().peek().value() == 16);
     CHECK(st.state() == 0);
 }
 
@@ -618,8 +612,8 @@ TEST_CASE("InterpTest - QuadMergeCriterion") {
     compile_buffer<> buf;
     auto r = interpret(st, dict, buf);
     REQUIRE(r.has_value());
-    REQUIRE(st.machine().data().depth() == 1);
-    CHECK(st.machine().data().peek().value() == 81);
+    REQUIRE(st.data().depth() == 1);
+    CHECK(st.data().peek().value() == 81);
 }
 
 TEST_CASE("InterpTest - SemicolonWhileInterpretingIsDiagnosed") {
@@ -698,7 +692,7 @@ TEST_CASE("InterpTest - DeclaredEffectCommentIsCapturedUnverified") {
     compile_buffer<> buf;
     auto r = interpret(st, dict, buf);
     REQUIRE(r.has_value());
-    CHECK(st.machine().data().peek().value() == 25);
+    CHECK(st.data().peek().value() == 25);
 
     auto const *entry = dict.lookup("SQUARED");
     REQUIRE(entry != nullptr);
@@ -731,8 +725,8 @@ TEST_CASE("InterpTest - AbsMergeCriterion") {
     compile_buffer<> buf;
     auto r = interpret(st, dict, buf);
     REQUIRE(r.has_value());
-    REQUIRE(st.machine().data().depth() == 1);
-    CHECK(st.machine().data().peek().value() == 7);
+    REQUIRE(st.data().depth() == 1);
+    CHECK(st.data().peek().value() == 7);
 }
 
 TEST_CASE("InterpTest - CountdownMergeCriterion") {
@@ -741,7 +735,7 @@ TEST_CASE("InterpTest - CountdownMergeCriterion") {
     compile_buffer<> buf;
     auto r = interpret(st, dict, buf);
     REQUIRE(r.has_value());
-    CHECK(st.machine().data().depth() == 0);
+    CHECK(st.data().depth() == 0);
     CHECK(output_of(st) == "3 2 1 ");
 }
 
@@ -761,8 +755,8 @@ TEST_CASE("InterpTest - Upto3MergeCriterion") {
     compile_buffer<> buf;
     auto r = interpret(st, dict, buf);
     REQUIRE(r.has_value());
-    REQUIRE(st.machine().data().depth() == 1);
-    CHECK(st.machine().data().peek().value() == 3);
+    REQUIRE(st.data().depth() == 1);
+    CHECK(st.data().peek().value() == 3);
 }
 
 TEST_CASE("InterpTest - ExitBoundaryMergeCriterion") {
@@ -771,9 +765,9 @@ TEST_CASE("InterpTest - ExitBoundaryMergeCriterion") {
     compile_buffer<> buf;
     auto r = interpret(st, dict, buf);
     REQUIRE(r.has_value());
-    REQUIRE(st.machine().data().depth() == 2);
-    CHECK(st.machine().data().peek(1).value() == -3);
-    CHECK(st.machine().data().peek(0).value() == 99);
+    REQUIRE(st.data().depth() == 2);
+    CHECK(st.data().peek(1).value() == -3);
+    CHECK(st.data().peek(0).value() == 99);
 }
 
 TEST_CASE("InterpTest - SumtoMergeCriterion") {
@@ -782,8 +776,8 @@ TEST_CASE("InterpTest - SumtoMergeCriterion") {
     compile_buffer<> buf;
     auto r = interpret(st, dict, buf);
     REQUIRE(r.has_value());
-    REQUIRE(st.machine().data().depth() == 1);
-    CHECK(st.machine().data().peek().value() == 15);
+    REQUIRE(st.data().depth() == 1);
+    CHECK(st.data().peek().value() == 15);
 }
 
 TEST_CASE("InterpTest - Find5MergeCriterion") {
@@ -792,8 +786,8 @@ TEST_CASE("InterpTest - Find5MergeCriterion") {
     compile_buffer<> buf;
     auto r = interpret(st, dict, buf);
     REQUIRE(r.has_value());
-    REQUIRE(st.machine().data().depth() == 1);
-    CHECK(st.machine().data().peek().value() == 5);
+    REQUIRE(st.data().depth() == 1);
+    CHECK(st.data().peek().value() == 5);
 }
 
 TEST_CASE("InterpTest - TensMergeCriterion") {
@@ -802,8 +796,8 @@ TEST_CASE("InterpTest - TensMergeCriterion") {
     compile_buffer<> buf;
     auto r = interpret(st, dict, buf);
     REQUIRE(r.has_value());
-    REQUIRE(st.machine().data().depth() == 1);
-    CHECK(st.machine().data().peek().value() == 9);
+    REQUIRE(st.data().depth() == 1);
+    CHECK(st.data().peek().value() == 9);
 }
 
 TEST_CASE("InterpTest - SumevenMergeCriterion") {
@@ -812,8 +806,8 @@ TEST_CASE("InterpTest - SumevenMergeCriterion") {
     compile_buffer<> buf;
     auto r = interpret(st, dict, buf);
     REQUIRE(r.has_value());
-    REQUIRE(st.machine().data().depth() == 1);
-    CHECK(st.machine().data().peek().value() == 20);
+    REQUIRE(st.data().depth() == 1);
+    CHECK(st.data().peek().value() == 20);
 }
 
 TEST_CASE("InterpTest - FirstMergeCriterion") {
@@ -822,8 +816,8 @@ TEST_CASE("InterpTest - FirstMergeCriterion") {
     compile_buffer<> buf;
     auto r = interpret(st, dict, buf);
     REQUIRE(r.has_value());
-    REQUIRE(st.machine().data().depth() == 1);
-    CHECK(st.machine().data().peek().value() == 3);
+    REQUIRE(st.data().depth() == 1);
+    CHECK(st.data().peek().value() == 3);
 }
 
 TEST_CASE("InterpTest - PostponeAliasesAControlWord") {
@@ -835,8 +829,8 @@ TEST_CASE("InterpTest - PostponeAliasesAControlWord") {
     compile_buffer<> buf;
     auto r = interpret(st, dict, buf);
     REQUIRE(r.has_value());
-    REQUIRE(st.machine().data().depth() == 1);
-    CHECK(st.machine().data().peek().value() == 7);
+    REQUIRE(st.data().depth() == 1);
+    CHECK(st.data().peek().value() == 7);
 
     auto const *entry = dict.lookup("ENDIF");
     REQUIRE(entry != nullptr);
@@ -854,8 +848,8 @@ TEST_CASE("InterpTest - PostponeOfOrdinaryWordCompilesItsForm") {
     compile_buffer<> buf;
     auto r = interpret(st, dict, buf);
     REQUIRE(r.has_value());
-    REQUIRE(st.machine().data().depth() == 1);
-    CHECK(st.machine().data().peek().value() == 25);
+    REQUIRE(st.data().depth() == 1);
+    CHECK(st.data().peek().value() == 25);
 }
 
 TEST_CASE("InterpTest - PostponeUnknownWordIsDiagnosed") {
@@ -891,8 +885,8 @@ TEST_CASE("InterpTest - BracketLiteralBakesInAnInterpretedComputation") {
     compile_buffer<> buf;
     auto r = interpret(st, dict, buf);
     REQUIRE(r.has_value());
-    REQUIRE(st.machine().data().depth() == 1);
-    CHECK(st.machine().data().peek().value() == 7);
+    REQUIRE(st.data().depth() == 1);
+    CHECK(st.data().peek().value() == 7);
 }
 
 TEST_CASE("InterpTest - MismatchedThenWithoutIfIsDiagnosed") {
@@ -958,15 +952,18 @@ TEST_CASE("InterpTest - ImmediateWordExecutesAtCompileTimeNotRuntime") {
     compile_buffer<> buf;
     auto r = interpret(st, dict, buf);
     REQUIRE(r.has_value());
-    REQUIRE(st.machine().data().depth() == 1);
-    CHECK(st.machine().data().peek().value() == 21);
+    REQUIRE(st.data().depth() == 1);
+    CHECK(st.data().peek().value() == 21);
 }
 
 TEST_CASE("InterpTest - CompileCommaAppendsAnEntrysCompiledForm") {
-    // COMPILE, ( xt -- ): pops a dictionary index (the push_xt convention,
-    // instruction.hpp) and appends that entry's own compiled form -- driven
-    // directly here since there is no `'` (execution-token-producing word,
-    // F28) yet to spell this from pure Forth source.
+    // COMPILE, ( xt -- ): pops a dictionary index (D11's original
+    // convention -- distinct from `'`/`[']`'s own F28 execution tokens,
+    // which are code-space instruction indices, not dictionary indices; see
+    // apply_control_word's own compile_comma_ doc) and appends that entry's
+    // own compiled form -- driven directly here, in C++, rather than through
+    // interpret() itself, since nothing in this project's own Forth source
+    // vocabulary produces a bare dictionary index on the stack.
     forth_state<64, 64, 1024, 256> st{": X ;"}; // gives cctx somewhere to land
     auto dict = default_dictionary<>();
     compile_buffer<> buf;
@@ -974,8 +971,7 @@ TEST_CASE("InterpTest - CompileCommaAppendsAnEntrysCompiledForm") {
     int const dup_index = dict.lookup_index("DUP");
     REQUIRE(dup_index >= 0);
 
-    REQUIRE(st.machine()
-                .data()
+    REQUIRE(st.data()
                 .push(static_cast<smd::forth::machine::cell>(dup_index))
                 .has_value());
     smd::forth::interpreter::compiling_context<32> cctx{};
@@ -992,4 +988,167 @@ TEST_CASE("InterpTest - CompileCommaAppendsAnEntrysCompiledForm") {
     CHECK(appended.code == smd::forth::machine::op::prim);
     CHECK(appended.operand == static_cast<smd::forth::machine::cell>(
                                   smd::forth::machine::primitive::dup));
+}
+
+// -- Step F28 merge criteria: execution tokens and defining words (D18) -----
+
+// `: CONSTANT2 CREATE , DOES> @ ;  42 CONSTANT2 LIFE  LIFE` leaves `[42]`
+// (the R1 F20 classic, now required): CREATE/DOES> reach the dictionary from
+// *inside* CONSTANT2's own compiled body -- once per invocation, not once at
+// CONSTANT2's own definition time -- via the shared machine::create_here
+// action and dictionary::attach_does. This is the merge criterion that made
+// DIV-0012's SOURCE/>IN fold into machine::forth_state load-bearing: CREATE
+// needs to scan "LIFE" off the same input stream interpret()'s own outer
+// loop is iterating, from inside a pure VM run_from call.
+static_assert([] {
+    forth_state<64, 64, 1024, 256> st{
+        ": CONSTANT2 CREATE , DOES> @ ;  42 CONSTANT2 LIFE  LIFE"};
+    auto dict = default_dictionary<>();
+    compile_buffer<> buf;
+    auto r = interpret(st, dict, buf);
+    return r.has_value() && st.data().depth() == 1 &&
+           st.data().peek().value() == 42;
+}());
+
+TEST_CASE("InterpTest - ConstantTwoDoesMergeCriterion") {
+    forth_state<64, 64, 1024, 256> st{
+        ": CONSTANT2 CREATE , DOES> @ ;  42 CONSTANT2 LIFE  LIFE"};
+    auto dict = default_dictionary<>();
+    compile_buffer<> buf;
+    auto r = interpret(st, dict, buf);
+    REQUIRE(r.has_value());
+    REQUIRE(st.data().depth() == 1);
+    CHECK(st.data().peek().value() == 42);
+
+    // LIFE itself is a variable_word carrying a does-field, not a plain
+    // CREATE/VARIABLE (does_entry == -1 would mean DOES> never ran).
+    auto const *entry = dict.lookup("LIFE");
+    REQUIRE(entry != nullptr);
+    auto const *vw =
+        std::get_if<smd::forth::machine::variable_word>(&entry->binding);
+    REQUIRE(vw != nullptr);
+    CHECK(vw->does_entry >= 0);
+}
+
+// `' SQUARED EXECUTE` is equivalent to calling SQUARED directly (D14: the
+// same value agrees with itself here, not merely across compile time and
+// runtime) -- both leave 25 for the same input, 5.
+static_assert([] {
+    forth_state<64, 64, 1024, 256> st{
+        ": SQUARED DUP * ;  5 SQUARED  5 ' SQUARED EXECUTE"};
+    auto dict = default_dictionary<>();
+    compile_buffer<> buf;
+    auto r = interpret(st, dict, buf);
+    return r.has_value() && st.data().depth() == 2 &&
+           st.data().peek(1).value() == 25 && st.data().peek(0).value() == 25;
+}());
+
+TEST_CASE("InterpTest - TickExecuteMergeCriterion") {
+    forth_state<64, 64, 1024, 256> st{
+        ": SQUARED DUP * ;  5 SQUARED  5 ' SQUARED EXECUTE"};
+    auto dict = default_dictionary<>();
+    compile_buffer<> buf;
+    auto r = interpret(st, dict, buf);
+    REQUIRE(r.has_value());
+    REQUIRE(st.data().depth() == 2);
+    CHECK(st.data().peek(1).value() == 25);
+    CHECK(st.data().peek(0).value() == st.data().peek(1).value());
+}
+
+// A DEFERred word invoked before IS is diagnosed on execution -- neither a
+// silent no-op nor UB (D7).
+static_assert([] {
+    forth_state<64, 64, 1024, 256> st{"DEFER FOO  FOO"};
+    auto dict = default_dictionary<>();
+    compile_buffer<> buf;
+    auto r = interpret(st, dict, buf);
+    return !r.has_value();
+}());
+
+TEST_CASE("InterpTest - DeferredWordBeforeIsIsDiagnosed") {
+    forth_state<64, 64, 1024, 256> st{"DEFER FOO  FOO"};
+    auto dict = default_dictionary<>();
+    compile_buffer<> buf;
+    auto r = interpret(st, dict, buf);
+    REQUIRE_FALSE(r.has_value());
+    CHECK(std::string_view{r.error().message}.find("no action") !=
+          std::string_view::npos);
+}
+
+TEST_CASE("InterpTest - DeferredWordAfterIsRunsTheAssignedTarget") {
+    forth_state<64, 64, 1024, 256> st{
+        ": SQUARED DUP * ;  DEFER FOO  ' SQUARED IS FOO  6 FOO"};
+    auto dict = default_dictionary<>();
+    compile_buffer<> buf;
+    auto r = interpret(st, dict, buf);
+    REQUIRE(r.has_value());
+    REQUIRE(st.data().depth() == 1);
+    CHECK(st.data().peek().value() == 36);
+}
+
+TEST_CASE("InterpTest - ValueAndToRoundTrip") {
+    forth_state<64, 64, 1024, 256> st{
+        "5 VALUE SPEED  SPEED  10 TO SPEED  SPEED"};
+    auto dict = default_dictionary<>();
+    compile_buffer<> buf;
+    auto r = interpret(st, dict, buf);
+    REQUIRE(r.has_value());
+    REQUIRE(st.data().depth() == 2);
+    CHECK(st.data().peek(1).value() == 5);
+    CHECK(st.data().peek(0).value() == 10);
+}
+
+TEST_CASE("InterpTest - ToInsideAColonDefinitionCompilesAStoreSequence") {
+    // TO resolves its target's address once, at the moment it is met
+    // (immediate), and compiles a push-address/store sequence rather than
+    // needing dictionary access when the enclosing word later runs.
+    forth_state<64, 64, 1024, 256> st{
+        "0 VALUE COUNTER  : BUMP 1 TO COUNTER ;  BUMP  COUNTER"};
+    auto dict = default_dictionary<>();
+    compile_buffer<> buf;
+    auto r = interpret(st, dict, buf);
+    REQUIRE(r.has_value());
+    REQUIRE(st.data().depth() == 1);
+    CHECK(st.data().peek().value() == 1);
+}
+
+TEST_CASE("InterpTest - BracketTickAndExecuteInsideAColonDefinition") {
+    // `[']` resolves at compile time and compiles a literal push of the
+    // execution token (@ref smd::forth::interpreter::resolve_execution_token
+    // 's own guard-branch discipline is what makes emitting a primitive's
+    // stub safe here, in the middle of DOUBLE-IT's own body); the compiled
+    // (non-immediate) form of EXECUTE then runs it.
+    forth_state<64, 64, 1024, 256> st{
+        ": DOUBLE-IT ['] DUP EXECUTE * ;  6 DOUBLE-IT"};
+    auto dict = default_dictionary<>();
+    compile_buffer<> buf;
+    auto r = interpret(st, dict, buf);
+    REQUIRE(r.has_value());
+    REQUIRE(st.data().depth() == 1);
+    CHECK(st.data().peek().value() == 36);
+}
+
+TEST_CASE("InterpTest - PostponeExecuteComposesWithOtherCode") {
+    // Unlike POSTPONE of a structural control word (THEN/IF/...,
+    // PostponeControlWordMixedWithOtherCodeIsDiagnosed above), POSTPONE
+    // EXECUTE has a real compiled form (compile_entry's own case for it), so
+    // it composes freely with other code in the same definition -- DIV-0015
+    // closes for this case (see its own F28 addendum). The resulting word
+    // being an ordinary compiled_colon_word (not a control_word alias) is
+    // the point of this test; the numeric result RUN-XT leaves behind is not
+    // meaningful (DUP duplicates whatever is on top at that point, which is
+    // the execution token itself, not the value beneath it -- a real caller
+    // would arrange its own stack discipline, exactly as `' SQUARED EXECUTE`
+    // does above).
+    forth_state<64, 64, 1024, 256> st{
+        ": SQUARED DUP * ;  : RUN-XT DUP POSTPONE EXECUTE ;"
+        " 6 ' SQUARED RUN-XT"};
+    auto dict = default_dictionary<>();
+    compile_buffer<> buf;
+    auto r = interpret(st, dict, buf);
+    REQUIRE(r.has_value());
+    auto const *entry = dict.lookup("RUN-XT");
+    REQUIRE(entry != nullptr);
+    CHECK(std::holds_alternative<smd::forth::machine::compiled_colon_word>(
+        entry->binding));
 }

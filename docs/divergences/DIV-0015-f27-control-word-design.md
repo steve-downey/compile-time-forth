@@ -1,6 +1,7 @@
 # DIV-0015: Control-word binding shape, POSTPONE-of-a-control-word alias, and a reverted balance check
 
-- **Status:** accepted-permanent, except the `POSTPONE` scope cut (see Revisit condition)
+- **Status:** accepted-permanent; the `POSTPONE` scope cut is resolved at F28
+  (narrowed, not closed — see the F28 addendum below)
 - **Date:** 2026-07-26
 - **Step:** F27 (immediacy and control flow), docs/forth-plan-2.md
 - **Authority diverged from:** docs/forth-plan-2.md (F27's own step text names D17's
@@ -167,3 +168,32 @@ execution-token/header work) gives control words a uniform representation
 that composes with ordinary compiled code in the same definition body — at
 that point full Forth-2012 `POSTPONE` semantics become buildable and this
 record's own scope cut should be revisited, not silently left in place.
+
+## F28 addendum: resolved — narrowed, not closed, and cannot fully close
+
+Step F28 gives three control words a real compiled form: `EXECUTE`
+compiles to a bare `machine::op::execute`, `CREATE` to `machine::op::
+create_word`, and `DOES>` to `machine::op::does_enter` — each exactly as
+compilable as a primitive, once `interpreter::compile_entry` has a case for
+it. `POSTPONE EXECUTE`/`CREATE`/`DOES>` therefore now go through
+`compile_entry` like anything else with a compiled form, and compose freely
+with other code in the same definition body: `apply_control_word`'s own
+`postpone_` case narrows its "alias instead of compile" branch to fire only
+for a `control_word` whose `which` is none of those three (see
+`interp.test.cpp`'s `PostponeExecuteComposesWithOtherCode`). This is a real,
+demonstrable narrowing of the scope cut this record originally filed.
+
+It does not close, and cannot, for the remaining structural control words
+(`IF`/`ELSE`/`THEN`/`BEGIN`/`UNTIL`/`WHILE`/`REPEAT`/`DO`/`LOOP`/`+LOOP`/
+`LEAVE`/`UNLOOP`/`I`/`J`/`LITERAL`/`POSTPONE`/`IMMEDIATE`/`[`/`]`/
+`COMPILE,`). This is not a gap D18's own header unification merely failed
+to close: giving one of these words an execution-token slot would not
+create a runtime action for `EXECUTE` to invoke, because the word's entire
+action *is* the compile-time mutation of `compile_buffer` (orig/dest
+sentinels, back-patched operands) — there is no "run `THEN`'s action later"
+to represent as VM bytecode, unlike `EXECUTE`/`CREATE`/`DOES>`, whose
+actions always *were* representable as a fixed sequence of opcodes once
+`compile_entry` was taught to emit one. See DIV-0016
+(`docs/divergences/DIV-0016-f28-execution-tokens-and-defining-words.md`) for
+this step's own full record, including the execution-token encoding
+decision that makes the composable cases possible.

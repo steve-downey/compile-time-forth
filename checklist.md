@@ -34,7 +34,7 @@
 - [x] Step F25: colon compiler and session image
 - [x] Step F26: the cut
 - [x] Step F27: immediacy and control flow
-- [ ] Step F28: execution tokens and defining words
+- [x] Step F28: execution tokens and defining words
 - [ ] Step F29: parsing words and strings
 - [ ] Step F30: effect lint
 - [ ] Step F31: CATCH and THROW
