@@ -87,6 +87,32 @@ case the original word already used. Nothing about this finding moves the DIV-00
 establishes that the boundary's positive side (whole-body alias) reaches every structural control word
 individually, not only `THEN`.
 
+## Orchestrator amendment: what did not shrink
+
+The analysis above is accurate and its qualifications are the right ones. This note exists so the
+headline claim is not read without them, because the step's own goal statement — "control-flow words
+themselves, **shrinking the C++-installed immediate set**" — is only partly met, and the part that is
+not met should be stated plainly rather than left to inference.
+
+**No C++ shrank.** `IF`, `ELSE` and `THEN` are still installed by `default_dictionary()` and their
+three cases in `apply_control_word` are untouched. `WHEN`, `OTHERWISE` and `ENDIF` are additional
+dictionary entries that dispatch into those same C++ cases. The C++-installed immediate set for
+control flow is exactly the size it was; the session dictionary is three entries larger.
+
+For the three primitives that did move (`?DUP`, `NIP`, `TUCK`), only the *names* moved. Their
+`machine::primitive` enumerators and VM cases remain in C++, now unreachable by name — the DIV says
+this above and it is the honest reading of the 98→95 count. Lines of C++ deleted by this step: none.
+
+**What was actually demonstrated, which is worth having:** the whole-body-`POSTPONE`-alias mechanism
+is not special to `THEN`. It reaches every structural control word individually, so a Forth program
+can rename the control vocabulary wholesale. That satisfies the criterion's "`ENDIF`-class at
+minimum" and extends it, and it is a real result about the positive side of the DIV-0015 boundary.
+
+**What "a full `IF` replacement" must not be taken to mean:** that `IF` was reimplemented in Forth.
+It was not, and DIV-0015 establishes it cannot be — there is no way to reach `op::branch0` and the
+orig/dest discipline except through the C++ case. Any downstream account of this step, the blog
+included, should say "renamed" or "aliased", not "reimplemented".
+
 ## Consequences
 
 - `machine::default_dictionary()` now installs 95 entries (was 98); `dictionary.test.cpp`'s own

@@ -97,8 +97,8 @@ inline constexpr std::string_view prelude_source =
 template <int MaxCode = 4096, int MaxWords = 256, int MaxData = 1024,
           int MaxOut = 4096, int MaxName = 32, int MaxDepth = 64,
           int MaxRDepth = 64, int MaxStack = 64, int MaxSourceLen = 8192>
-[[nodiscard]] constexpr auto
-build_session_with_prelude(std::string_view text, int fuel = 100000)
+[[nodiscard]] constexpr auto build_session_with_prelude(std::string_view text,
+                                                        int fuel = 100000)
     -> foundation::result<
         session<MaxCode, MaxWords, MaxData, MaxOut, MaxName, MaxStack>> {
     std::size_t const combined_len = prelude_source.size() + 1 + text.size();
