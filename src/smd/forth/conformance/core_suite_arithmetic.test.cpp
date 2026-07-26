@@ -75,8 +75,10 @@ constexpr auto arithmetic_suite =
 
 } // namespace
 
+// 4d8b6f2a-3e7c-4a9d-8f1b-6c3e9a2d7f5b
 static_assert(arithmetic_suite.output().size() == 0);
 
 TEST_CASE("CoreSuiteArithmeticTest - AllAssertionsPass") {
     CHECK(arithmetic_suite.output().size() == 0);
 }
+// 4d8b6f2a-3e7c-4a9d-8f1b-6c3e9a2d7f5b end

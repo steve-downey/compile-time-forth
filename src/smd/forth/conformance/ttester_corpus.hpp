@@ -53,6 +53,7 @@
 // followed by its own literal, e.g.
 // `smd::forth::compiled_forth<SMD_FORTH_TTESTER_SOURCE "T{ 1 1 + -> 2 }T">`.
 // clang-format off
+// f3a9c2e1-6d4b-4f8a-9c2e-1b7d4a8f3c6e
 #define SMD_FORTH_TTESTER_SOURCE \
     "VARIABLE ACTUAL-DEPTH "                                                  \
     "CREATE ACTUAL-RESULTS 20 CELLS ALLOT "                                   \
@@ -88,6 +89,7 @@
     "    ELSE "                                                              \
     "        S\" WRONG NUMBER OF RESULTS: \" ERROR "                         \
     "    THEN ; "
+// f3a9c2e1-6d4b-4f8a-9c2e-1b7d4a8f3c6e end
 // clang-format on
 
 namespace smd::forth::conformance {

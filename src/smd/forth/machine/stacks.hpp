@@ -110,6 +110,7 @@ constexpr auto cell_stack<MaxDepth>::depth() const -> int {
     return depth_;
 }
 
+// 9c2f5a7d-4b8e-4d3a-9f6c-2e8b5a1d7c4f
 template <int MaxDepth>
 constexpr auto cell_stack<MaxDepth>::truncate(int new_depth) -> status {
     if (new_depth < 0 || new_depth > depth_) {
@@ -119,6 +120,7 @@ constexpr auto cell_stack<MaxDepth>::truncate(int new_depth) -> status {
     depth_ = new_depth;
     return std::monostate{};
 }
+// 9c2f5a7d-4b8e-4d3a-9f6c-2e8b5a1d7c4f end
 
 /// The Forth data stack (D7).
 template <int MaxDepth>
