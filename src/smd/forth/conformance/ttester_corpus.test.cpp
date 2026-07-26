@@ -42,6 +42,38 @@ TEST_CASE("TtesterCorpusTest - PassingAssertionsProduceNoOutput") {
     CHECK(ttester_self_check.output().size() == 0);
 }
 
+// -- The ttester alone compiles as a session (regression guard) -------------
+//
+// Post-F32-merge regression (DIV-0019's own amendment 8): with F30's effect
+// lint in the tree, `SMD_FORTH_TTESTER_SOURCE` alone failed to compile as a
+// session at all -- `EMPTY-STACK`'s own `DEPTH START-DEPTH @ < IF DEPTH
+// START-DEPTH @ SWAP DO 0 LOOP THEN` pads the stack by a runtime-determined
+// count, a loop body whose own net data-stack effect no static check can
+// pin down, and the effect lint's own original design made that an
+// unconditional hard error at ';' -- merely *defining* EMPTY-STACK (never
+// mind calling it) was already enough to fail the whole session build. This
+// test compiles the ttester's own definitions alone, with no `T{ ... }T`
+// assertions at all, and requires the build to succeed -- a direct guard
+// against this specific regression recurring, independent of whatever
+// assertions the merge-criterion static_assert above happens to run.
+static_assert([] {
+    auto built = smd::forth::interpreter::build_session<256, 160, 512, 512>(
+        std::string_view{SMD_FORTH_TTESTER_SOURCE});
+    return built.has_value();
+}());
+
+TEST_CASE("TtesterCorpusTest - BareSourceCompilesAsASessionRegressionGuard") {
+    auto built = smd::forth::interpreter::build_session<256, 160, 512, 512>(
+        std::string_view{SMD_FORTH_TTESTER_SOURCE});
+    REQUIRE(built.has_value());
+    // EMPTY-STACK's own DO-loop join disagreement is real and undeclared,
+    // so it is collected as an advisory diagnostic (DIV-0019's own
+    // amendment 8), not silently dropped -- a caller retrieves the whole
+    // session's own accumulated advisory diagnostics via
+    // `session::code::program().diagnostics` directly.
+    CHECK(built.value().code.program().diagnostics.size() >= 1);
+}
+
 // -- Other ttester behavior (ordinary runtime, via build_session) ----------
 //
 // These deliberately feed the ttester a *wrong* assertion, so they cannot
