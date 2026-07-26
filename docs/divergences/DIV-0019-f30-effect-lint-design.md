@@ -117,6 +117,58 @@ not a repurposed one) fixes this without losing D7's own discipline: a definitio
 instruction count exceeds it is diagnosed, not silently truncated or left to a container's own
 precondition.
 
+**8. Post-merge amendment: a data-stack join disagreement is advisory unless the definition declares
+an effect; a return-stack join disagreement is a hard error always.** This is a design decision, not
+a bugfix, made after merging F30 with F32 (conformance) exposed a fault neither branch showed alone:
+F32's own Hayes ttester (`src/smd/forth/conformance/ttester_corpus.hpp`) is real, standard Forth-2012,
+and it failed to compile under this step's own original design. `EMPTY-STACK`'s own body —
+`DEPTH START-DEPTH @ < IF DEPTH START-DEPTH @ SWAP DO 0 LOOP THEN` — pads the data stack by a count
+known only at the moment it runs; the `DO 0 LOOP` body pushes one cell per iteration for a
+runtime-determined trip count, so no static level assignment can ever be consistent across that back
+edge, *by construction*, not by an error in this checker's own analysis. None of the ttester's
+definitions declare an effect, and D20's own literal wording already covers exactly this case: the
+checker is "advisory by default, promoted to a hard gate for a definition exactly when a declared
+effect is present." Diagnosis 1 (above) had made every join-consistency check — data and return
+stacks alike — unconditionally fatal; that was the actual defect this amendment corrects.
+
+The two stacks are not interchangeable here, which is why this is a *split*, not a blanket
+"make join-consistency advisory" change (a blanket change was considered and rejected: it would have
+undone the F17 residual closure, since `: BAD 10 0 DO 5 >R LOOP ;` is *also* undeclared, and making
+its own return-stack join disagreement advisory would silently re-open Part 11's own gap).
+
+- **Data stack:** a loop body's own net data-stack effect can genuinely *depend on a runtime value*
+  (the ttester's own padding count) in a way that is not itself a defect — Forth-2012 places no
+  requirement on a `DO...LOOP` body's own net data-stack effect at all. A disagreement here is
+  therefore a fact about this checker's own limits (it cannot see a shape that only exists at
+  runtime), not a fact about the program. Undeclared, it is collected onto
+  `definition_effect::diagnostics` (poisoning that join to `unknown_effect`, exactly like
+  `EXECUTE`/`CATCH`/`LEAVE` already do) and the definition still installs. Declared, D20's own
+  "promoted to a hard gate" applies literally: the same disagreement is a hard, unconditional error,
+  because a human wrote down a specific claim this checker *can* check and found false.
+- **Return stack:** Forth-2012 requires the return stack balanced before `LOOP`/`+LOOP`/`UNLOOP` runs,
+  unconditionally — this is not implementation-defined, and no runtime trip count changes what the
+  standard requires. A `>R` left unbalanced across a loop's own back edge is not "a shape this checker
+  cannot see"; it is a definition that will corrupt its own loop frame the moment `LOOP` misidentifies
+  which return-stack cell is its own saved index, regardless of how many iterations actually run. The
+  justification for keeping this a hard, always-on error is the standard's own requirement, not this
+  analysis's own confidence — so declaring an effect changes nothing about it.
+
+Mechanically: `check_definition_effect` gains `MaxDiagnostics` (default 8) and
+`definition_effect::diagnostics` (a `foundation::static_vector<foundation::parse_error,
+MaxDiagnostics>`); a data-stack join mismatch checks `declared_effect_gate` (`has_declared &&
+declared.known`) before deciding whether to return the hard error or collect an advisory one and
+poison the join to unknown. The return-stack join-mismatch branch and the "unbalanced at the end of a
+definition" check are untouched — no such gate exists there, by design. `machine::compiled_program`
+gains its own `MaxDiagnostics` (default 32) and a `diagnostics` field; `interpreter::interpret`'s own
+`;` handling copies each definition's own collected diagnostics onto it (capped, silently, at that
+capacity — an advisory list running out of room must not itself become a compile failure). A caller
+retrieves the whole session's own accumulated advisory diagnostics via
+`compile_buffer::program().diagnostics` directly; nothing else surfaces them (no output, no separate
+return value from `interpret`), so this field is the one place they are not silently absent.
+`foundation::static_vector` gained a `capacity()` accessor (a small, additive, backward-compatible
+change) so callers checking "is this list full before I push" do not need the capacity named
+separately at the call site.
+
 ## Why
 
 Every choice above was forced by a concrete test case this step's own corpus or the F12 battery
@@ -135,10 +187,20 @@ separate terminal exits) structurally, for free.
 ## Consequences
 
 - Every F12 positive and negative test this step's own step-brief names is reproduced, behaviorally,
-  over instructions (`interp.test.cpp`'s own `EffectLintTest -` prefix): `BADCOND`, `BADLOOP`,
-  `BADPLUSLOOP`, `BADUNTIL`, `BADRET`, `BADRETEND`, `DOEX`, `BADDECL` all still diagnosed;
+  over instructions (`interp.test.cpp`'s own `EffectLintTest -` prefix) — but, per amendment 8,
+  `BADCOND`/`BADLOOP`/`BADPLUSLOOP`/`BADUNTIL`/`BADWHILE`-shaped programs are *undeclared data-stack*
+  disagreements, so they now install (advisory diagnostic collected, `effect_known` left `false`)
+  rather than being rejected outright; `BADRET`/`BADRETEND` (return-stack) and `BADDECL`
+  (declared-effect mismatch) and `DOEX` (`EXIT` inside `DO` without `UNLOOP`, a structural check
+  independent of this amendment) are still hard-rejected exactly as before, and a *declared* variant
+  of a data-stack disagreement (`DeclaredDoLoopBodyNonzeroIsAHardError`) is still hard-rejected too.
   `SQUARED`/`ABS2`-shaped declared-and-matching definitions still install. The F17 residual
-  (`10 0 DO 5 >R LOOP`) is now diagnosed too — closed, not merely narrowed.
+  (`10 0 DO 5 >R LOOP`, a return-stack disagreement) is still diagnosed, unconditionally — closed,
+  not merely narrowed, and not reopened by amendment 8.
+- F32's own Hayes ttester (`SMD_FORTH_TTESTER_SOURCE`) and all six `core_suite_*` conformance shards
+  now compile and pass, per amendment 8 — the concrete failure this amendment was written to fix
+  (`compiled_forth<SMD_FORTH_TTESTER_SOURCE ...>` previously failed to constant-evaluate at all, with
+  `EMPTY-STACK`'s own data-stack join disagreement an unconditional hard error).
 - The full acceptance corpus (`interpreter::corpus`, `control_flow_corpus.hpp`) passes verbatim,
   including every program this divergence record's own diagnoses 2 and 3 were discovered against
   (`INNER`/`OUTER`, `find5_program`, `first_program`).
@@ -175,3 +237,12 @@ if a future step (F36, error-quality) wants per-node positions for effect-lint d
 enough to justify adding a position field to `machine::instr` and threading it through every opcode
 emission site. Diagnosis 7's `MaxSpan` default (160) should be raised if a future step's own
 definitions genuinely exceed it; nothing in F30 through F31's own corpus does.
+
+Amendment 8's own split (data advisory-unless-declared, return always hard) should be revisited only
+if a future step finds a *return*-stack shape that is legitimately runtime-trip-count-dependent the
+way the ttester's own data-stack padding is — no such shape is known, and D20's own citation of
+Forth-2012's own balanced-return-stack requirement is unconditional, so none is expected. `compiled_
+program::diagnostics`' own `MaxDiagnostics` (32) and `check_definition_effect`'s own per-definition
+`MaxDiagnostics` (8) should be raised if a future step's own session collects enough advisory
+diagnostics to overflow either; nothing in this project's own test suite or conformance battery does
+as of this amendment.
