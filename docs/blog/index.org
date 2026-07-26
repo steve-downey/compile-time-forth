@@ -112,6 +112,13 @@ sitting in the open, not a cursor buried inside the scanner.
 evaluation that built it --- and a first draft that passed every test for a
 reason that had nothing to do with being right.
 
+** [[file:post-15-the-cut.org][Part 15 — The Cut]]
+
+Deleting the R1 pipeline outright --- reader, elaborator, direct evaluator,
+batch codegen, close to 6300 lines --- and retargeting the public API onto
+a session built once. What it costs: Part 7's oracle, the two evaluators
+that had to agree, and nothing yet stands fully in its place.
+
 * Table of Contents
 
 #+toc: headlines 1

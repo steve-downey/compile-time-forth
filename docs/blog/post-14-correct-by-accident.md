@@ -1,4 +1,4 @@
-<div class="abstract" id="orgf5a16ce">
+<div class="abstract" id="org50e40d8">
 <p>
 Part 13 ended on a language that could run a program but not define a word of
 its own. Tonight it can: <code>:</code> and <code>;</code> land, and with them a session image that
@@ -326,7 +326,7 @@ And there is still nothing this interpreter can do with `IF`, `DO`, or `BEGIN`: 
 
 <nav style="margin-top: 3em; border-top: 1px solid #ccc; padding-top: 1em">
 
-[↑ Series Index](index.md) | [← Part 13 - >IN Is Not a Cursor](post-13-in-is-not-a-cursor.md)
+[↑ Series Index](index.md) | [← Part 13 - >IN Is Not a Cursor](post-13-in-is-not-a-cursor.md) | [Part 15 - The Cut →](post-15-the-cut.md)
 
 </nav>
 

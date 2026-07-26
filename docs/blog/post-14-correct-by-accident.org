@@ -212,7 +212,7 @@ same "unknown word" any other typo would. Tonight the language can define a
 word. It cannot yet decide, inside one, whether to do anything.
 
 #+html: <nav style="margin-top: 3em; border-top: 1px solid #ccc; padding-top: 1em">
-[[file:index.org][↑ Series Index]] | [[file:post-13-in-is-not-a-cursor.org][← Part 13 - >IN Is Not a Cursor]]
+[[file:index.org][↑ Series Index]] | [[file:post-13-in-is-not-a-cursor.org][← Part 13 - >IN Is Not a Cursor]] | [[file:post-15-the-cut.org][Part 15 - The Cut →]]
 #+html: </nav>
 
 * References
