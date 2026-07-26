@@ -35,7 +35,7 @@
 - [x] Step F26: the cut
 - [x] Step F27: immediacy and control flow
 - [x] Step F28: execution tokens and defining words
-- [ ] Step F29: parsing words and strings
+- [x] Step F29: parsing words and strings
 - [ ] Step F30: effect lint
 - [ ] Step F31: CATCH and THROW
 - [ ] Step F32: conformance

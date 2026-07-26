@@ -224,6 +224,28 @@ enum class control_builtin : std::uint8_t {
     to_,           ///< `TO`
     defer_,        ///< `DEFER`
     is_,           ///< `IS`
+
+    // Step F29 (docs/forth-plan-2.md), D19/D21: parsing words and strings.
+    // Every one of these five must consume its own following source text
+    // (a comment body, or a `"`-delimited string) at the exact moment it is
+    // met, regardless of `STATE` -- interp.hpp's own `apply_control_word`
+    // has the full rationale for each; `machine/` only carries the tag,
+    // exactly as it does for every other control word.
+    paren_,        ///< `(`  -- reexpressed from scanner-level comment
+                   ///< skipping (D19): parses to the next `)`, discarding it.
+    backslash_,    ///< `\`  -- likewise, reexpressed: parses to end of line.
+    s_quote_,      ///< `S"` -- parses a `"`-delimited string into data space
+                   ///< (D21) and leaves its address/length.
+    dot_quote_,    ///< `."` -- like `s_quote_`, but prints the string instead
+                   ///< of leaving it on the stack.
+    char_bracket_, ///< `[CHAR]` -- compile-only `CHAR`: compiles a literal
+                   ///< push of the named character's own code.
+    abort_quote_,  ///< `ABORT"` -- compile-only: parses a `"`-delimited
+                   ///< message and compiles a call to the `abort_quote`
+                   ///< primitive (`machine/forth_state.hpp`) that prints it
+                   ///< and diagnoses if the runtime flag is nonzero
+                   ///< (DIV-0017: a hard stop, not yet Forth-2012's
+                   ///< `THROW -2` -- `THROW`/`CATCH` land at F31).
 };
 
 /// A control-builtin word's binding: which action (@ref control_builtin) it
@@ -497,27 +519,35 @@ constexpr auto dictionary<MaxWords, MaxName>::size() const -> int {
     return entries_.size();
 }
 
-/// Builds a dictionary with every F8/F13/F16/F28 primitive installed under
-/// its Forth name (`+ - * / MOD NEGATE ABS MIN MAX AND OR XOR INVERT LSHIFT
-/// RSHIFT 1- 1+ 0= 0< = <> < > <= >= TRUE FALSE DUP DROP SWAP OVER ROT ?DUP
-/// NIP TUCK DEPTH >R R> R@ . .S EMIT CR @ ! +! ALLOT ,`) -- 48 words, one per
+/// Builds a dictionary with every F8/F13/F16/F28/F29 primitive installed
+/// under its Forth name (`+ - * / MOD NEGATE ABS MIN MAX AND OR XOR INVERT
+/// LSHIFT RSHIFT 1- 1+ 0= 0< = <> < > <= >= TRUE FALSE DUP DROP SWAP OVER
+/// ROT ?DUP NIP TUCK DEPTH >R R> R@ . .S EMIT CR @ ! +! ALLOT , PARSE WORD
+/// CHAR COUNT TYPE`, plus the runtime half of `ABORT"`) -- 54 words, one per
 /// @ref primitive enumerator (`.`, `.S`, `EMIT`, `CR` are step F13's output
 /// words, D10; `1-` is also from that step, see DIV-0007; `1+` is step F17,
 /// see DIV-0010; `@`, `!`, `+!`, `ALLOT` are step F16's memory words, D10;
-/// `,` is step F28's, D10/D21) -- plus every step F27 control word (`IF ELSE
-/// THEN BEGIN UNTIL WHILE REPEAT DO LOOP +LOOP LEAVE UNLOOP I J LITERAL
-/// POSTPONE IMMEDIATE [ ] COMPILE,`, D17), 20, plus every step F28 execution-
-/// token/defining-word control word (`' [' EXECUTE CREATE DOES> VALUE TO
-/// DEFER IS`, D18), 9 more, for 77 entries total.
+/// `,` is step F28's, D10/D21; `PARSE WORD CHAR COUNT TYPE` and the runtime
+/// primitive behind `ABORT"` are step F29's, D19/D21 -- see
+/// `machine/forth_state.hpp`'s own `primitive` enum for why these five are
+/// ordinary, non-immediate words rather than control words) -- plus every
+/// step F27 control word (`IF ELSE THEN BEGIN UNTIL WHILE REPEAT DO LOOP
+/// +LOOP LEAVE UNLOOP I J LITERAL POSTPONE IMMEDIATE [ ] COMPILE,`, D17), 20,
+/// every step F28 execution-token/defining-word control word (`' [' EXECUTE
+/// CREATE DOES> VALUE TO DEFER IS`, D18), 9 more, and every step F29 parsing
+/// control word (`( \ S" ." [CHAR] ABORT"`, D19/D21 -- each must consume its
+/// own following source text at the moment it is met, so each is immediate;
+/// see @ref control_builtin's own doc comment), 6 more, for 89 entries
+/// total.
 ///
-/// @tparam MaxWords Dictionary capacity; must be at least 77 plus whatever
+/// @tparam MaxWords Dictionary capacity; must be at least 89 plus whatever
 ///                  room the caller wants for later colon/variable/constant/
 ///                  foreign definitions.
 /// @tparam MaxName  Maximum name length.
 template <int MaxWords = 256, int MaxName = 32>
 constexpr auto default_dictionary() -> dictionary<MaxWords, MaxName> {
     dictionary<MaxWords, MaxName> dict;
-    constexpr std::array<std::pair<std::string_view, primitive>, 48> words{{
+    constexpr std::array<std::pair<std::string_view, primitive>, 54> words{{
         {"+", primitive::plus},
         {"-", primitive::minus},
         {"*", primitive::star},
@@ -566,6 +596,12 @@ constexpr auto default_dictionary() -> dictionary<MaxWords, MaxName> {
         {"+!", primitive::plus_store},
         {"ALLOT", primitive::allot},
         {",", primitive::comma},
+        {"PARSE", primitive::parse},
+        {"WORD", primitive::word},
+        {"CHAR", primitive::char_},
+        {"COUNT", primitive::count},
+        {"TYPE", primitive::type_},
+        {"(ABORT\")", primitive::abort_quote},
     }};
     for (auto const &[name_text, op] : words) {
         (void)dict.define_primitive(name_text, op);
@@ -586,7 +622,14 @@ constexpr auto default_dictionary() -> dictionary<MaxWords, MaxName> {
     // it is met either way (interpreting: store directly; compiling: emit
     // the equivalent store sequence) -- see interp.hpp's own
     // apply_control_word for both.
-    constexpr std::array<std::pair<std::string_view, control_builtin>, 20>
+    //
+    // Step F29, D19/D21 adds six more, all immediate for the same reason:
+    // each must consume its own following source text (a comment body or a
+    // `"`-delimited string) at the moment it is met, not later. `(` and `\`
+    // are the reexpressed comment forms (previously scanner-level, D19);
+    // `S"`/`."` work both interpreting and compiling; `[CHAR]`/`ABORT"` are
+    // additionally compile-only (see interp.hpp's own apply_control_word).
+    constexpr std::array<std::pair<std::string_view, control_builtin>, 26>
         immediate_control_words{{
             {"IF", control_builtin::if_},
             {"ELSE", control_builtin::else_},
@@ -608,6 +651,12 @@ constexpr auto default_dictionary() -> dictionary<MaxWords, MaxName> {
             {"COMPILE,", control_builtin::compile_comma_},
             {"[']", control_builtin::bracket_tick_},
             {"TO", control_builtin::to_},
+            {"(", control_builtin::paren_},
+            {"\\", control_builtin::backslash_},
+            {"S\"", control_builtin::s_quote_},
+            {".\"", control_builtin::dot_quote_},
+            {"[CHAR]", control_builtin::char_bracket_},
+            {"ABORT\"", control_builtin::abort_quote_},
         }};
     for (auto const &[name_text, which] : immediate_control_words) {
         (void)dict.define_control(name_text, control_word{which},

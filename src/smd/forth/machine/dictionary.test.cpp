@@ -65,9 +65,11 @@ static_assert([] {
 
 TEST_CASE("DictionaryTest - DefaultDictionaryInstallsAllPrimitives") {
     auto dict = default_dictionary<>();
-    // 48 primitives (47 + step F28's `,`) + 20 step F27 control words (D17)
-    // + 9 step F28 control words (D18).
-    CHECK(dict.size() == 77);
+    // 54 primitives (47 + step F28's `,` + step F29's `PARSE WORD CHAR
+    // COUNT TYPE` and the runtime half of `ABORT"`) + 20 step F27 control
+    // words (D17) + 9 step F28 control words (D18) + 6 step F29 control
+    // words (D19/D21).
+    CHECK(dict.size() == 89);
     auto const *entry = dict.lookup("SWAP");
     REQUIRE(entry != nullptr);
     REQUIRE(std::holds_alternative<primitive>(entry->binding));

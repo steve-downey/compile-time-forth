@@ -11,6 +11,7 @@
 #include <smd/forth/machine/data_space.hpp>
 #include <smd/forth/machine/input_source.hpp>
 #include <smd/forth/machine/stacks.hpp>
+#include <smd/forth/parser/forth_chars.hpp>
 
 #include <cstdint>
 #include <string_view>
@@ -355,8 +356,55 @@ enum class primitive {
     // primitive `CREATE ... , DOES> ...` (interpreter::apply_control_word's
     // own `create_`/`does_` control words) uses to fill in the cell `CREATE`
     // itself leaves empty.
-    comma ///< `,` ( x -- ) Reserves one cell past @ref data_space::here and
-          ///< stores @c x there.
+    comma, ///< `,` ( x -- ) Reserves one cell past @ref data_space::here and
+           ///< stores @c x there.
+
+    // 4beb6ab5-f28e-4b2f-8a21-3d4ba8575f55
+    // Step F29 (docs/forth-plan-2.md), D19/D21: parsing words and strings.
+    // Every one of these five reads or writes @p state's own @ref source
+    // and/or @ref data_space directly -- no dictionary access, so each is a
+    // real primitive rather than another `interpret()`-level special case,
+    // exactly as D19 calls for. `PARSE`/`WORD`/`CHAR` are ordinary
+    // (non-immediate) words: compiled as an @ref op::prim like `DUP` inside
+    // a colon definition, so a user-defined parsing word that calls one of
+    // them consumes whatever `SOURCE`/`>IN` are *when that word later runs*,
+    // not at the point it was defined -- this is the whole demonstration
+    // D19 exists for. `S"`/`."`/`ABORT"` (`interpreter::apply_control_word`,
+    // interp.hpp) are immediate control words instead, since each must
+    // consume its own string literal at the moment it is met; `TYPE`/
+    // `COUNT` are what they, and any user-defined word, read the result
+    // back with.
+    parse,       ///< `PARSE` ( char "ccc<char>" -- c-addr u ) Copies the
+                 ///< text up to the next occurrence of @c char (or end of
+                 ///< input) into freshly allotted data-space cells
+                 ///< (D21: one cell per character) and advances `>IN` past
+                 ///< the delimiter, if found.
+    word,        ///< `WORD` ( char "<chars>ccc<char>" -- c-addr ) Like
+                 ///< @ref parse, but first skips leading occurrences of
+                 ///< @c char, and stores the result as a counted string (the
+                 ///< character count in the first cell, the characters
+                 ///< following) rather than as a separate address/length
+                 ///< pair.
+    char_,       ///< `CHAR` ( "<spaces>name" -- char ) Skips leading
+                 ///< whitespace, reads the next blank-delimited name, and
+                 ///< pushes the character code of its first character.
+    count,       ///< `COUNT` ( c-addr1 -- c-addr2 u ) Reads the count cell a
+                 ///< @ref word-built counted string starts with; @c c-addr2
+                 ///< is @c c-addr1 `+ 1` and @c u is that count.
+    type_,       ///< `TYPE` ( c-addr u -- ) Prints @c u characters, read as
+                 ///< cells (D21) starting at @c c-addr, via
+                 ///< @ref forth_state::emit_char.
+    abort_quote, ///< `ABORT"` ( flag c-addr u -- ) Compiled form of
+                 ///< `ABORT"`'s runtime action (see
+                 ///< `interpreter::apply_control_word`'s own `abort_quote_`
+                 ///< case, which compiles the message text ahead of a call
+                 ///< to this primitive): if @c flag is nonzero, prints the
+                 ///< @c u characters at @c c-addr (exactly like @ref type_)
+                 ///< and then diagnoses -- a hard stop of the whole
+                 ///< interpretation, not yet the `THROW -2` Forth-2012
+                 ///< actually calls for (DIV-0017: `THROW`/`CATCH` do not
+                 ///< exist until F31). If @c flag is zero, does nothing.
+    // 4beb6ab5-f28e-4b2f-8a21-3d4ba8575f55 end
 };
 
 /// Applies a pure-stack, output, or memory @ref primitive to @p state.
@@ -706,6 +754,132 @@ apply_primitive(primitive op,
         }
         return state.data_space().store(a.value(), value.value());
     }
+    // 13c745cb-5824-451b-8765-cbed0d5626b3
+    case primitive::parse: {
+        auto ch = pop_one();
+        if (!ch.has_value()) {
+            return ch.error();
+        }
+        auto scan = parser::scan_delimited(state.source().cursor_at_in(),
+                                           static_cast<char>(ch.value()),
+                                           /* skip_leading */ false);
+        state.source().set_in(scan.rest.position().offset);
+        auto a = state.data_space().allot(static_cast<int>(scan.text.size()));
+        if (!a.has_value()) {
+            return a.error();
+        }
+        for (std::size_t i = 0; i < scan.text.size(); ++i) {
+            auto sr = state.data_space().store(
+                addr{static_cast<cell>(a.value()) + static_cast<cell>(i)},
+                static_cast<cell>(scan.text[i]));
+            if (!sr.has_value()) {
+                return sr;
+            }
+        }
+        if (auto r = push_cell(static_cast<cell>(a.value())); !r.has_value()) {
+            return r;
+        }
+        return push_cell(static_cast<cell>(scan.text.size()));
+    }
+    case primitive::word: {
+        auto ch = pop_one();
+        if (!ch.has_value()) {
+            return ch.error();
+        }
+        auto scan = parser::scan_delimited(state.source().cursor_at_in(),
+                                           static_cast<char>(ch.value()),
+                                           /* skip_leading */ true);
+        state.source().set_in(scan.rest.position().offset);
+        auto a =
+            state.data_space().allot(static_cast<int>(scan.text.size()) + 1);
+        if (!a.has_value()) {
+            return a.error();
+        }
+        auto count_r = state.data_space().store(
+            a.value(), static_cast<cell>(scan.text.size()));
+        if (!count_r.has_value()) {
+            return count_r;
+        }
+        for (std::size_t i = 0; i < scan.text.size(); ++i) {
+            auto sr = state.data_space().store(
+                addr{static_cast<cell>(a.value()) + 1 + static_cast<cell>(i)},
+                static_cast<cell>(scan.text[i]));
+            if (!sr.has_value()) {
+                return sr;
+            }
+        }
+        return push_cell(static_cast<cell>(a.value()));
+    }
+    case primitive::char_: {
+        auto scanned = parser::scan_bare_name(state.source().cursor_at_in());
+        if (!scanned.has_value()) {
+            return scanned.error();
+        }
+        state.source().set_in(scanned.value().rest.position().offset);
+        return push_cell(static_cast<cell>(
+            static_cast<unsigned char>(scanned.value().value.front())));
+    }
+    case primitive::count: {
+        auto a = pop_one();
+        if (!a.has_value()) {
+            return a.error();
+        }
+        auto n = state.data_space().fetch(addr{a.value()});
+        if (!n.has_value()) {
+            return n.error();
+        }
+        if (auto r = push_cell(a.value() + 1); !r.has_value()) {
+            return r;
+        }
+        return push_cell(n.value());
+    }
+    case primitive::type_: {
+        auto operands = pop_two();
+        if (!operands.has_value()) {
+            return operands.error();
+        }
+        auto [c_addr, u] = operands.value();
+        for (cell i = 0; i < u; ++i) {
+            auto ch = state.data_space().fetch(addr{c_addr + i});
+            if (!ch.has_value()) {
+                return ch.error();
+            }
+            if (auto r = state.emit_char(static_cast<char>(ch.value()));
+                !r.has_value()) {
+                return r;
+            }
+        }
+        return std::monostate{};
+    }
+    case primitive::abort_quote: {
+        auto operands = pop_two();
+        if (!operands.has_value()) {
+            return operands.error();
+        }
+        auto [c_addr, u] = operands.value();
+        auto flag = pop_one();
+        if (!flag.has_value()) {
+            return flag.error();
+        }
+        if (flag.value() == 0) {
+            return std::monostate{};
+        }
+        for (cell i = 0; i < u; ++i) {
+            auto ch = state.data_space().fetch(addr{c_addr + i});
+            if (!ch.has_value()) {
+                return ch.error();
+            }
+            if (auto r = state.emit_char(static_cast<char>(ch.value()));
+                !r.has_value()) {
+                return r;
+            }
+        }
+        return foundation::parse_error{
+            foundation::source_pos{},
+            "ABORT\" condition met (F31's THROW/CATCH will replace this "
+            "hard stop)"};
+    }
+        // 13c745cb-5824-451b-8765-cbed0d5626b3 end
     }
     return foundation::parse_error{foundation::source_pos{},
                                    "unknown primitive opcode"};
@@ -739,6 +913,181 @@ static_assert([] {
     return r.has_value() && st.data().depth() == 0 &&
            st.data_space().size() == 1 &&
            st.data_space().fetch(addr{0}).value() == 42;
+}());
+
+// Merge criteria (static_assert, immediately-invoked-lambda pattern), step
+// F29's own parsing-word primitives (D19/D21): PARSE/WORD copy text off
+// SOURCE into freshly allotted data-space cells and advance >IN; CHAR reads
+// a name's first character without touching the data space at all; COUNT/
+// TYPE are the read side, over exactly the counted-string shape WORD wrote.
+
+static_assert([] {
+    std::string_view src = "hello\" world";
+    forth_state<8, 8, 16, 32> st{src};
+    auto push = st.data().push(static_cast<cell>('"'));
+    if (!push.has_value()) {
+        return false;
+    }
+    auto r = apply_primitive(primitive::parse, st);
+    if (!r.has_value()) {
+        return false;
+    }
+    auto u = st.data().pop();
+    auto a = st.data().pop();
+    if (!u.has_value() || !a.has_value() || u.value() != 5) {
+        return false;
+    }
+    for (cell i = 0; i < 5; ++i) {
+        auto ch = st.data_space().fetch(addr{a.value() + i});
+        if (!ch.has_value() ||
+            ch.value() != static_cast<cell>(src[static_cast<std::size_t>(i)])) {
+            return false;
+        }
+    }
+    return st.source().in() == 6 &&
+           st.source().cursor_at_in().remaining() == " world";
+}());
+
+static_assert([] {
+    // WORD skips leading delimiters (the leading spaces here) first, unlike
+    // PARSE, and stores a counted string rather than an address/length pair.
+    forth_state<8, 8, 16, 32> st{"  abc def"};
+    auto push = st.data().push(static_cast<cell>(' '));
+    if (!push.has_value()) {
+        return false;
+    }
+    auto r = apply_primitive(primitive::word, st);
+    if (!r.has_value()) {
+        return false;
+    }
+    auto a = st.data().pop();
+    if (!a.has_value()) {
+        return false;
+    }
+    auto count_cell = st.data_space().fetch(addr{a.value()});
+    if (!count_cell.has_value() || count_cell.value() != 3) {
+        return false;
+    }
+    char const expected[3] = {'a', 'b', 'c'};
+    for (cell i = 0; i < 3; ++i) {
+        auto ch = st.data_space().fetch(addr{a.value() + 1 + i});
+        if (!ch.has_value() ||
+            ch.value() !=
+                static_cast<cell>(expected[static_cast<std::size_t>(i)])) {
+            return false;
+        }
+    }
+    return st.source().cursor_at_in().remaining() == "def";
+}());
+
+static_assert([] {
+    forth_state<8, 8, 8, 32> st{"  ab cd"};
+    auto r = apply_primitive(primitive::char_, st);
+    if (!r.has_value()) {
+        return false;
+    }
+    auto v = st.data().pop();
+    return v.has_value() && v.value() == static_cast<cell>('a') &&
+           st.source().cursor_at_in().remaining() == " cd";
+}());
+
+static_assert([] {
+    forth_state<8, 8, 8, 32> st{};
+    auto a = st.data_space().allot(4); // 1 count cell + 3 characters.
+    if (!a.has_value()) {
+        return false;
+    }
+    if (!st.data_space().store(a.value(), 3).has_value() ||
+        !st.data_space()
+             .store(addr{static_cast<cell>(a.value()) + 1},
+                    static_cast<cell>('h'))
+             .has_value() ||
+        !st.data_space()
+             .store(addr{static_cast<cell>(a.value()) + 2},
+                    static_cast<cell>('i'))
+             .has_value() ||
+        !st.data_space()
+             .store(addr{static_cast<cell>(a.value()) + 3},
+                    static_cast<cell>('!'))
+             .has_value()) {
+        return false;
+    }
+    if (!st.data().push(static_cast<cell>(a.value())).has_value()) {
+        return false;
+    }
+    auto r = apply_primitive(primitive::count, st);
+    if (!r.has_value()) {
+        return false;
+    }
+    auto u = st.data().pop();
+    auto c_addr = st.data().pop();
+    return u.has_value() && c_addr.has_value() && u.value() == 3 &&
+           c_addr.value() == static_cast<cell>(a.value()) + 1;
+}());
+
+static_assert([] {
+    forth_state<8, 8, 8, 32> st{};
+    auto a = st.data_space().allot(2);
+    if (!a.has_value()) {
+        return false;
+    }
+    if (!st.data_space().store(a.value(), static_cast<cell>('h')).has_value() ||
+        !st.data_space()
+             .store(addr{static_cast<cell>(a.value()) + 1},
+                    static_cast<cell>('i'))
+             .has_value()) {
+        return false;
+    }
+    if (!st.data().push(static_cast<cell>(a.value())).has_value() ||
+        !st.data().push(2).has_value()) {
+        return false;
+    }
+    auto r = apply_primitive(primitive::type_, st);
+    if (!r.has_value()) {
+        return false;
+    }
+    auto const &out = st.output();
+    return out.size() == 2 && out[0] == 'h' && out[1] == 'i';
+}());
+
+static_assert([] {
+    // ABORT"'s own runtime primitive (DIV-0017: a hard-stop diagnosis, not
+    // yet the Forth-2012 `THROW -2`, since THROW/CATCH land at F31): a zero
+    // flag drops the message silently; a nonzero flag prints it, then
+    // diagnoses.
+    forth_state<8, 8, 8, 32> st{};
+    auto a = st.data_space().allot(4);
+    if (!a.has_value()) {
+        return false;
+    }
+    char const msg[4] = {'b', 'o', 'o', 'm'};
+    for (cell i = 0; i < 4; ++i) {
+        if (!st.data_space()
+                 .store(addr{static_cast<cell>(a.value()) + i},
+                        static_cast<cell>(msg[static_cast<std::size_t>(i)]))
+                 .has_value()) {
+            return false;
+        }
+    }
+    // Stack order matches what the compiled ABORT" sequence leaves behind:
+    // the flag (pushed by whatever code preceded ABORT") sits below the
+    // addr/len pair ABORT"'s own compiled form pushes on top of it.
+    if (!st.data().push(0).has_value() ||
+        !st.data().push(static_cast<cell>(a.value())).has_value() ||
+        !st.data().push(4).has_value()) {
+        return false;
+    }
+    auto quiet = apply_primitive(primitive::abort_quote, st);
+    if (!quiet.has_value() || !st.output().empty()) {
+        return false;
+    }
+    if (!st.data().push(1).has_value() ||
+        !st.data().push(static_cast<cell>(a.value())).has_value() ||
+        !st.data().push(4).has_value()) {
+        return false;
+    }
+    auto loud = apply_primitive(primitive::abort_quote, st);
+    return !loud.has_value() && st.output().size() == 4;
 }());
 
 } // namespace smd::forth::machine

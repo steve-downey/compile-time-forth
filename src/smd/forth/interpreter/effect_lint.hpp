@@ -117,11 +117,12 @@ constexpr auto combine_branch(effect then_eff, effect else_eff) -> effect {
 
 /// The per-primitive net data-stack effect table.
 ///
-/// 47 of the 48 primitives have a fixed effect; `?DUP` is genuinely
-/// input-dependent (`( a -- 0 | a a )`) and maps to @ref unknown_effect.
-/// `>R`/`R>`/`R@` move cells between the data and return stacks -- this
-/// table reports only their *data*-stack view; @ref primitive_return_delta
-/// reports the matching return-stack contribution.
+/// 53 of the 54 primitives (step F29 added `PARSE WORD CHAR COUNT TYPE` and
+/// the runtime half of `ABORT"` to F28's own 48) have a fixed effect; `?DUP`
+/// is genuinely input-dependent (`( a -- 0 | a a )`) and maps to @ref
+/// unknown_effect. `>R`/`R>`/`R@` move cells between the data and return
+/// stacks -- this table reports only their *data*-stack view; @ref
+/// primitive_return_delta reports the matching return-stack contribution.
 constexpr auto primitive_data_effect(machine::primitive op) -> effect {
     using P = machine::primitive;
     switch (op) {
@@ -195,6 +196,23 @@ constexpr auto primitive_data_effect(machine::primitive op) -> effect {
         return known(1, 0);
     case P::comma:
         return known(1, 0); // Step F28: `,` ( x -- ), like `dot`/`allot`.
+    case P::parse:
+        return known(1, 2); // Step F29: `PARSE` ( char -- c-addr u ).
+    case P::word:
+        return known(1, 1); // Step F29: `WORD` ( char -- c-addr ).
+    case P::char_:
+        return known(0, 1); // Step F29: `CHAR` ( -- char ).
+    case P::count:
+        return known(1, 2); // Step F29: `COUNT` ( c-addr1 -- c-addr2 u ).
+    case P::type_:
+        return known(2, 0); // Step F29: `TYPE` ( c-addr u -- ).
+    case P::abort_quote:
+        // Step F29: `ABORT"`'s own runtime primitive ( flag c-addr u -- ).
+        // The stack shape is statically known even though whether it
+        // returns at all is not (DIV-0017) -- that "may not return" fact is
+        // exactly the kind of thing D20 defers to F30, not something this
+        // per-primitive *data*-stack-shape table decides.
+        return known(3, 0);
     }
     // Defensive-only: every enumerator is listed above; reachable only if a
     // future step adds a primitive without updating this table.

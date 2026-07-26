@@ -44,9 +44,14 @@ namespace smd::forth::parser {
 /// True for any character that is not ASCII whitespace.
 ///
 /// A word is any run of non-whitespace characters (the plan's literal
-/// definition); by the time a scanner reaches a word's first character,
-/// @ref skip_forth_space has already consumed any leading `\` or `( ... )`
-/// comment, so no comment-starting character needs special-casing here.
+/// definition). Step F29 (docs/forth-plan-2.md), D19: `\` and `(` are
+/// ordinary dictionary words now (see @ref scan_delimited and
+/// `interpreter::apply_control_word`'s own `paren_`/`backslash_` cases),
+/// not scanner-level special cases, so a `(` or `\` character is an
+/// ordinary word char exactly like any other -- @ref scan_word (below)
+/// scans `(` or `\` as a one-character token whenever the very next
+/// character is whitespace, the same self-delimiting convention every
+/// other Forth-2012 system relies on for both words.
 [[nodiscard]] constexpr auto is_word_char(char c) -> bool {
     return !is_space(c);
 }
@@ -68,9 +73,12 @@ namespace smd::forth::parser {
 /// verbatim, e.g. `( a b -- c )`.
 ///
 /// This is the comment-capture support F7 uses to grab a colon-definition's
-/// declared stack-effect comment (D9); @ref skip_forth_space uses this same
-/// scanner internally but discards the span, since ordinary intertoken space
-/// only needs comments skipped, not preserved.
+/// declared stack-effect comment (D9): @ref interpreter::scan_colon_header
+/// (`interp.hpp`) is its one remaining caller since step F29 re-expresses
+/// ordinary `( ... )` comments as the dictionary word `(` instead
+/// (@ref scan_delimited is what that word's own action uses, since by the
+/// time it runs the opening `(` token itself has already been consumed by
+/// the ordinary text-interpreter loop, D19).
 [[nodiscard]] constexpr auto scan_paren_comment(cursor cur)
     -> parse_result<foundation::source_span> {
     if (cur.empty() || cur.peek() != '(') {
@@ -90,84 +98,112 @@ namespace smd::forth::parser {
 }
 // b2f4d9a0-6c1e-4f8b-9a2d-3e5c7f1a9b4d end
 
-// c3d5e8b2-7f2a-4b9c-8d3e-4f6a8c2b1e9f
-/// Skips Forth's own notion of intertoken space: ASCII whitespace, `\` line
-/// comments (a backslash through the end of its line), and `( ... )`
-/// comments (a space-delimited `(` up to its closing `)`), repeating until
-/// none of the three remain.
-///
-/// Distinct from @ref skip_intertoken_space, which only skips plain
-/// ASCII whitespace and knows nothing about either comment form.
-[[nodiscard]] constexpr auto skip_forth_space(cursor cur) -> cursor {
-    for (;;) {
-        cur = skip_intertoken_space(cur);
-        if (cur.empty()) {
-            return cur;
-        }
-        if (cur.peek() == '\\') {
-            while (!cur.empty() && cur.peek() != '\n') {
-                cur = cur.bump();
-            }
-            continue;
-        }
-        if (cur.peek() == '(') {
-            auto comment = scan_paren_comment(cur);
-            if (!comment.has_value()) {
-                // Unterminated '(' comment: stop skipping here and let the
-                // caller's next parse step fail in context, rather than
-                // consuming to end-of-input silently.
-                return cur;
-            }
-            cur = comment.value().rest;
-            continue;
-        }
-        return cur;
-    }
-}
-// c3d5e8b2-7f2a-4b9c-8d3e-4f6a8c2b1e9f end
-
-/// Wraps @p p so it first skips @ref skip_forth_space, then runs @p p, then
-/// skips @ref skip_forth_space again -- the Forth-aware analogue of
-/// @ref lexeme, which only skips plain whitespace around @p p.
-template <parser_like P>
-[[nodiscard]] constexpr auto forth_lexeme(P p) {
-    return parser{[p](cursor cur) {
-        auto start = skip_forth_space(cur);
-        auto r = p(start);
-        if (!r.has_value()) {
-            return r;
-        }
-        auto rest = skip_forth_space(r.value().rest);
-        using V = decltype(r.value().value);
-        return parse_result<V>{parse_state<V>{r.value().value, rest}};
-    }};
-}
-
 // d4e6f9c3-8a3b-4c9d-9e4f-5a7b9d3c2f8a
 /// Folded token text, capped at @p MaxName characters.
 template <int MaxName = 32>
 using token_text = foundation::static_vector<char, MaxName>;
 
-/// Scans one word token: skips surrounding @ref skip_forth_space, then reads
-/// a run of @ref is_word_char characters, folding each to uppercase as it
-/// goes (D8) -- scanning `dup` yields `DUP`.
+/// Scans one word token: skips surrounding @ref lexeme whitespace (plain
+/// ASCII intertoken space only -- step F29, D19, re-expresses `\` and `(`
+/// comments as ordinary dictionary words rather than scanner-level skipping,
+/// so this scanner no longer treats either specially; a source `(` or `\`
+/// character is scanned as an ordinary one-character word exactly like any
+/// other name would be), then reads a run of @ref is_word_char characters,
+/// folding each to uppercase as it goes (D8) -- scanning `dup` yields `DUP`.
 ///
 /// @tparam MaxName Maximum number of characters in the scanned token.
 template <int MaxName = 32>
 [[nodiscard]] constexpr auto scan_word(cursor cur)
     -> parse_result<token_text<MaxName>> {
-    auto p =
-        forth_lexeme(map(some<MaxName>(satisfy(is_word_char, "expected word")),
-                         [](token_text<MaxName> raw) {
-                             token_text<MaxName> folded{};
-                             for (char c : raw) {
-                                 folded.push_back(fold_char(c));
-                             }
-                             return folded;
-                         }));
+    auto p = lexeme(map(some<MaxName>(satisfy(is_word_char, "expected word")),
+                        [](token_text<MaxName> raw) {
+                            token_text<MaxName> folded{};
+                            for (char c : raw) {
+                                folded.push_back(fold_char(c));
+                            }
+                            return folded;
+                        }));
     return p(cur);
 }
 // d4e6f9c3-8a3b-4c9d-9e4f-5a7b9d3c2f8a end
+
+// 9cfdb6e6-c3b2-467a-a80c-50a53628f424
+/// The result of @ref scan_delimited: the delimited run's own raw text
+/// (sliced directly out of the scanned cursor's underlying view, no
+/// case-folding, unlike @ref scan_word) and the cursor positioned just past
+/// it -- past the trailing delimiter if @ref found_delim, or at end of
+/// input otherwise. This is Forth-2012 `PARSE`'s own `>IN` update either
+/// way, and every parsing word this project defines computes it the same
+/// way (D19).
+struct delimited_scan {
+    std::string_view text{};  ///< The scanned run, excluding the delimiter.
+    cursor rest{cursor{""}};  ///< Positioned just past the run (see above).
+    bool found_delim = false; ///< False if input ran out before @p delim.
+};
+
+/// Scans @p cur for a run of characters delimited by @p delim -- Forth-2012
+/// `PARSE`'s own definition, and D19's shared "below the word" scanning
+/// primitive every parsing word this project defines is built from. If
+/// @p skip_leading, first skips any leading occurrences of @p delim (`WORD`'s
+/// own extra step over plain `PARSE`); then collects every character up to
+/// the next occurrence of @p delim, or to the end of input, whichever comes
+/// first.
+///
+/// Never fails: running out of input before finding @p delim is an ordinary
+/// outcome for `PARSE`/`WORD` (@ref delimited_scan::found_delim reports it,
+/// for callers -- `(`, `S"`, `."`, `ABORT"` -- that choose to diagnose it as
+/// an unterminated form instead).
+///
+/// `PARSE`, `WORD`, `S"`, `."`, `ABORT"`, and the reexpressed `(` (step F29,
+/// D19's own demonstration that a parsing word needs nothing but the input
+/// stream) all consume the same stream through this one scan, differing
+/// only in @p delim, @p skip_leading, and what each does with the resulting
+/// @ref delimited_scan::text afterward -- which is what makes a user-defined
+/// parsing word written in ordinary Forth, calling `PARSE` or `WORD`
+/// directly, work identically to any of this project's own built-in ones.
+[[nodiscard]] constexpr auto scan_delimited(cursor cur, char delim,
+                                            bool skip_leading)
+    -> delimited_scan {
+    if (skip_leading) {
+        while (!cur.empty() && cur.peek() == delim) {
+            cur = cur.bump();
+        }
+    }
+    auto const text_begin = cur;
+    int len = 0;
+    while (!cur.empty() && cur.peek() != delim) {
+        cur = cur.bump();
+        ++len;
+    }
+    bool const found = !cur.empty();
+    std::string_view text =
+        text_begin.remaining().substr(0, static_cast<std::size_t>(len));
+    return delimited_scan{text, found ? cur.bump() : cur, found};
+}
+// 9cfdb6e6-c3b2-467a-a80c-50a53628f424 end
+
+/// Scans one blank-delimited name, raw (no case-folding, unlike
+/// @ref scan_word, and no @ref token_text capacity limit -- only its own
+/// first character is ever consulted by this project's `CHAR`/`[CHAR]`, the
+/// two callers this exists for): skips leading @ref is_space characters,
+/// then collects every character up to the next @ref is_space character or
+/// end of input. Fails if nothing but whitespace remains.
+[[nodiscard]] constexpr auto scan_bare_name(cursor cur)
+    -> parse_result<std::string_view> {
+    cur = skip_intertoken_space(cur);
+    if (cur.empty()) {
+        return foundation::parse_error{cur.position(), "expected a name"};
+    }
+    auto const begin = cur;
+    int len = 0;
+    while (!cur.empty() && !is_space(cur.peek())) {
+        cur = cur.bump();
+        ++len;
+    }
+    std::string_view text =
+        begin.remaining().substr(0, static_cast<std::size_t>(len));
+    return parse_state<std::string_view>{text, cur};
+}
 
 // e5f7a0d4-9b4c-4d0e-af5a-6b8c0e4d3a9b
 /// True iff @p text is an optional leading `-` followed by one or more

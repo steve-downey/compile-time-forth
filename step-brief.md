@@ -1,4 +1,4 @@
-# step-brief.md — Step F29: parsing words and strings
+# step-brief.md — Step F31: CATCH and THROW
 
 Forward-only brief for the next clean agent. Bounded; not a log. Prior-step
 narrative lives in `git log`; architecture lives in
@@ -7,90 +7,79 @@ Your orchestrator pastes your own step section from `docs/forth-plan-2.md`
 plus the decision records it cites; this brief does not attempt to restate
 that section from memory.
 
-## What F28 built, by anchor
+## What F29 built, by anchor
 
-`docs/compiler_architecture.org`'s Phase 11 section ("Execution Tokens and
-Defining Words") covers this in full, with several transcluded code anchors.
-Read it before opening any source below wholesale.
+`docs/compiler_architecture.org`'s Phase 12 section ("Parsing Words and
+Strings") covers this in full, with transcluded code anchors. Read it before
+opening any source below wholesale.
 
-- **DIV-0012's fold is done.** `machine::forth_state` (`machine/
-  forth_state.hpp`) now carries `SOURCE`/`>IN` (`source()`, an `input_source`
-  relocated to `machine/input_source.hpp`), `BASE`, and `STATE` directly —
-  `interpreter::forth_state`, the composed wrapper every prior step used, no
-  longer exists. Every function that took it now takes `machine::forth_state`
-  directly. **This is exactly what makes F29 possible**: `PARSE`/`WORD`/
-  `CHAR` only need `state.source()` and `state.data_space()`, both plain
-  fields of `machine::forth_state` now — they can be real `machine::
-  primitive` enumerators, dispatched through `apply_primitive` exactly like
-  `DUP`/`@`/`ALLOT`, with no dictionary access and no new opcode needed. Do
-  not reach for the `CREATE`/`DOES>`-style `dictionary`-pointer-through-
-  `run_from` machinery (next bullet) unless a specific parsing word turns out
-  to need the dictionary itself, not just the input stream.
-- **Two new VM opcodes exist for the one case that *does* need dictionary
-  access mid-body**: `machine::op::create_word`/`op::does_enter`
-  (`machine/instruction.hpp`), consulted via a new nullable, non-owning
-  `dictionary<DictWords, DictName> *dict = nullptr` parameter on
-  `machine::run_from`/`run` and `interpreter::call_word` (defaulted, so no
-  existing call site needed to change). `machine::create_here` (`vm.hpp`) is
-  the shared "scan a name, install a variable_word" action both the VM
-  opcode and `interpreter::apply_control_word`'s own `create_` case call.
-  Reuse this exact pattern (a shared free function in `machine/`, called
-  from both an interpreting-time control-word case and a VM opcode case) if
-  F29 needs a word usable both directly and from inside a compiled body.
-- **`interpreter::resolve_execution_token`** (`interp.hpp`, anchor
-  `1c9e6a4f-7b3d-4e8a-9c2f-6a1d8b4e3f7c`) is D18's primitive-XT encoding
-  decision made concrete: an execution token is a code-space instruction
-  index; `'`/`[']` produce one by returning a colon word's own entry point
-  directly, or by building a small `ret`-terminated stub *guarded by a
-  leading unconditional branch* for anything else (primitive/variable/
-  constant/value_word) — the guard is required because the code space may be
-  positioned inside a still-open colon definition's own body when this runs.
-  If F29's own `S"` needs to store a string literal and later produce
-  something callable from it, this guard discipline is the model to copy;
-  do not emit unguarded instructions into `buf` from any context that might
-  run mid-definition.
-- **New binding kinds**: `machine::value_word`/`machine::defer_word`
-  (`dictionary.hpp`) both hold a single data-space `addr` rather than a
-  value stored on the entry itself, specifically so a *compiled* reference
-  needs no dictionary access at runtime — reuse this shape if F29 needs to
-  store a parsed string's own address/length as a dictionary binding (e.g. a
-  `S"`-defined constant string).
-- **`default_dictionary` is 77 entries now** (48 primitives + 29 control
-  words), not 67. `MaxWords` values already in use (96, 256) still clear
-  this with room; audit again if F29 adds enough new entries to threaten a
-  smaller `MaxWords` somewhere.
-- **`,` is primitive 48** (`machine::primitive::comma`, `( x -- )`): reserves
-  one data-space cell and stores into it. `interpreter/effect_lint.hpp`'s
-  `primitive_data_effect` switch is exhaustive over `machine::primitive` —
-  add a case there for any new primitive F29 introduces, or the build warns
-  (`-Wswitch`) under clang.
+- **`PARSE`/`WORD`/`CHAR`/`COUNT`/`TYPE`** landed as ordinary, non-immediate
+  `machine::primitive` enumerators (`machine/forth_state.hpp`, anchor
+  `13c745cb-5824-451b-8765-cbed0d5626b3` for the switch cases, `4beb6ab5-
+  f28e-4b2f-8a21-3d4ba8575f55` for the enum). `S"`/`."`/`[CHAR]`/`ABORT"` and
+  the reexpressed `(`/`\` are new `machine::control_builtin` tags, dispatched
+  in `interpreter::apply_control_word` (`interp.hpp`, anchor
+  `f73e653b-0bfe-4315-b0e9-d7ff2b4c044c`). `parser::scan_delimited`
+  (`forth_chars.hpp`) is the one shared scan every one of them (including
+  `(`/`\`) is built from.
+- **`parser::skip_forth_space`/`forth_lexeme` are deleted.** `scan_word`'s
+  own trailing skip is now plain `lexeme` (whitespace only). If F31 needs to
+  scan raw text anywhere, do not reach for either name — they no longer
+  exist. A comment can no longer appear between `:` and its own name (see
+  DIV-0017 item 2); this is intentional, not a regression to work around.
+- **`ABORT"` is a documented interim hard stop, not `THROW -2`** (DIV-0017,
+  its own Revisit condition names this step by number). Its compiled form
+  already does the right *shape* of work — store the message, push
+  address/length, call a runtime primitive (`machine::primitive::
+  abort_quote`, `forth_state.hpp`) — but that primitive currently prints the
+  message (if the flag is nonzero) and returns a generic diagnosed
+  `foundation::parse_error` that propagates all the way out of `interpret()`
+  unconditionally. **Your own step should change `abort_quote` to `THROW -2`
+  after printing**, once `THROW` exists, rather than leaving both
+  mechanisms live side by side. `ABORT` itself (`-1 THROW`, this step's own
+  deliverable per its step text) does not exist yet at all — F29 only built
+  `ABORT"`.
+- **`default_dictionary` is 89 entries now** (54 primitives + 35 control
+  words), not 77. `MaxWords` values already in use (96, 256) still clear
+  this with room; audit again once F31 adds `CATCH`/`THROW`/`ABORT`.
+- **`foundation::parse_error::message` must be a static-lifetime string
+  literal** (`foundation/parse_error.hpp`'s own doc comment) — it does not
+  own or copy the string it points to. This is *why* `abort_quote` cannot
+  attach its own dynamic message text to the diagnosed error value it
+  returns (DIV-0017's own Why section spells this out). `THROW n` carries an
+  integer, not a string, so this constraint should not bite your own step
+  the same way — but if any part of your own design wants to carry a
+  dynamic message through an error channel, this is the wall F29 hit.
 
-## Gotchas F29 needs and cannot get from its own pasted section
+## Gotchas F31 needs and cannot get from its own pasted section
 
-- **`CREATE`, uniquely among F26/F28's defining words, is a real dictionary
-  entry (`control_word` tag `create_`) reachable from inside a compiled
-  body; `VARIABLE`/`CONSTANT` are still direct-name special cases** in
-  `interpret()`'s own interpreting branch, unchanged since F26. If F29's own
-  parsing words need similar "usable both top-level and inside a running
-  colon word" behavior, `CREATE`'s shape (non-immediate `control_word`,
-  `compile_entry` case emitting a real opcode, `execute_entry`/
-  `apply_control_word` case running the interpreting-time action directly)
-  is the template — not a new direct-name special case.
-- **`interpreter::compile_entry`/`execute_entry` are the two dispatch
-  points every new binding kind or control word needs a case in**, per
-  D13's "execute when interpreting or immediate, else compile" rule,
-  unchanged in shape since F27. Extend these two functions; do not
-  special-case further inside `interpret()`'s own loop body.
-- **The guarded-branch stub pattern in `resolve_execution_token` costs one
-  wasted instruction whenever emission happens somewhere already safe to
-  append inline** (true top-level, most of the time) — this is deliberate
-  (uniform safety over minimizing instruction count); do not try to detect
-  "is this actually safe without a guard" and skip it.
-- **`'`/`[']` cannot currently produce an execution token for a
-  `control_word`, `foreign_word`, or `defer_word` target** (diagnosed: "word
-  has no execution token") — DIV-0016's own Revisit condition names
-  `defer_word` as the one case that could be added later if a merge
-  criterion needs it; nothing before F29 does.
+- **`machine::op::catch_mark`/`op::throw_op` are reserved opcodes that
+  already exist** in `machine::op` (`instruction.hpp`) and are already
+  diagnosed by name ("exception opcode not implemented until F31") in
+  `machine::run_from`'s own switch (`vm.hpp`, the `case op::catch_mark: case
+  op::throw_op:` fallthrough near that function's end) — this is the one
+  place in the VM's own fetch-execute loop your step needs to give real
+  semantics, not a new case to add from scratch.
+- **`machine::return_stack` (`stacks.hpp`) has no truncate/resize
+  operation.** `THROW`'s own Forth-2012 semantics need to unwind the return
+  stack back to whatever depth it was at the matching `CATCH`'s own handler
+  frame, and restore the *data* stack to its depth at that same point (D11).
+  Check `stacks.hpp`'s own `cell_stack`/`return_stack` API before assuming
+  either capability exists; neither does yet.
+- **`interpreter::compile_entry`/`execute_entry` are still the two dispatch
+  points every new binding kind or control word needs a case in** (D13's
+  "execute when interpreting or immediate, else compile" rule, unchanged in
+  shape since F27). If `CATCH`/`THROW`/`ABORT` become new `control_builtin`
+  tags (following the shape every defining/parsing word since F27 has used),
+  extend these two functions; do not special-case further inside
+  `interpret()`'s own loop body.
+- **`interpreter/effect_lint.hpp`'s `primitive_data_effect` switch is
+  exhaustive over `machine::primitive`** — add a case for any new primitive
+  your step introduces, or the build warns (`-Wswitch`) under clang. F29's
+  own `abort_quote` primitive is already there (`known(3, 0)`, with a
+  comment noting the "may not return" fact is exactly what D20 defers to
+  F30, not something this table decides) — the same reasoning applies to
+  whatever primitive(s) `THROW`/`CATCH` become.
 
 ## Standing constraints
 
@@ -102,7 +91,7 @@ Read it before opening any source below wholesale.
 - Compile-time tests use the immediately-invoked-lambda `static_assert`
   pattern; every public constexpr API gets one.
 - Do not pick your own DIV number; the orchestrator allocates it at
-  dispatch. F28 used DIV-0016.
+  dispatch. F29 used DIV-0017.
 
 ## Before handoff
 
@@ -110,5 +99,7 @@ Read it before opening any source below wholesale.
 `make check-transclusions` green; `smoke.sh gcc-16` and `smoke.sh clang-21`
 both end `SMOKE OK`; `checklist.md` ticked; durable facts recorded in
 `docs/compiler_architecture.org` in place, by anchor; `step-brief.md`
-rewritten for F30; DIV filed for any deviation, using the number you are
-given.
+rewritten for **F30** (the effect lint — the orchestrator has reordered the
+plan's own F30/F31 sequence so F30 runs *after* F31, informed by both F28's
+and this step's own `unknown`-lattice cases, not before it); DIV filed for
+any deviation, using the number you are given.

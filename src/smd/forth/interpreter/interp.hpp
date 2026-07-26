@@ -182,16 +182,23 @@ struct colon_header {
 /// of `:`, split out of @ref interpret only to keep that function's own loop
 /// body readable.
 ///
-/// @p name_cur must already be positioned at (or before, across only plain
-/// whitespace/comments) the name itself -- @ref interpret passes its own
+/// @p name_cur must already be positioned at the name itself, or at most
+/// preceded by plain whitespace -- @ref interpret passes its own
 /// post-`:`-token cursor, which @ref parser::scan_word's trailing skip has
-/// already advanced past any intertoken space before the name.
+/// already advanced past any such whitespace. Since step F29 (D19), a
+/// comment cannot appear between `:` and its name: `\`/`(` are ordinary
+/// dictionary words now (@ref apply_control_word's own `paren_`/
+/// `backslash_` cases), found and dispatched by @ref interpret's own token
+/// loop like any other word, so `: ( oops ) NAME` names the new word `(`,
+/// exactly as parsing the next raw name would in any Forth-2012 system --
+/// not a comment silently skipped first.
 ///
-/// Unlike an ordinary @ref parser::scan_word call, this does not use @ref
-/// parser::forth_lexeme's trailing skip to find the name's own end: a
-/// `( ... )` comment immediately after the name must still be visible to
-/// capture here, not already silently consumed as ordinary intertoken space
-/// the way it would be for any other token.
+/// Unlike scan_colon_header's own pre-F29 shape, this can now use @ref
+/// parser::scan_word's own rest cursor directly to find the name's own end:
+/// @ref parser::scan_word's trailing skip is plain whitespace only (D19), so
+/// a `( ... )` stack-effect comment immediately after the name is never at
+/// risk of being silently consumed as ordinary intertoken space the way it
+/// would have been when that trailing skip still ate comments too.
 template <int MaxName>
 [[nodiscard]] constexpr auto scan_colon_header(parser::cursor name_cur)
     -> parser::parse_result<colon_header<MaxName>> {
@@ -208,21 +215,10 @@ template <int MaxName>
         return foundation::parse_error{name_cur.position(),
                                        "expected a name after :"};
     }
+    auto const after_name = name_scanned.value().rest;
 
-    // Recover the cursor immediately after the name's own characters, by
-    // replaying bump() folded_name.size() times from name_cur -- the same
-    // "replay to recover a position" technique input_source::cursor_at_in
-    // already uses -- rather than trusting scan_word's own rest cursor,
-    // which has already skipped past any trailing comment as ordinary
-    // intertoken space (this function's own top comment).
-    auto after_name = name_cur;
-    for (int i = 0; i < folded_name.size() && !after_name.empty(); ++i) {
-        after_name = after_name.bump();
-    }
-
-    auto after_ws = parser::skip_intertoken_space(after_name);
-    if (!after_ws.empty() && after_ws.peek() == '(') {
-        auto comment = parser::scan_paren_comment(after_ws);
+    if (!after_name.empty() && after_name.peek() == '(') {
+        auto comment = parser::scan_paren_comment(after_name);
         if (comment.has_value()) {
             return parser::parse_state<colon_header<MaxName>>{
                 colon_header<MaxName>{.name = folded_name,
@@ -231,10 +227,13 @@ template <int MaxName>
                 comment.value().rest};
         }
         // An unterminated '(' right after the name: fall through and leave
-        // the cursor at the name's own end -- the very next token scan will
-        // fail on the dangling '(' in context, exactly like
-        // parser::skip_forth_space's own defensive choice for an
-        // unterminated comment anywhere else.
+        // the cursor at the name's own end. The very next token this
+        // function's own caller (@ref interpret) scans is then that same
+        // dangling `(`, dispatched as the ordinary `paren_` control word
+        // (step F29, D19) -- which scans forward for a closing `)` itself
+        // and diagnoses "unterminated ( comment" when it finds none, so the
+        // failure still surfaces, just through the same path any other
+        // unterminated `(` anywhere else in the source does now.
     }
     return parser::parse_state<colon_header<MaxName>>{
         colon_header<MaxName>{.name = folded_name}, after_name};
@@ -1177,6 +1176,208 @@ template <int MaxDepth, int MaxRDepth, int MaxData, int MaxOut, int MaxWords,
         }
         return st.data_space().store(dw->address, xt.value());
     }
+    // f73e653b-0bfe-4315-b0e9-d7ff2b4c044c
+    case control_builtin::paren_: {
+        // `(` (step F29, D19): reexpressed from scanner-level comment
+        // skipping (@ref parser::skip_forth_space, deleted this step) into
+        // an ordinary immediate word over the same input stream -- exactly
+        // D19's own "combinators below the word" move, generalized one more
+        // level: the scanner no longer knows `(` exists at all (@ref
+        // parser::scan_word treats it as an ordinary one-character word,
+        // like any other name that happens to be followed by whitespace);
+        // this dictionary word is what actually consumes the comment body,
+        // via the same @ref parser::scan_delimited every other F29 parsing
+        // word uses. Immediate and not compile-only: it must run the moment
+        // it is met, in either state, exactly like the scanner-level
+        // skipping it replaces did.
+        auto scan =
+            parser::scan_delimited(st.source().cursor_at_in(), ')', false);
+        st.source().set_in(scan.rest.position().offset);
+        if (!scan.found_delim) {
+            return foundation::parse_error{pos, "unterminated ( comment"};
+        }
+        return std::monostate{};
+    }
+    case control_builtin::backslash_: {
+        // `\` (step F29, D19): the line-comment counterpart to `paren_`
+        // above, same reexpression. Running off the end of input with no
+        // trailing newline is not an error (Forth-2012: `\` discards "the
+        // remainder of the parse area"; a source that simply ends there is
+        // an ordinary end of input, not an unterminated form the way a
+        // missing `)` is for `(`).
+        auto scan =
+            parser::scan_delimited(st.source().cursor_at_in(), '\n', false);
+        st.source().set_in(scan.rest.position().offset);
+        return std::monostate{};
+    }
+    case control_builtin::s_quote_: {
+        // `S"` (step F29, D19/D21): parses a `"`-delimited string, copies it
+        // into freshly allotted data-space cells (one cell per character,
+        // D21 -- the same convention `WORD` uses), and leaves its address
+        // and length. Works both interpreting (push immediately) and
+        // compiling (compile the equivalent two literal pushes, since the
+        // string's own data-space address is already fixed by the time this
+        // runs, exactly like `LITERAL`'s own push, just two of them) --
+        // Forth-2012 defines both, unlike `ABORT"`/`[CHAR]` below.
+        auto scan =
+            parser::scan_delimited(st.source().cursor_at_in(), '"', false);
+        st.source().set_in(scan.rest.position().offset);
+        if (!scan.found_delim) {
+            return foundation::parse_error{pos, "unterminated S\" string"};
+        }
+        auto a = st.data_space().allot(static_cast<int>(scan.text.size()));
+        if (!a.has_value()) {
+            return a.error();
+        }
+        for (std::size_t i = 0; i < scan.text.size(); ++i) {
+            auto sr = st.data_space().store(
+                machine::addr{static_cast<cell>(a.value()) +
+                              static_cast<cell>(i)},
+                static_cast<cell>(scan.text[i]));
+            if (!sr.has_value()) {
+                return sr;
+            }
+        }
+        if (st.state() == 0) {
+            auto r1 = st.data().push(static_cast<cell>(a.value()));
+            if (!r1.has_value()) {
+                return r1;
+            }
+            return st.data().push(static_cast<cell>(scan.text.size()));
+        }
+        auto r1 = buf.emit(op::push, static_cast<cell>(a.value()), pos);
+        if (!r1.has_value()) {
+            return r1.error();
+        }
+        auto r2 = buf.emit(op::push, static_cast<cell>(scan.text.size()), pos);
+        if (!r2.has_value()) {
+            return r2.error();
+        }
+        return std::monostate{};
+    }
+    case control_builtin::dot_quote_: {
+        // `."` (step F29, D19/D21): like `s_quote_` above, but the string is
+        // printed rather than left on the stack -- interpreting prints it
+        // immediately (no data-space storage needed at all, since nothing
+        // has to survive past this one call); compiling stores it (it must
+        // survive until this definition's own later runtime call) and
+        // compiles a push-address/push-length/`TYPE` sequence instead of
+        // `s_quote_`'s own bare pushes.
+        auto scan =
+            parser::scan_delimited(st.source().cursor_at_in(), '"', false);
+        st.source().set_in(scan.rest.position().offset);
+        if (!scan.found_delim) {
+            return foundation::parse_error{pos, "unterminated .\" string"};
+        }
+        if (st.state() == 0) {
+            for (char c : scan.text) {
+                if (auto r = st.emit_char(c); !r.has_value()) {
+                    return r;
+                }
+            }
+            return std::monostate{};
+        }
+        auto a = st.data_space().allot(static_cast<int>(scan.text.size()));
+        if (!a.has_value()) {
+            return a.error();
+        }
+        for (std::size_t i = 0; i < scan.text.size(); ++i) {
+            auto sr = st.data_space().store(
+                machine::addr{static_cast<cell>(a.value()) +
+                              static_cast<cell>(i)},
+                static_cast<cell>(scan.text[i]));
+            if (!sr.has_value()) {
+                return sr;
+            }
+        }
+        auto r1 = buf.emit(op::push, static_cast<cell>(a.value()), pos);
+        if (!r1.has_value()) {
+            return r1.error();
+        }
+        auto r2 = buf.emit(op::push, static_cast<cell>(scan.text.size()), pos);
+        if (!r2.has_value()) {
+            return r2.error();
+        }
+        auto r3 = buf.emit(op::prim,
+                           static_cast<cell>(machine::primitive::type_), pos);
+        if (!r3.has_value()) {
+            return r3.error();
+        }
+        return std::monostate{};
+    }
+    case control_builtin::char_bracket_: {
+        // `[CHAR]` (step F29, D19): compile-only `CHAR` -- scans the next
+        // blank-delimited name at the moment it is met (like `CHAR`'s own
+        // primitive, @ref parser::scan_bare_name) and compiles a literal
+        // push of its first character's own code, rather than leaving that
+        // work for runtime the way the ordinary, non-immediate `CHAR`
+        // primitive does.
+        if (st.state() == 0) {
+            return compile_only();
+        }
+        auto scanned = parser::scan_bare_name(st.source().cursor_at_in());
+        if (!scanned.has_value()) {
+            return scanned.error();
+        }
+        st.source().set_in(scanned.value().rest.position().offset);
+        auto r = buf.emit(op::push,
+                          static_cast<cell>(static_cast<unsigned char>(
+                              scanned.value().value.front())),
+                          pos);
+        if (!r.has_value()) {
+            return r.error();
+        }
+        return std::monostate{};
+    }
+    case control_builtin::abort_quote_: {
+        // `ABORT"` (step F29, D19/D21): compile-only, per Forth-2012
+        // (interpretation semantics are undefined). Parses the message text
+        // exactly like `s_quote_` above, stores it, and compiles a
+        // push-address/push-length/`abort_quote` sequence -- the runtime
+        // primitive (`machine/forth_state.hpp`) that prints the message and
+        // diagnoses if the flag already on the stack at that point is
+        // nonzero. DIV-0017: this is a hard stop of the whole
+        // interpretation, not yet Forth-2012's own `THROW -2` -- `THROW`/
+        // `CATCH` do not exist until F31, and a diagnosed error now is the
+        // documented interim, not a silent no-op.
+        if (st.state() == 0) {
+            return compile_only();
+        }
+        auto scan =
+            parser::scan_delimited(st.source().cursor_at_in(), '"', false);
+        st.source().set_in(scan.rest.position().offset);
+        if (!scan.found_delim) {
+            return foundation::parse_error{pos, "unterminated ABORT\" string"};
+        }
+        auto a = st.data_space().allot(static_cast<int>(scan.text.size()));
+        if (!a.has_value()) {
+            return a.error();
+        }
+        for (std::size_t i = 0; i < scan.text.size(); ++i) {
+            auto sr = st.data_space().store(
+                machine::addr{static_cast<cell>(a.value()) +
+                              static_cast<cell>(i)},
+                static_cast<cell>(scan.text[i]));
+            if (!sr.has_value()) {
+                return sr;
+            }
+        }
+        auto r1 = buf.emit(op::push, static_cast<cell>(a.value()), pos);
+        if (!r1.has_value()) {
+            return r1.error();
+        }
+        auto r2 = buf.emit(op::push, static_cast<cell>(scan.text.size()), pos);
+        if (!r2.has_value()) {
+            return r2.error();
+        }
+        auto r3 = buf.emit(
+            op::prim, static_cast<cell>(machine::primitive::abort_quote), pos);
+        if (!r3.has_value()) {
+            return r3.error();
+        }
+        return std::monostate{};
+    }
+        // f73e653b-0bfe-4315-b0e9-d7ff2b4c044c end
     }
     return foundation::parse_error{pos, "unknown control word"};
 }
@@ -1319,12 +1520,15 @@ execute_entry(machine::dictionary_entry<MaxName> const &entry,
 /// word's own body (`: CONSTANT2 CREATE , DOES> @ ;`) reaches the dictionary
 /// again each time it runs, not only once, at its own definition time.
 ///
-/// `\` line comments and `( ... )` comments are ordinary intertoken space to
-/// this loop (@ref parser::skip_forth_space, invoked here via @ref
-/// parser::scan_word's own leading skip) in every position except
+/// `\` line comments and `( ... )` comments are ordinary immediate
+/// dictionary words to this loop since step F29 (D19: `paren_`/
+/// `backslash_`, @ref apply_control_word) -- found, dispatched, and
+/// executed exactly like any other token, rather than skipped by the
+/// scanner before a token is even identified -- in every position except
 /// immediately after a `:` definition's own name, where @ref
 /// scan_colon_header instead captures a `( ... )` comment as the declared
-/// effect (D20: stored, unverified until F30).
+/// effect (D20: stored, unverified until F30) before this loop's own token
+/// scan ever runs.
 ///
 /// Every stack/data-space/code-space misuse a primitive's own @ref
 /// machine::apply_primitive, or @ref compile_buffer::emit, can diagnose is
@@ -1381,14 +1585,19 @@ interpret(machine::forth_state<MaxDepth, MaxRDepth, MaxData, MaxOut> &st,
 
     for (;;) {
         auto pre = st.source().cursor_at_in();
-        auto token_start = parser::skip_forth_space(pre);
+        // Plain ASCII whitespace only (step F29, D19): `(` and `\` are
+        // ordinary dictionary words now, found and dispatched below like
+        // any other token, not skipped here -- a source that ends in a
+        // trailing comment still terminates cleanly, just one loop
+        // iteration later, once that comment word's own action has run.
+        auto token_start = parser::skip_intertoken_space(pre);
         if (token_start.empty()) {
             if (st.state() != 0) {
                 return foundation::parse_error{token_start.position(),
                                                "unterminated colon definition"};
             }
-            // Nothing left but whitespace/comments: a clean end of source,
-            // not an error.
+            // Nothing left but whitespace: a clean end of source, not an
+            // error.
             return std::monostate{};
         }
 
