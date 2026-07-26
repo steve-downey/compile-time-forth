@@ -1,6 +1,6 @@
 # DIV-0006: stack-effect checker is not flow-sensitive across EXIT
 
-- **Status:** open
+- **Status:** superseded by DIV-0011 (retired with its subject at step F26; the gap itself is inherited by step F30's effect lint, not closed)
 - **Date:** 2026-07-19
 - **Step:** F12 (stack-effect analysis)
 - **Authority diverged from:** Forth-2012

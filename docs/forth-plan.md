@@ -1,5 +1,28 @@
 # Compile-Time Forth — Agent Execution Plan
 
+> **SUPERSEDED — this is the R1 plan, kept as history.**
+>
+> The governing plan is `docs/forth-plan-2.md` (revision 2, "True Forth").
+> Steps F0–F17 below were executed and merged under this document and remain the
+> record of how they were built. Steps F18a–F22 are **retired unexecuted** and
+> are replaced by F23–F36 in the revision-2 plan.
+>
+> What revision 2 supersedes: this document's thesis framing (§0), its language
+> scope (§6), those decision records marked amended, overturned, replaced, moot,
+> or rescoped in `docs/forth-plan-2.md` §2 — D5 in particular, the structural
+> grammar, is overturned — and the remaining step sequence (§9 from F18a on).
+>
+> What revision 2 inherits from this document by reference, unchanged: rule and
+> style precedence (§1), the orchestration protocol and worker duties (§2), the
+> divergence-doc mechanism (§3), the documentation workstream and blog contract
+> (§8), and the canonical clean-agent instruction (§12).
+>
+> The pivot itself is recorded in `docs/divergences/DIV-0011-true-forth-pivot.md`;
+> the design deliberation that produced revision 2 is archived at
+> `docs/history/forth-replan.org`.
+>
+> This file is append-only history. Do not rewrite it.
+
 This is the operational plan for building `smd/forth`, a compile-time and
 runtime-capable Forth compiler in C++26 on GCC16.
 

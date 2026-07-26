@@ -1,0 +1,338 @@
+#+TITLE: smd::forth Replan --- From Grammar Forth to True Forth
+#+AUTHOR: Steve Downey (with Claude)
+#+DATE: 2026-07-25
+
+* Summary of the correction
+
+The project as built (F0 through the counted-loops step; blog Parts 0--11) is a
+compile-time language with Forth's surface syntax and a Scheme-shaped
+architecture: source -> combinator/recursive-descent front end -> arena syntax
+tree -> elaboration -> codegen -> VM. Part 0 explicitly refused the outer
+interpreter --- no ~IMMEDIATE~, no ~POSTPONE~, no ~[~ ~]~, no ~STATE~, no user
+parsing words --- on the grounds that it was orthogonal to the sender bet and
+incompatible with the tree-and-structural-recursion foundation.
+
+That refusal is reversed. The target is a true Forth: the Forth-2012 text
+interpreter, interleaving interpretation and compilation, with immediate words
+executing during compilation. Forth metaprogramming is just programming, and
+the system must exhibit that. The sender/receiver bet is unchanged: CPS is a
+complete intermediate language, equivalent to SSA, and Forth's control words
+(~EXIT~, ~LEAVE~, ~CATCH/THROW~) are the one-shot, upward-only, dynamic-extent
+discipline senders enforce. The pivot makes the bet *more* direct, not less:
+threaded code is CPS with the continuation defunctionalized as the return
+stack, and lowering to senders is refunctionalization.
+
+Part 0's stated objection --- "an outer loop that lays down control structure
+imperatively does not produce a tree, it produces a stream of patches" ---
+identified the real issue and misread it. The patch stream is not a problem to
+be avoided; it is the target representation the project already built. Codegen
+(F-step for Part 8) emits ~branch0~ with a placeholder and back-patches it;
+the ~LEAVE~ implementation (Part 11) emits ~-1~ sentinels and scans them per
+loop. That is exactly what ~IF~/~THEN~/~LEAVE~ do as immediate words in a
+classical Forth. The tree was the artifact in conflict with the outer
+interpreter. The instruction array, the dictionary, and the machine never were.
+
+* Inventory: what carries, what relocates, what is deleted
+
+** Carries essentially unchanged
+
+- The C++26 dual-compiler gate (GCC 16 + Clang 21). Non-negotiable, as before.
+- ~foundation~: ~result<T>~, ~static_vector~, ~arena_box~ handle discipline,
+  the typeclass layer. The parser combinators stay registered against it.
+- The machine substrate (Part 5): ~cell~ = ~int64_t~, Forth true = ~-1~, two
+  bounds-checked ~static_vector~ stacks, the distinct explicit-conversion
+  ~addr~ type, the cell-granular data space with checked
+  ~allot~/~fetch~/~store~, ~forth_state~ with output buffer,
+  ~apply_primitive~.
+- The dictionary's append-only storage with newest-first lookup. This was
+  always the Forth-shaped choice --- it gives redefinition semantics for free
+  --- and the true Forth finally exercises it. (Entry *shape* changes; see
+  R06.)
+- The instruction set and VM (Parts 8, 10, 11): ~instruction~ = opcode +
+  operand, the fetch-execute loop, back-patching, the ~DO~ frame discipline
+  on the return stack, memory primitives, data-space seeding.
+- ~compiled_program~ as a trivially copyable literal, and the property that
+  the same value runs inside the constant evaluator and at ordinary runtime.
+  This is the project's crux and it is preserved and enlarged (R03).
+- ~source_literal~ / ~compiled_forth<Source>~ as the one-shot API, including
+  malformed-program-is-a-hard-compile-error via ~result::value()~ in a
+  constant expression.
+- Fuel. Every evaluation has a step budget; non-termination is a diagnosed
+  value.
+- The lexical layer's hard-won edges: ~-1~ is a number, ~1-~ is a word,
+  case-folding at read time, the number recognizer's tests.
+
+** Relocates
+
+- *Emission and back-patching* move from ~codegen.hpp~'s tree walk into the
+  compiling words. ~emit~, the sentinel/patch pair, and the per-construct
+  patch bookkeeping become the toolkit behind ~,~ (comma), ~COMPILE,~, and
+  the immediate control-flow words. Mechanism kept; caller changed.
+- *Parser combinators* move from "front end" to "sub-word services of the
+  machine": word scanning, number conversion (per ~BASE~), comment and
+  string scanning, all driven through an input source (~SOURCE~, ~>IN~) that
+  lives in ~forth_state~, because parsing words consume it. Part 4's wall
+  --- recursive productions cannot be a finite ~parser<F>~ --- dissolves:
+  a true Forth has no recursive grammar productions. The layer where
+  combinators held in Part 4 is exactly the layer that remains.
+- *Stack-effect checking* moves from a tree pass to a per-definition
+  abstract interpretation over the just-emitted instruction range, run at
+  ~;~ time (R08). The basic-block structure it recovers is shared with the
+  sender lowering (R12). Declared-effect comments (captured since Part 3)
+  keep their role.
+- *The two-backend agreement claim* re-homes. There is no tree-walking
+  oracle in a true Forth --- interpreting a defined word executes its
+  compiled code; one semantics. The oracle role is taken by (a) the same
+  artifact agreeing with itself at compile time and at runtime, and (b)
+  differential testing against gforth plus the Forth-2012 / Hayes test
+  suite (R11).
+
+** Deleted
+
+- The syntax tree: ~syn_node~ variant, ~tree_arena~-backed program trees,
+  and every ~syn_*~ node kind.
+- The grammar functions: ~parse_body_until~, ~parse_if~, ~parse_begin~,
+  ~parse_do~, the ~MaxDepth~ threading. (The *token* scanners underneath
+  them survive per above.)
+- The elaborator as tree rewriter, and the elaborated core as an
+  intermediate form.
+- ~eval_direct~, the tree-walking oracle, and its ~eval_signal~ machinery.
+  (~exited~/~left~ as one-shot upward signals reappear in their native
+  form: VM control transfers now, sender completions later.)
+
+Nothing in the deleted set is load-bearing for the bet. All of it is the
+Scheme inheritance, and it is severable.
+
+* Design decisions
+
+** R01 --- The text interpreter is the architecture
+The Forth-2012 outer interpreter (section 3.4) is the top of the system:
+parse a word; find it in the dictionary; if found, execute it when
+interpreting or when it is immediate, otherwise compile it; if not found,
+try it as a number, pushing or compiling a literal per ~STATE~; otherwise a
+diagnosed error with position. ~STATE~, ~SOURCE~, ~>IN~, and ~BASE~ are
+machine state in ~forth_state~. There is no separate reader, no tree, no
+elaboration phase. Resolution happens at the moment the interpreter meets
+the word, against the dictionary as it exists at that moment --- which is
+the program-order discipline the elaborator already enforced, now made
+structural instead of simulated.
+
+** R02 --- One semantics; external oracles
+A defined word has exactly one meaning: its compiled code, executed by the
+VM. Interpreting ~FOO~ executes the same code that a call to ~FOO~ from
+another definition executes. There is no second evaluator to disagree with.
+Correctness is checked against (a) the compile-time/runtime agreement of
+the same ~compiled_program~ value, (b) gforth as differential oracle, and
+(c) the Forth-2012 core word set tests (Hayes tester) run under constant
+evaluation as ~static_assert~ gates.
+
+** R03 --- The artifact is a session image
+~compiled_forth<Source>~ runs the *whole session* --- the text interpreter
+over the source, including all compilation performed by immediate words ---
+inside one constant-expression evaluation. Its result is a session image:
+code space, final dictionary, data-space seed (the Part 10 high-water
+discipline generalized), and captured output, as a trivially copyable
+literal. Forth compilation and Forth metaprogramming happen at C++ compile
+time because the interpreter that performs them runs there; the residue is
+a value that executes at either time. This is Part 8's "one value, both
+times," widened from a compiled tree to a compiled *system*. A session
+cannot span constant-expression evaluations; persistent state across
+~compiled_forth~ instantiations is out of scope by construction.
+
+** R04 --- Instruction set and VM carry; reserved opcodes get real
+The opcode enum and VM loop are retained. ~execute~ gains semantics with
+~'~/~EXECUTE~ (G4); ~catch_mark~/~throw_op~ with ~CATCH~/~THROW~ (G6). The
+~DO~ family opcodes and frame discipline from Part 11 are kept as-is. The
+tree-driven ~codegen.hpp~ entry points are deleted; the emission utilities
+underneath them are kept as the compiling words' toolkit.
+
+** R05 --- Control flow words are immediate words on the standard discipline
+~IF~/~ELSE~/~THEN~, ~BEGIN~/~UNTIL~/~WHILE~/~REPEAT~, ~DO~/~LOOP~/~+LOOP~/
+~LEAVE~ are immediate words using the Forth-2012 control-flow stack
+discipline (orig/dest; the data stack serves as the control-flow stack, as
+the standard permits). ~IF~ emits ~branch0~ with a sentinel and pushes the
+orig; ~THEN~ pops and patches. ~LEAVE~ keeps the Part 11 sentinel-scan
+mechanism, driven by ~DO~'s dest marker instead of the tree walker's range.
+The +LOOP crossing-based termination rule and the LOOP equality rule from
+Part 11 carry verbatim. Compile-only words diagnose use while interpreting,
+per standard.
+
+** R06 --- Every word has an execution token
+The dictionary entry converges toward the classical header: name, flags
+(~IMMEDIATE~; compile-only), an XT into code space, and a does-field.
+Primitives get code-field stubs (a one-instruction ~prim~ + ~ret~ body, or
+an XT encoding that names the primitive directly --- worker's choice,
+decided once) so that ~'~, ~EXECUTE~, and ~DEFER~ are uniform over every
+binding kind. The Part 5 variant-of-binding-kinds dissolves into this. The
+~variable_word~ address field keeps its ~addr~ type (Part 6's paid debt is
+not un-paid).
+
+** R07 --- Combinators below the word, streams in the machine
+~parser<F>~ combinators own scanning and classification: maximal
+non-whitespace, number per current ~BASE~, comment forms, string payloads
+for ~S"~/~."~/~ABORT"~. They operate over the machine's input source and
+report consumption that the interpreter commits to ~>IN~. User-defined
+parsing words become possible because the input source is ordinary machine
+state (~PARSE~, ~WORD~, ~CHAR~, ~[CHAR]~ in G5). No combinator ever needs
+to be recursive in itself; Part 4's obstruction has no analogue here.
+
+** R08 --- Effect checking is a lint over emitted code
+At ~;~, an abstract interpreter walks the definition's instruction range,
+recovering basic blocks and computing net effect, minimum entry depth, and
+peak depth per path where feasible. Diagnoses: declared-effect mismatch
+(the Part 3 comments keep their purpose), branch-arm net disagreement,
+loop-body net violations including ~DO~'s two-cell entry cost and ~+LOOP~'s
+net-one body (both Part 11 corrections carried), ~>R~/~R>~ imbalance, and
+bare ~EXIT~ inside ~DO~ without ~UNLOOP~. ~EXECUTE~, ~DEFER~'d words, and
+parsing-word shenanigans make the general problem undecidable; the checker
+is honest lattice-style (~known~/~unknown~) and *advisory by default*,
+promoted to a gate per-definition when a declared effect is present. The
+peak-depth analysis, where it succeeds, finally fills Part 8's ~-1~
+capacity fields. The CFG recovered here is the same partition the sender
+lowering consumes --- one analysis, two clients.
+
+** R09 --- Cell-granular address units, made conforming
+1 address unit = 1 cell, declared as the system characteristic. This is a
+legal Forth-2012 system shape, so ~CELLS~ (~( n -- n )~, identity), ~CELL+~
+(~1+~), ~CHARS~ (identity), ~CHAR+~ (~1+~) are added as honest words rather
+than apologies, closing Part 10's noted gap without inventing byte
+granularity the data space does not have. Character and string words store
+one char per cell; ~C@~/~C!~ alias ~@~/~!~. Documented as a DIV against
+byte-addressed gforth behavior where observable.
+
+** R10 --- Budgets are architecture
+The whole session runs in one constant-expression evaluation, so fuel and
+compiler op-limits are first-class constraints. Fuel covers the interpreter
+loop, not just the VM. The conformance suite is sharded across translation
+units to bound per-TU evaluation cost, and CI records step counts so
+regressions in constant-evaluation cost are visible, not just failures.
+
+** R11 --- gforth is the differential oracle; core is the scope
+Scope order follows ccforth's claim path: gforth compatibility as the
+practical target, which subsumes ANS/Forth-2012 core. The core word set
+first, core-ext opportunistically. A runtime harness feeds identical
+programs to ~smd::forth~ (runtime side of the session image) and to gforth
+and diffs stacks and output; divergences are filed as DIV docs with a
+standard citation or an R09-style system-characteristic justification.
+The Hayes ~ttester~ and core suite run under constant evaluation as
+merge-gating ~static_assert~ batteries.
+
+** R12 --- The sender lowering is refunctionalization
+The bet, unchanged, now stated against the real representation: threaded
+code is CPS with the continuation defunctionalized as the return stack.
+Lowering a word to senders partitions its instruction range into the basic
+blocks R08 already recovers, emits one sender per block, wires block
+completions as continuations (~then~/~let_value~; loops as
+repeat-until-style composition), routes ~THROW~ onto the error channel so
+~CATCH~ has exactly a receiver's dynamic extent, and maps ~EXIT~/~LEAVE~ to
+one-shot upward completions. Structured control flow lowers cleanly;
+unstructured return-stack manipulation (~>R~ address games) does not
+refunctionalize and falls back to running the VM inside a single sender ---
+a boundary the writeup states as a finding, not a failure: the CPS/SSA
+equivalence tells you exactly where it sits. Blocking/async words (~KEY~
+and friends, timers) become sender-backed operations, giving the
+compile-the-program / run-it-async demonstration.
+
+* Step sequence
+
+Each step lands with merge criteria, a rewritten step-brief, and DIV docs
+per the existing repo process. Blog entries continue one per step under the
+existing AGENTS.md contract.
+
+- *G0 --- The cut.* Quarantine the tree pipeline: move reader-tree, grammar
+  functions, elaborator, and ~eval_direct~ out of the build (delete or park
+  under ~attic/~ --- decide once, in the step). Keep token scanners,
+  machine, VM, emission utilities, dictionary storage, API scaffolding.
+  Gate: both compilers green with the tree pipeline gone; existing machine
+  and VM unit tests still pass.
+- *G1 --- Interpret.* ~SOURCE~/~>IN~/~BASE~/~STATE~ into ~forth_state~; the
+  outer interpreter loop, interpret state only: primitives execute, numbers
+  push, unknown words diagnose with position. Gate: ~1 2 + .~ runs as a
+  constexpr session; output ~"3 "~.
+- *G2 --- Compile.* ~:~ ~;~ ~EXIT~ ~RECURSE~; code space; calls and ~ret~;
+  interpreting a defined word runs its code. ~compiled_forth~ retargeted to
+  the session image (R03). Gate: the ~SQUARED~ test passes through the
+  one-shot API; the image runs at runtime; a malformed program is still a
+  hard compile error.
+- *G3 --- Immediacy.* ~IMMEDIATE~ flag; ~[~ ~]~ ~LITERAL~ ~POSTPONE~;
+  control-flow words as immediate words per R05. Gate: the Part 11 program
+  battery (COUNTDOWN, FIND5, TENS, SUMEVEN, FIRST, the memory-word
+  programs) passes unmodified through the new path; a user-defined
+  immediate word built with ~POSTPONE~ works.
+- *G4 --- Tokens and indirection.* ~'~ ~[']~ ~EXECUTE~ (the ~execute~
+  opcode goes live), ~CREATE~ ~DOES>~ ~VARIABLE~ ~CONSTANT~ ~VALUE~ ~TO~
+  ~DEFER~ ~IS~, R06 header unification. Gate: a ~DOES>~-defined defining
+  word works; ~' FOO EXECUTE~ ≡ ~FOO~ in both worlds.
+- *G5 --- Parsing words.* ~PARSE~ ~WORD~ ~CHAR~ ~[CHAR]~ ~S"~ ~."~
+  ~ABORT"~; comments become ordinary immediate/parsing words; a
+  user-defined parsing word demonstrated. Gate: a word that reads its own
+  argument from the input stream, defined in Forth, works at constexpr.
+- *G6 --- CATCH/THROW.* Exception frames in ~forth_state~;
+  ~catch_mark~/~throw_op~ live; standard THROW codes for the machine's own
+  faults (underflow, bounds, budget) where sensible. Gate: nested
+  CATCH, THROW across colon calls, frame discipline vs. ~DO~ frames and
+  ~>R~ correct; the Part 11 unchecked-teardown gap gets its stress test
+  here (mixed ~>R~ / ~LEAVE~ / ~I~ inside one loop).
+- *G7 --- Conformance.* Hayes tester + Forth-2012 core battery under
+  consteval, sharded (R10); gforth differential harness in CI (R11); R09
+  address-unit words; DIV docs for every deliberate divergence. Gate: core
+  suite green minus a written, justified exclusion list.
+- *G8 --- The bet.* Sender lowering per R12 over beman::execution ---
+  vendored since Part 1, consumer at last. Gate: one program, three ways
+  --- VM at compile time, VM at runtime, sender graph at runtime --- same
+  stacks and output; ~CATCH~/~THROW~ demonstrably riding the error channel;
+  the structured/unstructured boundary documented with a program on each
+  side.
+- *G9 --- Bootstrap (stretch).* A Forth prelude, compiled by the session
+  itself, defining derived words in Forth --- and, as far as ~POSTPONE~
+  reaches, control-flow words too --- shrinking the C++-implemented
+  immediate set. This is "metaprogramming is just programming" as a
+  demonstration rather than a slogan.
+
+Ordering constraints: G1→G2→G3 strictly serial; G4 and G5 independent after
+G3; G6 after G4; G7 rolls in continuously but gates after G6; G8 after G6
+(needs CATCH/THROW) and consumes R08's CFG; G9 after G5.
+
+* Risk register
+
+- *Constant-evaluation cost.* The session-in-one-evaluation model
+  concentrates work the old pipeline spread out. Mitigation: R10 budgets,
+  sharded suites, step-count tracking in CI, and keeping the interpreter
+  loop allocation-free. If a wall is hit, the fallback is splitting prelude
+  compilation into its own ~constexpr~ value consumed by later sessions ---
+  a design change to schedule deliberately, not an emergency patch.
+- *Diagnostics quality.* The elaborator gave positioned errors from a tree;
+  the interpreter must thread source positions through ~>IN~ mapping so an
+  unknown word or a control-flow imbalance still points at a line. Merge
+  criteria in G1--G3 must include diagnostic-shape tests, not just success
+  paths.
+- *Return-stack teardown verification.* Part 11 recorded that frame
+  teardown assumes, without checking, that the top of the return stack is
+  the loop's own frame. G6 inherits this gap explicitly and pays it with a
+  tagged-frame debug mode or a stress battery --- decided in-step, but the
+  gap does not survive G6 unexamined.
+- *Compat surface creep.* gforth compatibility is a direction, not a
+  finish line. The DIV mechanism plus R09-style system-characteristic
+  declarations are the pressure valve; anything not in core needs a
+  criterion that demands it (the ~1+~ rule from Part 7/11, kept as policy).
+- *Sender lowering scope.* R12's structured/unstructured boundary is a
+  finding to publish, but it must not silently shrink to "everything falls
+  back to VM-in-a-sender." G8's gate names specific constructs that must
+  lower natively: ~IF~, both ~BEGIN~ forms, ~DO~ with ~LEAVE~, ~EXIT~,
+  ~CATCH/THROW~.
+
+* Notes for the orchestration manager
+
+- This document supersedes ~docs/forth-plan.md~'s architecture and step
+  sequence. The process machinery --- step briefs, DIV docs, worker/blog
+  agent split, the blog AGENTS.md contract --- carries unchanged.
+- Step numbering continues the F-sequence (G0 = next F number) so the blog
+  contract's Part-N mapping stays monotone.
+- The pivot itself is a blog entry (the step-brief for G0 should hand the
+  blog agent the "what this step discovered" material: the Part 0 refusal,
+  what the patch-stream objection got right and wrong, and the inventory
+  above). The series' editorial contract --- real-time, non-omniscient,
+  losses left in --- is built for exactly this entry.
+- Existing tests are an asset inventory, not a constraint: machine/VM tests
+  carry; tree-pipeline tests are deleted with their subject; the Part 11
+  program battery becomes G3's acceptance suite verbatim.

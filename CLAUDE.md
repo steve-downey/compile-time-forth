@@ -6,11 +6,15 @@ The governing rules for this repository live in `AGENTS.md`. Read `AGENTS.md`
 first; it defines a bounded **three-tier reading contract** — Tier 1 rules pack
 (`docs/codestyle.org` authoritative style, `docs/CODING_RULES.md`, this file), Tier 2
 this step (`step-brief.md`, `checklist.md`), Tier 3 on demand only
-(`docs/compiler_architecture.org` by anchor, `docs/forth-plan.md` as the
+(`docs/compiler_architecture.org` by anchor, `docs/forth-plan-2.md` as the
 orchestrator's DAG, `git log`). Nothing on the read path grows per step;
-`docs/forth-plan.md` is an orchestrator/design document that workers do not read
+`docs/forth-plan-2.md` is an orchestrator/design document that workers do not read
 whole, and the retired cumulative log lives at `docs/history/handoff-archive.md`
 (archival, not read).
+
+`docs/forth-plan-2.md` is the governing plan. `docs/forth-plan.md` is the
+superseded R1 plan and `docs/history/forth-replan.org` the design deliberation
+behind the revision; both are history, neither is on a read path.
 
 Rule precedence:
 

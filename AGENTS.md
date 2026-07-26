@@ -13,13 +13,45 @@ full plan re-read on every turn.
 2. **Tier 2 — this step only:** `step-brief.md`, `checklist.md`.
 3. **Tier 3 — on demand, by anchor/named section only, never wholesale:**
    `docs/compiler_architecture.org` (durable cross-step facts, by UUID anchor);
-   `docs/forth-plan.md` (orchestrator dependency DAG — the orchestrator pastes the
-   one step section a worker needs; workers do not open the full plan);
+   `docs/forth-plan-2.md` (orchestrator dependency DAG — the orchestrator pastes the
+   one step section a worker needs, plus the decision records that section cites;
+   workers do not open the full plan);
    `git log` / `docs/history/handoff-archive.md` (retired cumulative log — archival,
    not a read path).
 
+`docs/forth-plan.md` is the **superseded R1 plan**, kept as history alongside
+`docs/history/forth-replan.org`. Neither is on any read path. The governing plan
+is `docs/forth-plan-2.md`; the pivot between them is
+`docs/divergences/DIV-0011-true-forth-pivot.md`.
+
 `docs/codestyle.org` is authoritative.
 If any rule conflicts with `docs/codestyle.org`, follow `docs/codestyle.org`.
+
+## Durable invariants (stable tier — never a growing log)
+
+These are project invariants, not step history. Reference them; do not re-narrate
+them per step and never append to them from a step. Installed at F23 from
+`docs/forth-plan-2.md` §8, replacing the R1 §11 block wholesale.
+
+```txt
+This is smd/forth, a compile-time and runtime true-Forth system in C++26; plan in docs/forth-plan-2.md (docs/forth-plan.md is the superseded R1 plan, kept as history).
+The Makefile is the single build interface, parameterized by TOOLCHAIN and CONFIG; new flag-sets are new CONFIGs; all compiled files are always compiled.
+The smoke driver is .claude/skills/run-compile-time-forth/smoke.sh [TOOLCHAIN] [CONFIG].
+foundation/ and parser/ are adapted by copy from compile-time-scheme; provenance lines in file prologs; no build coupling to that repo.
+The architecture is the Forth-2012 text interpreter (D13): STATE/SOURCE/>IN/BASE live in forth_state; words resolve when the interpreter meets them; immediate words execute during compilation; there is no syntax tree and no elaboration phase.
+The artifact is a session image (D15): code space + dictionary + data-space seed + output as a trivially copyable literal built in one constant-expression evaluation and runnable again at runtime; compiled_forth<Source> is the one-shot API and a malformed program is a hard compile error.
+A defined word has one semantics: its compiled code on the VM (D14); oracles are compile-time/runtime agreement of the same value, gforth differential testing, and the Forth-2012 core suite under consteval.
+Every compiled structure is flat, trivially destructible, capacity-parameterized; heap-backed fix/Box types are barred (D3 as narrowed).
+Words fold to uppercase at scan time; one address unit is one cell, declared as a system characteristic (D21).
+The machine is two fixed-capacity stacks plus an arena data space and an output buffer; all misuse is a diagnosed error via foundation::result, never UB; every evaluation carries fuel (D22).
+All nonlocal control (EXIT, LEAVE, CATCH/THROW) is one-shot and dynamic-extent; threaded code is defunctionalized CPS with the return stack as the continuation; the sender backend refunctionalizes it, mapping THROW to the error channel (D24).
+Effect checking is an advisory lint over emitted code at ';', gating only on declared effects (D20).
+Beman Execution is vendored at vendor/execution; Beman Task at vendor/task only if F33 needed it.
+```
+
+Compile-time tests use the immediately-invoked-lambda `static_assert` pattern;
+every public constexpr API has one. All capacities are template parameters with
+defaults; no hardcoded capacity constants.
 
 ## The step-brief contract
 
@@ -46,7 +78,7 @@ gotcha). It is **not** a summary of work done (that's the commit message + check
   UUID anchor), keeping its transcluded code annotations current — not in any growing
   handoff or log.
 - Rewrite `step-brief.md` for the next clean agent, per the step-brief contract above.
-- File a divergence doc (`docs/divergences/DIV-NNNN-*.md`) for anything done differently than `docs/forth-plan.md` specifies, or for any knowing deviation from Forth-2012 semantics beyond the scope cuts already recorded.
+- File a divergence doc (`docs/divergences/DIV-NNNN-*.md`) for anything done differently than `docs/forth-plan-2.md` specifies, or for any knowing deviation from Forth-2012 semantics beyond the scope cuts already recorded. The orchestrator allocates the DIV number at dispatch; do not pick one yourself.
 
 ## Required commands
 
@@ -164,7 +196,7 @@ CMake example:
 # SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 ```
 
-Files adapted by copy from `~/src/compile-time-scheme/main` (per `docs/forth-plan.md` D2) carry an additional provenance line after SPDX, naming the source file and repository.
+Files adapted by copy from `~/src/compile-time-scheme/main` (per D2, `docs/forth-plan.md`, carried unchanged by `docs/forth-plan-2.md`) carry an additional provenance line after SPDX, naming the source file and repository.
 
 ## Include rules
 
@@ -237,7 +269,7 @@ If the local subtree already uses an `INCLUDED_...` guard convention, follow the
 - Prefer `constexpr` for APIs that can be meaningfully constant-evaluated.
 - Add compile-time tests for constexpr contracts, using the immediately-invoked-lambda `static_assert` pattern.
 - Use C++26 directly.
-- Every tree (syntax tree, elaborated core, instruction program) is a flat `tree_arena` of trivially destructible nodes referenced by integer `arena_box` handles; heap-backed `fix`/`Box` types are barred from the compiled pipeline (`docs/forth-plan.md` D3).
+- Every compiled structure — code space, the dictionary, data space, and any arena that survives from them — is flat, trivially destructible, and referenced by integer handles (`arena_box` where an arena is still in play); heap-backed `fix`/`Box` types are barred from the compiled pipeline (D3 as narrowed by `docs/forth-plan-2.md` §2). Structural recursion over arena trees is not the compute model; the text interpreter loop and the VM are.
 - All capacities are template parameters with defaults; do not hardcode capacity constants.
 
 ## Formatting and linting
