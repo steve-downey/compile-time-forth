@@ -20,7 +20,7 @@ using smd::forth::machine::default_dictionary;
 namespace {
 
 /// Views a state's accumulated output as a @c std::string_view, the same
-/// convenience @ref smd::forth::reader::forth_chars.test.cpp's own
+/// convenience @ref smd::forth::parser::forth_chars.test.cpp's own
 /// @c view_of provides for scanned tokens.
 template <int MaxDepth, int MaxRDepth, int MaxData, int MaxOut, int MaxName>
 constexpr auto
@@ -171,6 +171,77 @@ static_assert([] {
     auto r = interpret(st, dict, buf);
     return r.has_value() && st.machine().data().depth() == 1 &&
            st.machine().data().peek().value() == 81;
+}());
+
+// -- Step F26 merge criteria: VARIABLE/CONSTANT/CREATE ----------------------
+//
+// F16's own combined merge criterion (docs/compiler_architecture.org's
+// Phase 4 section, now history), run through the interpreter instead of the
+// R1 pipeline: `VARIABLE X  5 X !  X @ 3 + X !  X @` leaves `[8]`,
+// `7 CONSTANT LUCKY  LUCKY LUCKY +` leaves `[14]`, both continuing on the
+// same data stack (matching forth.test.cpp's own ForthTest -
+// MemoryWordsMergeCriterion, through the public API).
+
+static_assert([] {
+    forth_state<64, 64, 1024, 256> st{"VARIABLE X  5 X !  X @ 3 + X !  X @ "
+                                      "7 CONSTANT LUCKY  LUCKY LUCKY +"};
+    auto dict = default_dictionary<>();
+    compile_buffer<> buf;
+    auto r = interpret(st, dict, buf);
+    return r.has_value() && st.machine().data().depth() == 2 &&
+           st.machine().data().peek(1).value() == 8 &&
+           st.machine().data().peek(0).value() == 14;
+}());
+
+TEST_CASE("InterpTest - MemoryWordsMergeCriterion") {
+    forth_state<64, 64, 1024, 256> st{"VARIABLE X  5 X !  X @ 3 + X !  X @ "
+                                      "7 CONSTANT LUCKY  LUCKY LUCKY +"};
+    auto dict = default_dictionary<>();
+    compile_buffer<> buf;
+    auto r = interpret(st, dict, buf);
+    REQUIRE(r.has_value());
+    REQUIRE(st.machine().data().depth() == 2);
+    CHECK(st.machine().data().peek(1).value() == 8);
+    CHECK(st.machine().data().peek(0).value() == 14);
+}
+
+// `CREATE BUF 4 ALLOT` -- BUF is usable as a base address across all four
+// cells ALLOT reserves past it, matching the R1 pipeline's own
+// CreateAllotMergeCriterion.
+static_assert([] {
+    forth_state<64, 64, 1024, 256> st{"CREATE BUF 4 ALLOT "
+                                      "10 BUF ! 20 BUF 3 + ! "
+                                      "BUF @ BUF 3 + @ +"};
+    auto dict = default_dictionary<>();
+    compile_buffer<> buf;
+    auto r = interpret(st, dict, buf);
+    return r.has_value() && st.machine().data().depth() == 1 &&
+           st.machine().data().peek().value() == 30;
+}());
+
+TEST_CASE("InterpTest - CreateAllotMergeCriterion") {
+    forth_state<64, 64, 1024, 256> st{"CREATE BUF 4 ALLOT "
+                                      "10 BUF ! 20 BUF 3 + ! "
+                                      "BUF @ BUF 3 + @ +"};
+    auto dict = default_dictionary<>();
+    compile_buffer<> buf;
+    auto r = interpret(st, dict, buf);
+    REQUIRE(r.has_value());
+    REQUIRE(st.machine().data().depth() == 1);
+    CHECK(st.machine().data().peek().value() == 30);
+}
+
+// A variable's address is also usable from inside a colon definition,
+// baked in as a literal at compile time (the same op::push a number
+// literal gets).
+static_assert([] {
+    forth_state<64, 64, 1024, 256> st{
+        "VARIABLE X  3 X !  : BUMP X @ 1+ X ! ;  BUMP BUMP X @"};
+    auto dict = default_dictionary<>();
+    compile_buffer<> buf;
+    auto r = interpret(st, dict, buf);
+    return r.has_value() && st.machine().data().depth() == 1 &&
+           st.machine().data().peek().value() == 5;
 }());
 
 // `;` while interpreting is compile-only misuse: diagnosed, not silently

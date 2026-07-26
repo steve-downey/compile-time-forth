@@ -14,7 +14,7 @@
 #include <smd/forth/machine/forth_state.hpp>
 #include <smd/forth/machine/instruction.hpp>
 #include <smd/forth/parser/cursor.hpp>
-#include <smd/forth/reader/forth_chars.hpp>
+#include <smd/forth/parser/forth_chars.hpp>
 
 #include <string_view>
 #include <type_traits>
@@ -31,24 +31,38 @@ namespace smd::forth::interpreter {
 // D19 places "combinators below the word, owning scanning and
 // classification" under parser<F>; F24's own number-per-BASE classification
 // (is_number_token_in_base/token_to_cell_in_base below) follows that
-// placement, generalizing reader::is_number_token/token_to_cell
-// (forth_chars.hpp, fixed to decimal per D8's original scope) rather than
-// editing them -- see docs/compiler_architecture.org's Phase 1 section for
-// the D19 token-layer location decision that step recorded.
+// placement, generalizing parser::is_number_token/token_to_cell
+// (parser/forth_chars.hpp, fixed to decimal per D8's original scope) rather
+// than editing them. forth_chars.hpp itself relocated here from
+// reader/forth_chars.hpp at step F26 ("the cut"): DIV-0012 deferred that move
+// while reader/ was still alive for the R1 pipeline; F26 deletes reader/
+// wholesale, so the deferral's own reason is gone and the file lands at the
+// parser/ location D19 always recommended.
 //
 // Step F25 is what actually writes STATE: `interpret` below now compiles as
 // well as interprets. `:`, `;`, `EXIT`, and `RECURSE` are recognized by
-// direct name comparison before any dictionary lookup, exactly the way this
-// project's own elaborator already recognizes `I`/`J`/`LEAVE`/`UNLOOP`
-// (elaborate.hpp) -- generalized immediate-word dispatch through the
-// dictionary itself is F27's own job, not this step's. Compiling a colon
-// definition appends directly into a compile_buffer (interpreter/
-// compilebuf.hpp, D16's retained compiled_program as the toolkit's own
-// artifact shape) as each token is met, one instruction at a time; there is
-// no elaborated tree anywhere in this path. Interpreting an
-// already-compiled word (D14) calls into that same code space via
-// compile_buffer::call_word, against the identical live @p st this loop
-// itself is mutating -- one semantics, not a second evaluator.
+// direct name comparison before any dictionary lookup -- the same technique
+// the (now-deleted) R1 elaborator used for `I`/`J`/`LEAVE`/`UNLOOP`; F26 adds
+// `VARIABLE`/`CONSTANT`/`CREATE` to this same direct-name set (see below),
+// since F26's own merge criterion requires the F16 memory-word programs to
+// run through `compiled_forth` again and nothing else yet resolves them.
+// Generalized immediate-word dispatch through the dictionary itself is
+// F27's own job, not this one. Compiling a colon definition appends directly
+// into a compile_buffer (interpreter/compilebuf.hpp, D16's retained
+// compiled_program as the toolkit's own artifact shape) as each token is
+// met, one instruction at a time; there is no elaborated tree anywhere in
+// this path. Interpreting an already-compiled word (D14) calls into that
+// same code space via compile_buffer::call_word, against the identical live
+// @p st this loop itself is mutating -- one semantics, not a second
+// evaluator.
+//
+// DIV-0012 also asked this step to consider folding SOURCE/BASE/STATE
+// directly into machine::forth_state, collapsing this composed wrapper.
+// F26 does not do that fold: see DIV-0012's own "F26 disposition" section
+// for why (this step's own scope -- the cut, the retarget, and the F16
+// memory-word additions below -- is already at the edge of one mergeable
+// step; the fold touches every remaining consumer of machine::forth_state
+// and is deferred, not abandoned).
 
 /// The interpreter's own Forth machine state: @ref machine::forth_state (the
 /// stacks, data space, and output buffer) plus the three fields D13 adds on
@@ -188,7 +202,7 @@ static_assert(std::is_trivially_destructible_v<forth_state<64, 64, 1024, 256>>);
 
 /// Returns the value of digit @p c in @p base, or -1 if @p c is not a valid
 /// digit in that base. Letters above `9` are `A`..`Z` -- already uppercase,
-/// since @ref reader::scan_word folds every token before this ever sees it
+/// since @ref parser::scan_word folds every token before this ever sees it
 /// (D8) -- so base 16's `FF` and base 36's `Z` both work without a separate
 /// lowercase branch.
 [[nodiscard]] constexpr auto digit_value(char c, int base) -> int {
@@ -205,7 +219,7 @@ static_assert(std::is_trivially_destructible_v<forth_state<64, 64, 1024, 256>>);
 }
 
 /// True iff @p text is an optional leading `-` followed by one or more
-/// valid digits in @p base, and nothing else -- @ref reader::is_number_token
+/// valid digits in @p base, and nothing else -- @ref parser::is_number_token
 /// generalized from decimal to `BASE` (D19): at `base == 10` the two agree
 /// on every input (this header's own tests check that directly), since
 /// letters are never valid decimal digits either way.
@@ -240,20 +254,20 @@ static_assert(std::is_trivially_destructible_v<forth_state<64, 64, 1024, 256>>);
 }
 
 // Merge criteria (static_assert, immediately-invoked-lambda pattern):
-// base-10 agreement with reader::is_number_token/token_to_cell, and a
+// base-10 agreement with parser::is_number_token/token_to_cell, and a
 // representative base-16 case.
 
 static_assert(is_number_token_in_base("-1", 10) ==
-              reader::is_number_token("-1"));
+              parser::is_number_token("-1"));
 static_assert(is_number_token_in_base("1-", 10) ==
-              reader::is_number_token("1-"));
-static_assert(is_number_token_in_base("-", 10) == reader::is_number_token("-"));
+              parser::is_number_token("1-"));
+static_assert(is_number_token_in_base("-", 10) == parser::is_number_token("-"));
 static_assert(is_number_token_in_base("42", 10) ==
-              reader::is_number_token("42"));
+              parser::is_number_token("42"));
 static_assert(is_number_token_in_base("DUP", 10) ==
-              reader::is_number_token("DUP"));
-static_assert(token_to_cell_in_base("42", 10) == reader::token_to_cell("42"));
-static_assert(token_to_cell_in_base("-1", 10) == reader::token_to_cell("-1"));
+              parser::is_number_token("DUP"));
+static_assert(token_to_cell_in_base("42", 10) == parser::token_to_cell("42"));
+static_assert(token_to_cell_in_base("-1", 10) == parser::token_to_cell("-1"));
 
 static_assert(is_number_token_in_base("FF", 16));
 static_assert(token_to_cell_in_base("FF", 16) == 255);
@@ -300,18 +314,18 @@ struct colon_header {
 ///
 /// @p name_cur must already be positioned at (or before, across only plain
 /// whitespace/comments) the name itself -- @ref interpret passes its own
-/// post-`:`-token cursor, which @ref reader::scan_word's trailing skip has
+/// post-`:`-token cursor, which @ref parser::scan_word's trailing skip has
 /// already advanced past any intertoken space before the name.
 ///
-/// Unlike an ordinary @ref reader::scan_word call, this does not use @ref
-/// reader::forth_lexeme's trailing skip to find the name's own end: a
+/// Unlike an ordinary @ref parser::scan_word call, this does not use @ref
+/// parser::forth_lexeme's trailing skip to find the name's own end: a
 /// `( ... )` comment immediately after the name must still be visible to
 /// capture here, not already silently consumed as ordinary intertoken space
 /// the way it would be for any other token.
 template <int MaxName>
 [[nodiscard]] constexpr auto scan_colon_header(parser::cursor name_cur)
     -> parser::parse_result<colon_header<MaxName>> {
-    auto name_scanned = reader::scan_word<MaxName>(name_cur);
+    auto name_scanned = parser::scan_word<MaxName>(name_cur);
     if (!name_scanned.has_value()) {
         // Unreachable in practice, mirroring interpret's own identical
         // defensive comment: scan_word's some<> only ever fails on empty
@@ -338,7 +352,7 @@ template <int MaxName>
 
     auto after_ws = parser::skip_intertoken_space(after_name);
     if (!after_ws.empty() && after_ws.peek() == '(') {
-        auto comment = reader::scan_paren_comment(after_ws);
+        auto comment = parser::scan_paren_comment(after_ws);
         if (comment.has_value()) {
             return parser::parse_state<colon_header<MaxName>>{
                 colon_header<MaxName>{.name = folded_name,
@@ -349,7 +363,7 @@ template <int MaxName>
         // An unterminated '(' right after the name: fall through and leave
         // the cursor at the name's own end -- the very next token scan will
         // fail on the dangling '(' in context, exactly like
-        // reader::skip_forth_space's own defensive choice for an
+        // parser::skip_forth_space's own defensive choice for an
         // unterminated comment anywhere else.
     }
     return parser::parse_state<colon_header<MaxName>>{
@@ -364,28 +378,41 @@ template <int MaxName>
 /// comes first.
 ///
 /// **Interpreting** (`STATE == 0`): a dictionary hit runs (a @ref
-/// machine::primitive, via @ref machine::apply_primitive) or calls (a @ref
+/// machine::primitive, via @ref machine::apply_primitive), calls (a @ref
 /// machine::compiled_colon_word, via @ref call_word -- D14's "interpreting a
 /// defined word runs its code on the VM against the live forth_state, one
-/// semantics"); a miss is classified as a number per @p st's own `BASE` and
-/// pushed, or diagnosed as an unknown word. `;`, `EXIT`, and `RECURSE` are
-/// compile-only (D13, Forth-2012): diagnosed here rather than acted on.
+/// semantics"), or pushes (a @ref machine::variable_word's address or a
+/// @ref machine::constant_word's value); a miss is classified as a number
+/// per @p st's own `BASE` and pushed, or diagnosed as an unknown word. `;`,
+/// `EXIT`, and `RECURSE` are compile-only (D13, Forth-2012): diagnosed here
+/// rather than acted on. `VARIABLE`, `CREATE`, and `CONSTANT` (F26) are
+/// ordinary defining words, recognized here by the same direct-name
+/// technique as `:`: they scan a following name and install a
+/// @ref machine::variable_word (allotting one cell for `VARIABLE`, none for
+/// `CREATE`) or a @ref machine::constant_word (popping the value `CONSTANT`
+/// binds) into @p dict.
 ///
 /// **Compiling** (`STATE == 1`, entered by `:`): a dictionary hit emits
 /// (@ref machine::op::prim for a primitive, @ref machine::op::call for a
-/// @ref machine::compiled_colon_word) rather than running; a miss is
-/// classified as a number and emitted as @ref machine::op::push. `;` emits
-/// @ref machine::op::ret, installs the finished @ref
-/// machine::compiled_colon_word into @p dict, and clears `STATE`. `EXIT`
-/// emits @ref machine::op::ret without closing the definition. `RECURSE`
-/// emits a self-@ref machine::op::call to the entry point @ref
-/// scan_colon_header's own caller (`:` itself, below) recorded *before* the
-/// body was compiled -- F14's discipline, carried forward unchanged, is what
-/// makes this resolve without any back-patching.
+/// @ref machine::compiled_colon_word, or @ref machine::op::push for a
+/// variable's address or a constant's value, baked in as a literal exactly
+/// as the R1 elaborator's `core_var`/`core_const` once did) rather than
+/// running; a miss is classified as a number and emitted as
+/// @ref machine::op::push. `;` emits @ref machine::op::ret, installs the
+/// finished @ref machine::compiled_colon_word into @p dict, and clears
+/// `STATE`. `EXIT` emits @ref machine::op::ret without closing the
+/// definition. `RECURSE` emits a self-@ref machine::op::call to the entry
+/// point @ref scan_colon_header's own caller (`:` itself, below) recorded
+/// *before* the body was compiled -- F14's discipline, carried forward
+/// unchanged, is what makes this resolve without any back-patching.
+/// `VARIABLE`/`CREATE`/`CONSTANT` are not recognized while compiling (F26
+/// does not give defining-inside-a-colon-definition its own semantics): a
+/// dictionary miss on one of those names inside `:` ... `;` falls through to
+/// the same "unknown word" diagnosis any other undefined name would get.
 ///
 /// `\` line comments and `( ... )` comments are ordinary intertoken space to
-/// this loop (@ref reader::skip_forth_space, invoked here via @ref
-/// reader::scan_word's own leading skip) in every position except
+/// this loop (@ref parser::skip_forth_space, invoked here via @ref
+/// parser::scan_word's own leading skip) in every position except
 /// immediately after a `:` definition's own name, where @ref
 /// scan_colon_header instead captures a `( ... )` comment as the declared
 /// effect (D20: stored, unverified until F30).
@@ -445,7 +472,7 @@ interpret(forth_state<MaxDepth, MaxRDepth, MaxData, MaxOut, MaxName> &st,
 
     for (;;) {
         auto pre = st.source().cursor_at_in();
-        auto token_start = reader::skip_forth_space(pre);
+        auto token_start = parser::skip_forth_space(pre);
         if (token_start.empty()) {
             if (st.state() != 0) {
                 return foundation::parse_error{token_start.position(),
@@ -461,7 +488,7 @@ interpret(forth_state<MaxDepth, MaxRDepth, MaxData, MaxOut, MaxName> &st,
             return budget;
         }
 
-        auto scanned = reader::scan_word<MaxName>(pre);
+        auto scanned = parser::scan_word<MaxName>(pre);
         if (!scanned.has_value()) {
             // Unreachable in practice: token_start non-empty means at least
             // one is_word_char run exists at that position, so scan_word's
@@ -510,6 +537,81 @@ interpret(forth_state<MaxDepth, MaxRDepth, MaxData, MaxOut, MaxName> &st,
                     token_start.position(),
                     "RECURSE is compile-only, used while interpreting"};
             }
+            if (text == "VARIABLE" || text == "CREATE") {
+                // F26 ("the cut"): VARIABLE/CREATE were R1-elaborator syntax
+                // productions (reader::syn_variable/syn_create); D13 has no
+                // reader phase, so they are ordinary defining words the
+                // interpreter recognizes by direct name comparison, exactly
+                // like `:` above -- generalized immediate-word dispatch
+                // through the dictionary is still F27's own job. VARIABLE
+                // allots one cell; CREATE allots none, matching the R1
+                // elaborator's own documented reading of "CREATE reserves an
+                // address with nothing behind it yet" (machine/dictionary.hpp
+                // variable_word's own doc comment) -- both end up as a name
+                // bound to a data-space address, the same variable_word
+                // binding machine::dictionary already carries.
+                auto name_scanned =
+                    parser::scan_word<MaxName>(st.source().cursor_at_in());
+                if (!name_scanned.has_value()) {
+                    return name_scanned.error();
+                }
+                auto const &folded_name = name_scanned.value().value;
+                if (folded_name.empty()) {
+                    return foundation::parse_error{
+                        token_start.position(),
+                        "expected a name after VARIABLE/CREATE"};
+                }
+                st.source().set_in(name_scanned.value().rest.position().offset);
+                int const cells_to_allot = (text == "VARIABLE") ? 1 : 0;
+                auto a = st.machine().data_space().allot(cells_to_allot);
+                if (!a.has_value()) {
+                    return a.error();
+                }
+                std::string_view name_text{
+                    folded_name.begin(),
+                    static_cast<std::size_t>(folded_name.size())};
+                auto def_r = dict.define_variable(
+                    name_text, machine::variable_word{a.value()});
+                if (!def_r.has_value()) {
+                    return def_r;
+                }
+                continue;
+            }
+            if (text == "CONSTANT") {
+                // Forth-2012 CONSTANT semantics directly, not R1's
+                // elaborate_constant (which required a syntactically
+                // preceding literal token and constant-folded it): pop
+                // whatever the data stack holds at this point, whatever
+                // pushed it there -- `7 CONSTANT LUCKY` and
+                // `3 4 + CONSTANT SEVEN` are equally valid under an
+                // interpreter that has already executed the "7" (or "3 4 +")
+                // before meeting CONSTANT.
+                auto value = st.machine().data().pop();
+                if (!value.has_value()) {
+                    return value.error();
+                }
+                auto name_scanned =
+                    parser::scan_word<MaxName>(st.source().cursor_at_in());
+                if (!name_scanned.has_value()) {
+                    return name_scanned.error();
+                }
+                auto const &folded_name = name_scanned.value().value;
+                if (folded_name.empty()) {
+                    return foundation::parse_error{
+                        token_start.position(),
+                        "expected a name after CONSTANT"};
+                }
+                st.source().set_in(name_scanned.value().rest.position().offset);
+                std::string_view name_text{
+                    folded_name.begin(),
+                    static_cast<std::size_t>(folded_name.size())};
+                auto def_r = dict.define_constant(
+                    name_text, machine::constant_word{value.value()});
+                if (!def_r.has_value()) {
+                    return def_r;
+                }
+                continue;
+            }
 
             auto const *entry = dict.lookup(text);
             if (entry != nullptr) {
@@ -525,6 +627,23 @@ interpret(forth_state<MaxDepth, MaxRDepth, MaxData, MaxOut, MaxName> &st,
                         &entry->binding)) {
                     auto r =
                         call_word(buf, st.machine(), cw->entry_point, vm_fuel);
+                    if (!r.has_value()) {
+                        return r;
+                    }
+                    continue;
+                }
+                if (auto const *vw =
+                        std::get_if<machine::variable_word>(&entry->binding)) {
+                    auto r = st.machine().data().push(
+                        static_cast<machine::cell>(vw->address));
+                    if (!r.has_value()) {
+                        return r;
+                    }
+                    continue;
+                }
+                if (auto const *cnw =
+                        std::get_if<machine::constant_word>(&entry->binding)) {
+                    auto r = st.machine().data().push(cnw->value);
                     if (!r.has_value()) {
                         return r;
                     }
@@ -612,6 +731,28 @@ interpret(forth_state<MaxDepth, MaxRDepth, MaxData, MaxOut, MaxName> &st,
                     &entry->binding)) {
                 auto r = buf.emit(machine::op::call,
                                   static_cast<machine::cell>(cw->entry_point),
+                                  token_start.position());
+                if (!r.has_value()) {
+                    return r.error();
+                }
+                continue;
+            }
+            if (auto const *vw =
+                    std::get_if<machine::variable_word>(&entry->binding)) {
+                // A variable's address is baked in as a literal, exactly the
+                // way the R1 elaborator's core_var did (docs/
+                // compiler_architecture.org's Phase 4 section, now history).
+                auto r = buf.emit(machine::op::push,
+                                  static_cast<machine::cell>(vw->address),
+                                  token_start.position());
+                if (!r.has_value()) {
+                    return r.error();
+                }
+                continue;
+            }
+            if (auto const *cnw =
+                    std::get_if<machine::constant_word>(&entry->binding)) {
+                auto r = buf.emit(machine::op::push, cnw->value,
                                   token_start.position());
                 if (!r.has_value()) {
                     return r.error();

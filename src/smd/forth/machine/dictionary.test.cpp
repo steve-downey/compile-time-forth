@@ -14,14 +14,12 @@
 namespace foundation = smd::forth::foundation;
 
 using smd::forth::machine::addr;
-using smd::forth::machine::colon_word;
 using smd::forth::machine::compiled_colon_word;
 using smd::forth::machine::constant_word;
 using smd::forth::machine::default_dictionary;
 using smd::forth::machine::dictionary;
 using smd::forth::machine::foreign_word;
 using smd::forth::machine::primitive;
-using smd::forth::machine::stack_effect;
 using smd::forth::machine::variable_word;
 
 TEST_CASE("DictionaryTest - HeaderIsIdempotent") { REQUIRE(true); }
@@ -135,18 +133,10 @@ TEST_CASE("DictionaryTest - RedefinitionShadowsButDoesNotErase") {
     CHECK(std::get<constant_word>(entry->binding).value == 2);
 }
 
-TEST_CASE("DictionaryTest - ColonVariableAndForeignBindingsRoundTrip") {
+TEST_CASE("DictionaryTest - VariableAndForeignBindingsRoundTrip") {
     dictionary<4> dict;
-    CHECK(dict.define_colon("SQUARED", colon_word{7, stack_effect{1, 1, true}})
-              .has_value());
     CHECK(dict.define_variable("COUNTER", variable_word{addr{3}}).has_value());
     CHECK(dict.define_foreign("PUTS", foreign_word{2}).has_value());
-
-    auto const *colon_entry = dict.lookup("SQUARED");
-    REQUIRE(colon_entry != nullptr);
-    REQUIRE(std::holds_alternative<colon_word>(colon_entry->binding));
-    CHECK(std::get<colon_word>(colon_entry->binding).core_id == 7);
-    CHECK(std::get<colon_word>(colon_entry->binding).effect.known);
 
     auto const *variable_entry = dict.lookup("COUNTER");
     REQUIRE(variable_entry != nullptr);
@@ -159,9 +149,10 @@ TEST_CASE("DictionaryTest - ColonVariableAndForeignBindingsRoundTrip") {
     CHECK(std::get<foreign_word>(foreign_entry->binding).index == 2);
 }
 
-// Step F25: compiled_colon_word is the colon compiler's own binding kind --
-// an entry point into interpreter::compile_buffer's code space, not an
-// elaborator-arena core_id (contrast colon_word, above).
+// Step F25: compiled_colon_word is the colon compiler's own (and, since
+// step F26 deletes the R1 elaborator's own colon_word alongside it, now the
+// *only*) colon-definition binding kind -- an entry point into
+// interpreter::compile_buffer's code space.
 TEST_CASE("DictionaryTest - CompiledColonWordRoundTrips") {
     dictionary<4> dict;
     foundation::source_span effect{foundation::source_pos{5, 1, 6},

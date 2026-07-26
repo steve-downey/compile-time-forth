@@ -1,6 +1,8 @@
 # DIV-0013: The colon compiler's binding shape and word-invocation mechanism
 
-- **Status:** open — both close at F26/F28 (see Revisit condition)
+- **Status:** half-closed at F26 — binding-shape half closed (see F26
+  addendum below); invocation half remains open, closing at F28 (see
+  Revisit condition)
 - **Date:** 2026-07-25
 - **Step:** F25 (the colon compiler and the session image), docs/forth-plan-2.md
 - **Authority diverged from:** docs/forth-plan-2.md (F25's own step text left both
@@ -134,12 +136,30 @@ own contract.
   compilation, F31's `THROW` unwind) should reach for `run_from`, not
   reinvent a second way to start execution mid-program.
 
+## F26 addendum: the binding-shape half, closed
+
+Step F26 ("the cut") deleted `colon_word`, its `stack_effect` payload type,
+and `dictionary::define_colon` from `machine/dictionary.hpp`, along with
+every one of their R1 consumers (`elaborator/elaborate.hpp`,
+`machine/eval_direct.hpp`, `machine/codegen.hpp`,
+`elaborator/stack_effect.hpp`) — the whole `elaborator/` directory and the
+two named `machine/` files, per `docs/forth-plan-2.md`'s own deletion list.
+`compiled_colon_word` is now the *only* colon-definition binding in
+`dictionary_binding` (five alternatives, not six).
+
+F26 exercised the rename-or-fold discretion this record left open by
+*keeping* the `compiled_` prefix rather than renaming to plain `colon_word`:
+renaming would have touched every current consumer of the name
+(`compilebuf.hpp`, `interp.hpp`, `session.hpp`, `dictionary.hpp` itself, and
+their tests) for a purely cosmetic gain, and F26's own scope (the deletion,
+the `forth.hpp` retarget, and the `VARIABLE`/`CREATE`/`CONSTANT` addition its
+own merge criteria require) was already large enough without adding a
+repository-wide rename to it. See DIV-0014 for F26's own full record.
+
 ## Revisit condition
 
-The binding-shape half closes at F26, when `colon_word` and its own R1
-consumers are deleted and `compiled_colon_word` is the only colon-definition
-binding left standing (or is itself renamed/folded, at F26's own
-discretion).
+The binding-shape half is closed, as of F26 (see addendum above) — nothing
+further to revisit there.
 The invocation half closes at F28 if D18's unified execution-token/header
 work finds a reason `call_word`'s own "push a halt-pad return address, call
 `machine::run_from` at the callee's entry point" mechanism does not

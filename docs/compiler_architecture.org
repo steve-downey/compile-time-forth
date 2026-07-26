@@ -13,253 +13,81 @@ DRAFT — pending author revision.
 This document describes the compiler architecture of =smd::forth=, a compile-time and runtime-capable Forth compiler in C++26.
 Like its sibling document for the Scheme proof of concept (=~/src/compile-time-scheme/main/docs/compiler_architecture.org=), it exists to translate compiler jargon into terms familiar to working C++ developers.
 Every code sample below is transcluded from the real source tree by a UUID anchor, never hand-copied prose that might drift from what actually compiles.
-This document is filled in incrementally, one pipeline phase at a time, as each phase's implementation step lands (=docs/forth-plan.md=).
-As of this revision the lexical layer (step F5), the parser combinators and grammar (steps F4 and F7), the syntax tree (step F6), and the elaborated core and resolution pass (step F11) all exist; later sections describe phases that are planned but not yet implemented, and carry no transclusion until their step lands.
+This document is filled in incrementally, one pipeline phase at a time, as each phase's implementation step lands.
+
+This document went through one architectural pivot.
+Steps F5 through F15 (=docs/forth-plan.md=, the superseded R1 plan) built a classic ahead-of-time pipeline: a structural parse into a syntax tree, a separate elaboration pass that resolved names and checked stack effects, and codegen into a choice of backend.
+DIV-0011 (=docs/divergences/DIV-0011-true-forth-pivot.md=) retired that design in favor of D13: the Forth-2012 section 3.4 text interpreter, with no reader phase and no elaboration phase, is the architecture.
+Steps F24/F25 built the new front end alongside the old one; step F26 ("the cut", =docs/forth-plan-2.md=) deleted the R1 pipeline outright once the new one could stand on its own.
+Phases 2 through 5 below described the deleted pipeline (grammar, syntax tree, elaboration, and two of its three codegen backends) and have moved to =docs/history/architecture-grammar-era.org=, a frozen one-time snapshot — they are no longer part of this living document's own read path.
+As of this revision the lexical layer (Phase 1), the public one-shot API (Phase 6), the text interpreter (Phase 7), the colon compiler and session image (Phase 8), and the cut itself (Phase 9) are current.
 
 * Pipeline overview
 
-The compiler is a single staged pipeline, run entirely in =constexpr= evaluation, that can then be re-run at ordinary runtime against fresh input.
-Each stage consumes the previous stage's output and produces a new, more refined representation; no stage mutates another stage's data in place.
+The compiler is a single staged pipeline, run entirely in =constexpr= evaluation, that can then be re-run at ordinary runtime against fresh input — but as of D13 (step F24 onward) it is not a classic ahead-of-time pipeline with distinct parse/elaborate/codegen stages.
+Source text is scanned and consumed by one loop, the Forth-2012 outer text interpreter, which resolves each word against the dictionary the moment it meets it and either runs it (interpreting) or emits code for it (compiling, inside a =:= ... =;= definition) in the same pass.
+There is no syntax tree and no separate elaboration phase; "compiling" a program and "running its top level" are the same act.
 
 #+begin_src mermaid
 flowchart LR
-    A[Source text] --> B[Constexpr applicative parser combinators]
-    B --> C[Syntax tree]
-    C --> D["Elaboration (resolution + stack-effect checking)"]
-    D --> E[Codegen]
-    E --> F[Direct evaluator]
-    E --> G[Stack-machine VM]
-    E --> H["Sender/receiver CPS backend"]
+    A[Source text] --> B["Text interpreter (parse a word, find it, act on it)"]
+    B --> C[Code space]
+    B --> D[Dictionary]
+    B --> E[Data space]
+    C --> F["Stack-machine VM (re-run, e.g. from a session image)"]
+    C --> G["Sender/receiver CPS backend (planned, step F33)"]
 #+end_src
 
-The three codegen targets on the right are three different ways of running the same elaborated core: an immediate tree-walking evaluator, a compiled instruction array executed by a small stack machine, and a Beman Execution sender graph for structured-concurrency integration.
-All three read the same elaborated core; none of them re-parses source text or re-derives stack effects.
+Code space, dictionary, and data space together are D15's "session image" (=interpreter::session=, Phase 8): a trivially copyable literal that survives from the one =constexpr= evaluation that built it into ordinary runtime code, where the VM can run one of its own defined words again.
+The stack-machine VM and its instruction set (Phase 9) are retained unchanged from the R1 pipeline (D16); only what feeds them changed.
+The sender/receiver backend is still planned, not yet built (step F33).
 
 * Phase 1: Source Text and the Lexical Layer
 
-DRAFT — pending author revision.
-
 Forth source is plain text: whitespace-delimited words, numeric literals, and =( ... )= stack-effect comments.
-Unlike the Scheme front end, there is no reader/eval loop and no =IMMEDIATE=; the entire program is parsed structurally, once, before anything executes (=docs/forth-plan.md= D5).
 The lexical layer (step F5) folds every word to uppercase at scan time, so nothing downstream of it ever needs to re-fold case.
 A word, in this project's sense, is any run of characters that is not ASCII whitespace; numbers are recognized textually, not by any special punctuation, so =-1= is a number but =1-= and a bare =-= are words.
+Unlike the R1 pipeline this lexical layer originally fed (=docs/history/architecture-grammar-era.org=), there is no structural parse of the *whole* program before anything executes: D13 (step F24 onward) makes this scanner the token layer underneath the Forth-2012 outer text interpreter (Phase 7), which scans, resolves, and acts on one word at a time as it goes.
 
-#+transclude: [[file:../src/smd/forth/reader/forth_chars.hpp::e9a1c6a1-9d3d-4a6a-9f2e-7d3f2b3c8a1c]] :lines 2- :src cpp :end "e9a1c6a1-9d3d-4a6a-9f2e-7d3f2b3c8a1c end"
+#+transclude: [[file:../src/smd/forth/parser/forth_chars.hpp::e9a1c6a1-9d3d-4a6a-9f2e-7d3f2b3c8a1c]] :lines 2- :src cpp :end "e9a1c6a1-9d3d-4a6a-9f2e-7d3f2b3c8a1c end"
 
 Forth's own notion of intertoken space is wider than plain whitespace: it also swallows =\ ...= line comments and =( ... )= parenthesized comments, repeating until none of the three remain.
-A colon definition's declared stack-effect comment is the one =( ... )= exception to "comments are just whitespace": step F7's grammar captures its span (rather than discarding it, the way ordinary comment-skipping does) whenever that comment contains =--=, so a later step (F12) can re-slice the original source text through the span without the tree ever duplicating the comment's characters.
+A colon definition's declared stack-effect comment is the one =( ... )= exception to "comments are just whitespace": the interpreter's own =scan_colon_header= (Phase 8) captures its span (rather than discarding it, the way ordinary comment-skipping does) whenever that comment contains =--=, so the declared effect can be re-sliced out of the original source text later without ever duplicating the comment's characters into a tree (D20: captured, not yet verified — that lands at step F30).
 
-#+transclude: [[file:../src/smd/forth/reader/forth_chars.hpp::c3d5e8b2-7f2a-4b9c-8d3e-4f6a8c2b1e9f]] :lines 2- :src cpp :end "c3d5e8b2-7f2a-4b9c-8d3e-4f6a8c2b1e9f end"
+#+transclude: [[file:../src/smd/forth/parser/forth_chars.hpp::c3d5e8b2-7f2a-4b9c-8d3e-4f6a8c2b1e9f]] :lines 2- :src cpp :end "c3d5e8b2-7f2a-4b9c-8d3e-4f6a8c2b1e9f end"
 
-**D19's token-layer location decision (step F24).**
-D19 (=docs/forth-plan-2.md=) puts the combinator library "below the word," owning scanning and classification over the machine's own input source, and gives the step that first needs this layer from outside =reader/= (F24, the text interpreter) the choice of where =forth_chars.hpp= itself should live: under =interpreter/=, or down in =parser/= where the rest of the combinator library already sits.
-F24 makes that choice, but only partially: =forth_chars.hpp= **stays at its current path**, =src/smd/forth/reader/forth_chars.hpp=, for now, consumed by =smd::forth::interpreter= through its existing canonical include (=<smd/forth/reader/forth_chars.hpp>=) rather than moved.
-The reasoning is scope, not disagreement with D19: =reader/= is deleted wholesale at step F26 (the cut), and moving this one header a step early — which would mean renamesting its =smd::forth::reader= namespace to match wherever it lands, and touching every one of its current consumers (=read_program.hpp=, the reader grammar's own tests) — is exactly the kind of reach beyond one step's own boundary =AGENTS.md= asks agents not to make.
-=forth_chars.hpp= has no dependency on anything else in =reader/= (only on =foundation/= and =parser/=), so the move itself is mechanical whenever it happens; F24's own recommendation, non-binding, is that its natural home is =parser/= alongside the rest of the combinator library, not =interpreter/=, since D19 frames it as combinator-library machinery that several consumers (the interpreter now, F29's parsing words later) sit on top of, not as something the interpreter itself owns.
-**Step F26 inherits this move as unfinished business**: relocating =forth_chars.hpp= (and re-pointing its two includers) is part of "the cut," not a separate future step.
+**D19's token-layer location, resolved at step F26.**
+D19 (=docs/forth-plan-2.md=) puts the combinator library "below the word," owning scanning and classification over the machine's own input source, and gave the step that first needed this layer from outside =reader/= (F24, the text interpreter) the choice of where =forth_chars.hpp= itself should live: under =interpreter/=, or down in =parser/= where the rest of the combinator library already sits.
+F24 deferred that choice (DIV-0012): =reader/= was still alive for the R1 pipeline, and moving this one header a step early would have meant touching every one of that pipeline's own consumers for no F24 benefit.
+Step F26 ("the cut") closes it: =reader/= is deleted wholesale, so the deferral's own reason is gone, and this file now lives at =src/smd/forth/parser/forth_chars.hpp=, in namespace =smd::forth::parser= — D19's own original recommendation, not =interpreter/=, since the combinator library is machinery several consumers (the interpreter now, F29's parsing words later) sit on top of, not something the interpreter itself owns. DIV-0012's own record is updated in place with this closure; see it for the fuller history.
 
-* Phase 2: Applicative Parser Combinators and the Forth Grammar
+* Phase 6: The Public One-Shot API (step F15; retargeted at step F26)
 
-DRAFT — pending author revision.
+Step F15 built =compiled_forth<Source>=, a namespace-scope =constexpr= value keyed on the Forth source text itself, over the R1 pipeline: read, elaborate, codegen, each named by hand once, inside the variable template's own initializer.
+Step F26 ("the cut") retargets it onto D15's session image (=interpreter::build_session=, Phase 8) once that pipeline is deleted — see DIV-0014 for the full record of what changed and why; this section describes the retargeted shape.
 
-Recursive descent, hand-rolled as a tree of =if=/=else=/=while=, is error-prone and hard to compose.
-Instead the front end is built from parser combinators: small composable objects that snap together into a grammar the way Lego bricks snap together into a model.
-Because C++26 =constexpr= evaluation cannot easily juggle capturing lambdas converted to function pointers, parsers are represented as ordinary callable objects (functors with =operator()=), registered against the project's =functor=/=applicative=/=alternative= typeclasses (imported in step F3, exercised for real the first time in step F4).
-
-#+transclude: [[file:../src/smd/forth/parser/parser.hpp::5f36b161-a5b2-45a9-82e4-4d4679a8a60e]] :lines 2- :src cpp :end "5f36b161-a5b2-45a9-82e4-4d4679a8a60e end"
-
-Alternatives compose with an ordered-choice operator: try the first parser, and only fall back to the second if the first failed without having consumed any input, so a parser that has committed to a partial match is never silently backtracked out of.
-
-#+transclude: [[file:../src/smd/forth/parser/parser.hpp::2a77ed5e-0863-4a2a-8ea0-1b03b56ffeb4]] :lines 2- :src cpp :end "2a77ed5e-0863-4a2a-8ea0-1b03b56ffeb4 end"
-
-Step F7's grammar (=src/smd/forth/reader/read_program.hpp=) is the production parser built from this combinator library, per the project's decision D6 that the combinator library is the parser, not merely a tool for scanning atoms.
-Every token-level production — names, numbers, keywords, the stack-effect comment capture — is composed directly from the F4/F5 free functions above and from Phase 1's lexical layer.
-The grammar's *nested* productions are the one place this project accepts a documented exception rather than a silent hand-rolled fallback: an =IF= that can itself contain another =IF= has no finite combinator type to compose it from (the combinator's own C++ type would have to mention itself), and building syntax-tree nodes needs a mutable arena threaded alongside the cursor, which the combinator calling convention (=cursor -> parse_result<T>=) has no slot for.
-DIV-0005 records this in full; the entry point below still returns a =foundation::result=, exactly like every combinator above it, and every recursive production is bounded by an explicit =MaxDepth= template parameter rather than being allowed to recurse without limit.
-
-#+transclude: [[file:../src/smd/forth/reader/read_program.hpp::3a09b40c-8b43-476a-b16d-a7b54249ca95]] :lines 2- :src cpp :end "3a09b40c-8b43-476a-b16d-a7b54249ca95 end"
-
-* Phase 3: The Syntax Tree
-
-The syntax tree is the parser's output: a direct, structural record of what the source text says, before anything has been resolved against the dictionary or checked for stack-effect soundness.
-Every tree in this compiler — the syntax tree, the elaborated core, and the compiled instruction program — is a flat arena of trivially destructible nodes addressed by integer =arena_box= handles (=docs/forth-plan.md= D3); there is no heap-backed =fix=/=Box= recursion anywhere in the compiled pipeline.
-The syntax tree's closed node type, =syn_node=, is a =std::variant= over every syntax form Forth needs: literals, bare words, colon definitions, the three control-flow shapes (=IF=, =BEGIN ... UNTIL=, =BEGIN ... WHILE ... REPEAT=, =DO ... LOOP=), and the four declaration forms (=VARIABLE=, =CONSTANT=, =CREATE=, =' NAME= tick).
-=syn_node= is forward-declared before it is defined, which is what lets its own composite alternatives (a colon definition's body, an =IF='s two branches, and so on) hold handles to sibling nodes of the very type being defined — an =arena_box<T, MaxNodes>= handle only ever stores an integer, so it never needs =T= to be complete, and the recursion closes without reaching for =fix= at all.
-
-#+transclude: [[file:../src/smd/forth/reader/syntax_tree.hpp::e74ee0de-460c-41da-aeb4-23235b52df77]] :lines 2- :src cpp :end "e74ee0de-460c-41da-aeb4-23235b52df77 end"
-
-The three control-flow node kinds each carry one or two bodies — sequences of child-node handles — and the colon-definition node additionally carries the raw span of a stack-effect comment for step F12 to re-slice out of the original source text later, rather than duplicating that text into the tree now.
-
-#+transclude: [[file:../src/smd/forth/reader/syntax_tree.hpp::e701a3a8-aeff-4b78-9dd5-df3b16fcb6b8]] :lines 2- :src cpp :end "e701a3a8-aeff-4b78-9dd5-df3b16fcb6b8 end"
-
-The closed node type itself ties every kind above into a single variant that a =foundation::tree_arena= can store flat, with every capacity (arena size, body length, name length) left as a template parameter rather than a hardcoded constant.
-
-#+transclude: [[file:../src/smd/forth/reader/syntax_tree.hpp::0c3a46c6-f7a0-4c65-9798-bf6c73ae5967]] :lines 2- :src cpp :end "0c3a46c6-f7a0-4c65-9798-bf6c73ae5967 end"
-
-* Phase 4: Elaboration (Resolution and Stack-Effect Checking)
-
-DRAFT — pending author revision.
-
-Elaboration is compiler jargon for "figuring out what the code actually means."
-Where the syntax tree only records what the text says structurally, the elaborated core additionally resolves every word reference against the dictionary and checks that every definition's stack effect is sound before anything is allowed to run (step F12).
-Step F11 (this section) owns resolution: it walks the syntax tree in program order, threading a =machine::dictionary= forward exactly as a traditional Forth cross-compiler would, and produces a second flat arena — the elaborated core — in the same trivially destructible, =arena_box=-addressed style as the syntax tree (D3).
-Every syntax-tree word reference (a bare word or a =' NAME= tick) becomes one of a small number of already-resolved node kinds: a direct primitive invocation, a call to another definition by its dictionary index, a variable's address, a constant's value, or an execution token — there is no dictionary lookup left to do once elaboration finishes.
-
-#+transclude: [[file:../src/smd/forth/elaborator/elaborated_core.hpp::8a9a3c73-7150-4019-97f5-0485af9c56bb]] :lines 2- :src cpp :end "8a9a3c73-7150-4019-97f5-0485af9c56bb end"
-
-The three control-flow node kinds mirror the syntax tree's =IF=/=BEGIN...UNTIL=/=BEGIN...WHILE...REPEAT=/=DO...LOOP= shapes one for one, and =core_seq= is the one new shape: it is what a colon definition's elaborated body becomes, and it is the node a =colon_word= dictionary entry's =core_id= actually points at.
-
-#+transclude: [[file:../src/smd/forth/elaborator/elaborated_core.hpp::36591b76-b56e-4425-a5c6-a6f32dda00ae]] :lines 2- :src cpp :end "36591b76-b56e-4425-a5c6-a6f32dda00ae end"
-
-The closed node type ties every kind into one variant, exactly like the syntax tree's own =syn_node=, and for the same reason: an =arena_box= handle only ever stores an integer, so the composite kinds above can hold handles to sibling nodes of the very type being defined without ever reaching for =fix=.
-
-#+transclude: [[file:../src/smd/forth/elaborator/elaborated_core.hpp::6100f8d6-3f92-47ce-b4e2-d4137a801740]] :lines 2- :src cpp :end "6100f8d6-3f92-47ce-b4e2-d4137a801740 end"
-
-Elaboration threads a dictionary forward and mutates it as it goes: a colon definition's body is resolved against whatever the dictionary looks like *at that definition's own position in the source*, never against the whole program at once.
-This is what makes redefinition behave the way a traditional (cross-compiling) Forth expects: defining a word a second time does not retroactively change any earlier definition that already called the old one.
-=machine::dictionary= never overwrites or removes a shadowed entry — it only ever appends — so an earlier colon definition's already-elaborated =core_call= keeps pointing at the old entry's index by construction, while later code that looks the name up again reaches the new one first (newest-first lookup).
-Elaboration does not treat redefinition as an error; it records it as a warning in the =compiled_unit='s own collected-diagnostics channel and keeps going, matching the traditional Forth expectation that redefining a word is routine, not exceptional.
-
-#+transclude: [[file:../src/smd/forth/elaborator/elaborate.hpp::5dfe0ab6-e4f5-481b-ad89-926e077d406f]] :lines 2- :src cpp :end "5dfe0ab6-e4f5-481b-ad89-926e077d406f end"
-
-Step F12 (this section) owns stack-effect checking: it runs as part of =elaborate= itself, per D9, so a program that fails analysis fails elaboration — there is no separate "type-check" pass a caller can skip.
-The checker is an abstract interpretation over the elaborated core, computed once per colon definition, that tracks two independent quantities: a data-stack effect and a return-stack depth delta.
-The data-stack side uses a small lattice: a =known= value is a concrete =(inputs, outputs)= pair, where =inputs= doubles as the definition's minimum entry depth and =outputs= is the depth left behind measured from that same entry point; the lattice's top value, =unknown=, suppresses further depth-based checking downstream rather than erroring, and is produced only by input-dependent primitives (=?DUP= today; whatever primitive =EXECUTE= becomes once step F18a adds it).
-The return-stack side is tracked as a plain running integer, not a lattice, because none of =>R=/=R>=/=R@= are ever input-dependent — only the data-stack side can go =unknown=.
-
-#+transclude: [[file:../src/smd/forth/elaborator/stack_effect.hpp::3fd1b4b2-6cf1-4b6e-9b6b-3f2c0a8f7d21]] :lines 2- :src cpp :end "3fd1b4b2-6cf1-4b6e-9b6b-3f2c0a8f7d21 end"
-
-Composing two effects in sequence follows the standard "stack level" derivation: the combined entry requirement is whatever the first effect needs, plus however much more the second effect needs once the first has already produced its share; combining two verified-compatible =IF=/=ELSE= arms into the =IF= node's own contributed effect works the same way, using whichever arm demands more at entry.
-A subtlety worth calling out explicitly: =IF=/=ELSE= arms are compared by their *net* effect (the depth delta, =outputs - inputs=) rather than by the full pair, because two arms can have different shapes and still be safe to run interchangeably — =NEGATE= (1,1) and an implicit empty =ELSE= (0,0) both have net effect zero despite different shapes, and the canonical Forth-2012 idiom =: ABS DUP 0< IF NEGATE THEN ;= depends on exactly this reading to type-check at all.
-The main walk (=analyze_body=) recurses into every control structure's nested bodies, diagnosing four of the plan's five error shapes as it goes: unequal =IF=/=ELSE= net effect, a loop body (=DO=, =BEGIN...UNTIL=, or =BEGIN...WHILE...REPEAT=) with the wrong net effect, and a return-stack depth that fails to return to zero across any single control-structure body.
-=RECURSE= poses a real fixed-point problem — the callee's effect is exactly the thing being computed — and this step does not attempt to solve it: a definition's declared =( ... )= effect comment, when present, is trusted as the assumed effect of its own =RECURSE= call sites; when absent, a self-call is simply treated as =unknown=, exactly like =?DUP=.
-=EXIT= is handled conservatively rather than with full flow sensitivity: once encountered while folding a body's items, remaining items in that same body are unreachable and are not visited at all, which is sound for an unconditional trailing =EXIT= but does not attempt to reconcile an early-return depth against the definition's eventual fall-through depth when =EXIT= sits inside a conditional (see DIV-0006).
-
-#+transclude: [[file:../src/smd/forth/elaborator/stack_effect.hpp::7c2a9e5d-3b8f-4a1e-9d6c-8e4f1b2a6c9d]] :lines 2- :src cpp :end "7c2a9e5d-3b8f-4a1e-9d6c-8e4f1b2a6c9d end"
-
-The fifth diagnosis — an =EXIT= lexically nested inside a =DO= loop's body without an =UNLOOP= to appease first — is a separate, purely lexical scan, independent of the depth-tracking walk above.
-Step F17 made =UNLOOP= real, so this scan now honors it: an =UNLOOP= seen earlier in a body sequence clears the requirement for every =EXIT= after it (and anything it recurses into), accepting the canonical =... UNLOOP EXIT ...= and =... IF UNLOOP EXIT THEN ...= idioms, while a bare =EXIT= inside =DO= with no preceding =UNLOOP= is still diagnosed (see DIV-0010).
-The same step also corrected two imprecisions in the =DO...LOOP= effect model: =DO= is now modelled as consuming the two cells =( limit start )= it pops (without which any *nested* counted loop, whose inner =limit start= are pushed inside the outer loop's body, would spuriously fail the net-zero body check), and a =+LOOP= body is required to be net =+1= (it leaves the increment =+LOOP= then consumes) rather than net zero.
-=analyze_colon_effect= is the entry point =elaborate_colon_def= calls, between building a definition's =core_seq= and installing its =colon_word=: it runs the lexical =EXIT=-in-=DO= scan, then the depth-tracking walk, then checks that the whole definition ends return-stack balanced, then — if a =( ... )= comment was written — compares the declared effect against the computed one, verbatim, field for field.
-Reading a declared effect's *text* back out of its captured span is new work this step needed that step F11 did not: =elaborate='s signature grew a =std::string_view source= parameter (the exact program text a =syntax_tree= was parsed from), threaded down to wherever a colon definition's =declared_effect= span needs re-slicing.
-
-#+transclude: [[file:../src/smd/forth/elaborator/stack_effect.hpp::f1a6c3e8-2d9b-4f5a-8c1e-6b3d9a2f7e4c]] :lines 2- :src cpp :end "f1a6c3e8-2d9b-4f5a-8c1e-6b3d9a2f7e4c end"
-
-* Phase 5: Codegen and the Three Backends
-
-DRAFT — pending author revision.
-
-Codegen turns the elaborated core into a compiled instruction program: another flat, trivially destructible =tree_arena=, this time of machine instructions rather than syntax forms.
-That same instruction program is then interpretable three ways: directly by a tree-walking evaluator, by a small classic stack machine (two fixed-capacity stacks, an arena data space, and an output buffer), and by a Beman Execution sender graph in which Forth's one-shot, dynamic-extent control words (=EXIT=, =LEAVE=, =CATCH=/=THROW=) map directly onto the sender/receiver completion discipline.
-Step F13 (this section) is the first of the three to land, and it skips codegen entirely: it is a *reference* interpreter, walking the elaborated core directly by structural recursion rather than flattening it into an instruction array first.
-This is deliberate, not a shortcut taken for its own sake — step F14's stack-machine codegen and VM is checked against this evaluator's own output (the plan's own merge criterion for F14 runs the same F13 test programs through both backends and requires they agree), so F13 has to exist as a trustworthy, independently-derived oracle before F14's flattening/back-patching machinery has anything to be checked against.
-=eval_direct.hpp= lives under =src/smd/forth/machine/=, not =src/smd/forth/elaborator/=, per the plan's own placement — it depends on =elaborator::compiled_unit= the same way every =elaborator/*.hpp= header already depends on =machine/*.hpp= for =dictionary=/=forth_state=, and both directories fold into the same single build target (=compile-time-forth.forth=), so this is a documented, one-directional layering choice, not a new library boundary or a circular dependency.
-
-#+transclude: [[file:../src/smd/forth/machine/eval_direct.hpp::0faeac96-c46d-48bb-a1db-c21191d35022]] :lines 2- :src cpp :end "0faeac96-c46d-48bb-a1db-c21191d35022 end"
-
-Primitives run through =machine::apply_primitive= — F8's imperative implementation, the one that actually mutates a =forth_state= — never through F12's =elaborator::primitive_data_effect= table, which exists purely for abstract interpretation and has no notion of actually running anything.
-A =core_call= recurses structurally into the callee's own core, found the same way F12's =analyze_body= already finds a call target's effect: =unit.dictionary.entry_at(word_index)= to get the =colon_word=, then =unit.arena.get(colon_word.core_id)= to reach its =core_seq=.
-=core_if=, =core_begin_until=, and =core_begin_while= become real control flow this time, conditionally or repeatedly evaluating their bodies against the live machine state rather than only predicting a depth the way F12's analysis did — =core_begin_until='s body runs at least once and re-runs until the flag it leaves behind is true; =core_begin_while='s condition runs before every iteration (including the first) and the loop stops the moment it leaves a false flag.
-=core_exit= is the one genuinely new piece of control-flow plumbing: it is a runtime early return, threaded through the evaluator's own =foundation::result<eval_signal>= channel rather than a C++ exception, matching this project's one-shot, dynamic-extent nonlocal-control invariant (D11).
-An =eval_signal::exited= return value propagates upward through every nested control-structure body it passes through — unevaluated code after it in the same body list is simply never visited — all the way up to the nearest enclosing =core_call=, which is where it is absorbed: a call is its own fresh definition boundary, so a callee's own =EXIT= never unwinds past the call that invoked it.
-=DO...LOOP= was left diagnosed-not-implemented by F13 (none of its own merge criteria exercise it); step F17 (below) gives =core_do_loop= real structural evaluation here, threading loop parameters through the return stack and a new =eval_signal::left= for =LEAVE=.
-
-Every misuse the evaluator can observe is a diagnosed =foundation::result= error exactly as it would be calling =apply_primitive= or a =cell_stack= directly by hand: stack underflow/overflow, division by zero, output-buffer overflow, and one new failure mode this step introduces — budget exhaustion.
-A nonterminating program (=BEGIN FALSE UNTIL= never becomes true) would otherwise hang a =constexpr= evaluation forever, since the compiler is perfectly willing to keep folding a =constexpr= function that never returns; the evaluator instead threads a plain decrementing =int= "fuel" counter through every node it visits and diagnoses exhaustion rather than looping.
-
-#+transclude: [[file:../src/smd/forth/machine/eval_direct.hpp::4caeb07c-70eb-4256-9a53-f48d9fd89fe1]] :lines 2- :src cpp :end "4caeb07c-70eb-4256-9a53-f48d9fd89fe1 end"
-
-This step is also the first to need `.`, `.S`, `EMIT`, and `CR` as real, runnable primitives (D10) — F8 never wired them, and one further word this step's own merge criteria need verbatim, `1-`, was missing from the language entirely (DIV-0007 records both gaps and this step's fix).
-=eval_program= is the pipeline's first true end-to-end milestone: read (F5/F7) into a syntax tree, elaborate (F11/F12) into a =compiled_unit= whose every definition has already passed stack-effect analysis, then evaluate that =compiled_unit= directly, all in one =constexpr= chain a =static_assert= can exercise at compile time.
-
-** The classic stack machine (step F14)
-
-Step F14 (this section) is the second of the three backends, and the first to actually do codegen: it flattens the same elaborated core F13 walks directly into a linear array of machine instructions, then executes that array with an explicit instruction-pointer loop, rather than recursing through the core's own tree shape at every step.
-An instruction is one opcode plus a single immediate =cell= operand — about as close to a real machine's own encoding as a =constexpr=-friendly C++ type can get.
-
-#+transclude: [[file:../src/smd/forth/machine/instruction.hpp::5b9e9c1a-6b0e-4b7a-9f3a-7a5b7c9d2e1f]] :lines 2- :src cpp :end "5b9e9c1a-6b0e-4b7a-9f3a-7a5b7c9d2e1f end"
-
-As of F14 only eight of the seventeen opcodes had real codegen and VM behavior: =push=, =push_xt=, =prim=, =call=, =ret=, =branch=, =branch0=, =halt=.
-Step F17 (below) added the six counted-loop opcodes — =do_setup=, =loop_step=, =plus_loop_step=, =push_index=, =leave=, =unloop= — leaving only F18a's three (=execute=, =catch_mark=, =throw_op=) reserved-but-diagnosed.
-The VM still diagnoses any not-yet-implemented opcode if asked to execute one, rather than treating it as undefined behavior (D7) — unreachable in practice, since codegen never emits an opcode it has no behavior for.
-DIV-0008 records this scope cut, along with a second one: =compiled_program='s own =required_stack_depth=/=required_return_depth= fields exist (the plan calls for "required stack capacities" alongside the word table and data-space size) but default to =-1=, "not computed" — F12's stack-effect analysis computes each definition's net effect and minimum entry depth, not a whole-program running peak, and no other analysis in the pipeline yet computes one either.
-
-#+transclude: [[file:../src/smd/forth/machine/instruction.hpp::c520a0cc-7a47-4db4-a218-617a1cfebe8d]] :lines 2- :src cpp :end "c520a0cc-7a47-4db4-a218-617a1cfebe8d end"
-
-=compiled_program= is the artifact that survives from a =constexpr= codegen call to an ordinary-runtime VM call unchanged: a literal type, trivially copyable, bundling the flat instruction array with a word table (=entry_points=, one instruction index per dictionary entry, =-1= for anything that is not a colon word — primitives, variables, and constants are inlined at each reference site instead of called), the top-level program's own starting instruction index, and the data-space size the source =compiled_unit= had already allotted.
-
-=codegen= walks =unit.dictionary= in index order, emitting each colon word's own body before moving to the next entry, and records that word's entry point *before* emitting its body rather than after.
-This ordering is what lets every =call= instruction's operand resolve to a real instruction index without any back-patching: F11's static-binding discipline guarantees a =core_call='s target is always either an earlier word (already emitted, by construction, since dictionary order is walked forward) or the very word currently being emitted (=RECURSE=, a self-call — already in the word table by the time its own body's self-reference is reached, because the entry was recorded first).
-Back-patching is reserved for what actually needs it: a control structure's own *forward* branch, whose target instruction has not been emitted yet at the point the branch itself is.
-
-#+transclude: [[file:../src/smd/forth/machine/codegen.hpp::926e480d-dcc6-4168-b263-af0c73f1a45f]] :lines 2- :src cpp :end "926e480d-dcc6-4168-b263-af0c73f1a45f end"
-
-#+transclude: [[file:../src/smd/forth/machine/codegen.hpp::ba7eecbe-a745-4d25-bf90-ffa3615efc19]] :lines 2- :src cpp :end "ba7eecbe-a745-4d25-bf90-ffa3615efc19 end"
-
-The VM's own fetch-execute loop is the pay-off of compiling =EXIT= to a literal =ret= instruction rather than threading an =eval_signal= through nested C++ call frames the way F13's evaluator has to: the return stack (=forth_state::returns()=, already shared between calls and, later, loop parameters, per ordinary Forth convention) already holds exactly the call chain a =ret= needs to unwind, so "pop a return address, jump to it" is the whole of =EXIT='s runtime behavior — no propagation logic of its own is needed anywhere else in the loop.
-A plain decrementing =int= "fuel" counter, consumed once per instruction fetched, bounds execution exactly the way F13's own per-core-node fuel bounds a nonterminating =BEGIN ... UNTIL=; budget exhaustion is a diagnosed error at the VM level too, not a hang.
-As of F14 the loop and its own seeding-then-run entry point were one function, =run=; step F25 (Phase 8, below) split the loop itself out into =run_from= — an entry point that starts at an arbitrary instruction index against an already-live state, without F16's data-space seeding — and reduced =run= to a thin wrapper that seeds, then delegates.
-=run='s own signature and every observable behavior for an ordinary top-level call are unchanged by that split; the loop below (=run_from=) is byte-for-byte the loop F14 originally wrote, just no longer nested inside =run= itself.
-
-#+transclude: [[file:../src/smd/forth/machine/vm.hpp::e2a7c9f4-5d1b-4e8a-9c3f-7b2d6a4e1f8c]] :lines 2- :src cpp :end "e2a7c9f4-5d1b-4e8a-9c3f-7b2d6a4e1f8c end"
-
-#+transclude: [[file:../src/smd/forth/machine/vm.hpp::3b356d6c-c4c1-4676-b16a-48e975b5d46b]] :lines 2- :src cpp :end "3b356d6c-c4c1-4676-b16a-48e975b5d46b end"
-
-F14's own merge criterion is the "survives-to-runtime proof": every one of F13's own merge-criterion programs (=SQUARED=, =ABS=, =COUNTDOWN=, and =SPIN='s budget exhaustion) is compiled once into a =constexpr compiled_program= declared at namespace scope, then run through the VM twice against that *same* object — once inside a =static_assert= (compile time) and once inside a Catch2 =TEST_CASE= (ordinary runtime) — proving the identical compiled artifact works both ways, not merely that the same source text re-compiles identically twice (=vm.test.cpp=).
-
-** Counted loops (step F17)
-
-Step F17 makes =DO LOOP +LOOP I J LEAVE UNLOOP= real through both backends, using the return stack for loop parameters.
-=I=/=J=/=LEAVE=/=UNLOOP= are dedicated elaborated-core nodes (=core_loop_index= with a =level= field for =I=/=J=, =core_leave=, =core_unloop=), recognized in =elaborate_word_ref= before any dictionary lookup exactly like =EXIT=/=RECURSE= — never dictionary entries or primitives, which keeps them clear of the =primitive= enum (F16's territory).
-=DO= establishes a two-cell frame on the return stack, =limit= then =index= (index on top), so =I= reads return-stack offset 0 and =J= offset 2; a loop frame nests directly above the caller's own =call=/=ret= return address and is torn down before the matching =ret=.
-Plain =LOOP= terminates on the Forth-2012 equality test (=index + 1 == limit=); =+LOOP= uses the boundary-crossing rule (terminate when the sign of =index - limit= flips after adding the increment the body left on the data stack), not a simple comparison.
-
-=LEAVE= is one-shot, dynamic-extent nonlocal control (D11), handled differently by the two backends but with identical observable behavior.
-In the direct evaluator it is a new =eval_signal::left= that propagates up through nested control bodies just as =eval_signal::exited= does, but is absorbed by the nearest enclosing =core_do_loop= (which discards the loop frame and continues past the loop) rather than by a =core_call=.
-In the VM it compiles to a =leave= opcode emitted with a =-1= sentinel operand and back-patched by the enclosing loop to the instruction just past =loop_step=/=plus_loop_step=; an inner nested loop patches its own leaves first, so an outer loop's back-patch scan only ever finds its own still-sentinel leaves.
-=UNLOOP= discards the innermost loop frame without branching, so a following =EXIT= (compiled to =ret=) pops the real return address rather than a loop-parameter cell; F12's diagnosis 4 requires exactly this =UNLOOP= before any =EXIT= that leaves a definition from inside a =DO= loop.
-DIV-0010 records the supporting changes: the added =1+= primitive (F17's =SUMTO= criterion needs it, and only =1-= existed — the same kind of gap DIV-0007 filled for F13), and the two =DO...LOOP= stack-effect-model corrections (modelling the =( limit start )= =DO= consumes, so nested loops balance; requiring a net =+1= =+LOOP= body).
-
-This section will transclude the sender backend once step F18 lands.
-
-** Memory words end-to-end (step F16)
-
-=VARIABLE=, =CONSTANT=, and =CREATE= (step F11) already resolved to a dictionary entry and, for the two address-carrying forms, to a =core_var= node whose address is baked in at elaboration time; nothing before this step ever actually read or wrote through that address at runtime, and =ALLOT= did not exist as a word at all.
-=@=, =!=, and =+!= are four new =machine::primitive= enumerators (=fetch=, =store=, =plus_store=) plus =allot=, dispatched through =apply_primitive= exactly like every arithmetic or stack primitive before them — there is no new node kind in the elaborated core and no new opcode in =instruction.hpp=, because a memory access is, mechanically, just another primitive that happens to touch =forth_state::data_space()= instead of only the data stack.
-=ALLOT= in particular is an *ordinary primitive*, resolved through the same dictionary/=core_prim= path as =+= or =DUP=, not a new grammar production: it pops a cell count and calls =data_space::allot= at *runtime*, against whichever backend (=eval_direct.hpp= or the VM) is currently executing — this is why =CREATE BUF 4 ALLOT= works even though =elaborate_create= (F11) allots nothing of its own for =BUF=, and why =ALLOT='s own effect-table entry (=known(1, 0)=) is unremarkable, unlike the genuinely input-dependent =?DUP=.
-The default dictionary now installs 46 primitives, not 42 (=machine::default_dictionary=, =dictionary.hpp=); every table this project keeps keyed by primitive count — =elaborator::primitive_data_effect='s exhaustiveness comment, the dictionary/codegen tests that hardcode a colon word's post-primitive index — moved from 42 to 46 in lockstep.
-
-The one genuinely new piece of machinery this step adds is *data-space seeding*: a =VARIABLE=/=CREATE= address baked into the elaborated core as a literal is only valid to fetch or store through once the executing =forth_state='s own =data_space= has actually reserved that many cells — a freshly constructed =forth_state= starts with a data space whose high-water mark is zero, regardless of how much the source =compiled_unit='s own (elaboration-time) data space had allotted.
-Both backends' entry points close this gap the same way, by calling =data_space::allot= once with the already-known allotted size and discarding the returned address — reusing the one existing way to advance the high-water mark rather than adding a second: =eval_direct.hpp='s =eval_program= seeds from =unit.data_space.size()= before its first =eval_body= call, and =vm.hpp='s =run= seeds from =compiled_program::data_space_size= before its fetch-execute loop starts (both transcluded above, under 4caeb07c-70eb-4256-9a53-f48d9fd89fe1 and 3b356d6c-c4c1-4676-b16a-48e975b5d46b respectively — this step's addition to each is the =data_space().allot(...)= call near the top).
-Because a runtime =ALLOT= extends the very same =data_space= object from wherever this seeding left off, a =CREATE=d address remains a valid base address for cells a *later* =ALLOT= reserves past it, even though =elaborate_create= itself never touched the elaboration-time data space.
-An out-of-bounds =@=/=!=/=+!= (an address past what has actually been allotted so far, at either elaboration or runtime) is diagnosed through the same =foundation::result= channel =data_space::fetch=/=store= already used before this step (D7) — this step added no new bounds-checking logic of its own, only real callers that can reach the checks F10 already wrote (=eval_direct.test.cpp='s and =vm.test.cpp='s =OutOfBoundsStoreIsDiagnosed= exercise this through a real compiled program, not just =data_space.hpp='s own unit tests).
-
-F16's own merge criterion, verbatim: =VARIABLE X  5 X !  X @ 3 + X !  X @= leaves =[8]=, =7 CONSTANT LUCKY  LUCKY LUCKY += leaves =[14]=, and =CREATE BUF 4 ALLOT= leaves =BUF= usable as a base address across all four cells it reserves — all three verified through both =eval_direct.hpp= and the codegen+VM backend (=EvalDirectTest=/=VmTest - MemoryWordsMergeCriterion= and =-CreateAllotMergeCriterion=), plus once more through the public one-shot API (=ForthTest - MemoryWordsMergeCriterion=, =forth.test.cpp=) to confirm =forth.hpp= itself needed no change: data-space seeding lives entirely inside =machine::run=, which =forth_program::run=/=stack=/=output= already call for every fresh state.
-
-* Phase 6: The Public One-Shot API (step F15)
-
-Every phase above this one is reachable only by naming =reader::read_program=, =elaborator::elaborate=, and =machine::codegen=/=machine::run= individually, in order, by hand — exactly the small local =compile()= helper every one of F13's and F14's own test files already builds for itself.
-Step F15 (this section) promotes that same four-call sequence to the one thing an external caller is meant to use: =compiled_forth<Source>=, a namespace-scope =constexpr= value keyed on the Forth source text itself, plus a small =forth_program= convenience surface to run it and inspect the result.
-
-=source_literal<N>= is what makes a whole Forth program's text usable as a template argument: a null-terminated =char= array copy of the literal, deduced via CTAD from a =char const (&)[N]= constructor argument, with a =.view()= accessor that drops the trailing null.
-The pattern is reused, not copied, from =~/src/compile-time-scheme/main='s own =source_literal<N>=/=compiled_closure<Source>= (docs/forth-plan.md section 5) — reimplemented here under =smd::forth= with this project's own conventions, composing three pipeline stages rather than Scheme's single =compile_to_closure= call.
+=source_literal<N>= is unchanged by the retarget: it is what makes a whole Forth program's text usable as a template argument, a null-terminated =char= array copy of the literal deduced via CTAD from a =char const (&)[N]= constructor argument, with a =.view()= accessor that drops the trailing null.
+The pattern is reused, not copied, from =~/src/compile-time-scheme/main='s own =source_literal<N>=/=compiled_closure<Source>= (docs/forth-plan.md section 5).
 
 #+transclude: [[file:../src/smd/forth/forth.hpp::18245977-b4d2-4011-bac7-a36f7680aeb4]] :lines 2- :src cpp :end "18245977-b4d2-4011-bac7-a36f7680aeb4 end"
 
-=forth_program= bundles an already-compiled =machine::compiled_program= with the runtime capacities (=StackDepth=, =RStackDepth=, =MaxData=, =MaxOut=) a fresh =machine::forth_state= needs, and adds the three accessors the plan names: =run= returns the full =result<forth_state>= (success or the first diagnosed runtime error, e.g. budget exhaustion); =stack= and =output= are best-effort convenience snapshots — a =foundation::static_vector= built from a fresh run's own resulting state regardless of whether that run completed successfully, since =machine::run= mutates its =forth_state= argument in place even on an early error return.
-=stack='s cell order is bottom-to-top, matching =machine::primitive::dot_s='s own printed order.
-Because a namespace-scope =constexpr= value cannot carry mutable state of its own, each of =run=/=stack=/=output= reconstructs a fresh =forth_state= and re-executes the whole program from scratch — correct and cheap for programs this size, but something a caller running a large program in a hot loop should not do by accident.
+Under D13/D14 there is no separate "compile" phase distinct from "run the top level": the text interpreter both compiles =:= ... =;= definitions and directly executes every top-level word as it meets it, in the same pass.
+R1's =forth_program= therefore compiled once and *ran* the result fresh, from scratch, once per accessor call; the retargeted =forth_program= wraps an already-built =interpreter::session= instead, and none of its three accessors re-executes anything — the whole program already ran once, when =compiled_forth= built the session.
+=run= now returns the built session image itself (never fails at the call site: any failure already happened, at compile time); =stack= and =output= are thin accessors over that same session's own =stack=/=output= fields.
+=stack='s cell order is bottom-to-top, matching =machine::primitive::dot_s='s own printed order — a convention the session's own =stack= field (F26's own addition to =interpreter::session=, Phase 8) preserves from the R1-era accessor of the same name.
 
 #+transclude: [[file:../src/smd/forth/forth.hpp::bb43d007-745e-4e1b-8057-b97766788d6b]] :lines 2- :src cpp :end "bb43d007-745e-4e1b-8057-b97766788d6b end"
 
-=compiled_forth<Source, ...>= is the public entry point itself: it runs the whole read → elaborate → codegen pipeline exactly once, at namespace-scope =constexpr= initialization, and stores the result as a ready-to-run =forth_program=.
-Every pipeline-stage capacity is its own template parameter with the same default its owning stage already uses (D2 — no divergence, since parameterizing rather than hardcoding is the D2-compliant choice); =StackDepth=/=RStackDepth=/=MaxOut= are new capacities this step introduces for the runtime state, chosen generously for a one-shot caller.
-A =Source= that fails to parse, fails elaboration, or overflows any capacity is a hard compile error: =.value()= on a failed =foundation::result= inside a =constexpr= initializer is not a core constant expression, so the whole translation unit fails to compile — the same discipline F13's and F14's own namespace-scope =constexpr= test programs already relied on for known-good inputs, now the *public* contract (=src/smd/forth/test_neg_syntax_error.cpp= exercises the failure side deliberately, as a dedicated CTest negative-compile test — new infrastructure this step introduces, ahead of its originally-planned home at step F21).
+=compiled_forth<Source, ...>= is the public entry point itself: it builds =Source='s whole session (=interpreter::build_session=) exactly once, at namespace-scope =constexpr= initialization, and stores the result as a ready-to-inspect =forth_program=.
+Every capacity is its own template parameter with a project-standard default (D2); =BuildDepth=/=BuildRDepth=/=Fuel= size and budget the transient build-time state =build_session= constructs internally.
+A =Source= that fails to interpret — an unknown word, a stack underflow, a budget-exhausted top-level loop, or anything else =interpreter::interpret= diagnoses — is a hard compile error: =.value()= on a failed =foundation::result= inside a =constexpr= initializer is not a core constant expression, so the whole translation unit fails to compile (=test_neg_syntax_error.cpp= exercises the failure side deliberately).
+This is a strictly *wider* net than R1's own contract caught: since building a session now *is* running the top level, what used to be a separate, later, per-call *runtime* failure (budget exhaustion, for instance) is folded into this same single build-time evaluation too — see DIV-0014 for the consequence this has for a program like the old =SPIN= budget-exhaustion example, whose source text and expected behavior are preserved in =interpreter/control_flow_corpus.hpp= rather than reachable through this API (it also needs control flow, which does not exist until step F27 regardless).
 
 #+transclude: [[file:../src/smd/forth/forth.hpp::61611656-475a-405f-a35b-179c4d88f71e]] :lines 2- :src cpp :end "61611656-475a-405f-a35b-179c4d88f71e end"
 
-F15's own merge criterion, verbatim: =compiled_forth<": SQUARED DUP * ;  4 SQUARED">.stack()= static-asserts to =[16]= — a one-element stack snapshot whose only cell is =16= (=forth.test.cpp='s =SquaredMergeCriterion=).
-The =hello= example (=src/examples/hello.cpp=) runs a small program through =compiled_forth= and prints its =.output()=; =src/examples/godbolt_forth.cpp= is the Godbolt single-file extraction example the plan asks for, modeled on =~/src/compile-time-scheme/main/src/examples/godbolt_arithmetic.cpp='s own shape — "single-file extraction" is literal here, since =forth.hpp= is header-only as of this step.
+F15's own merge criterion, verbatim, still holds after the retarget: =compiled_forth<": SQUARED DUP * ;  4 SQUARED">.stack()= static-asserts to =[16]= — a one-element stack snapshot whose only cell is =16= (=forth.test.cpp='s =SquaredMergeCriterion=).
+The =hello= example (=src/examples/hello.cpp=) runs a small program through =compiled_forth= and prints its =.output()=; =src/examples/godbolt_forth.cpp= is the Godbolt single-file extraction example modeled on =~/src/compile-time-scheme/main/src/examples/godbolt_arithmetic.cpp='s own shape.
+Neither example needed to change for the retarget: both use =.output()=/=.stack()= with default arguments and no control flow.
 
 * Phase 7: The Text Interpreter, Interpret State Only (step F24, docs/forth-plan-2.md)
 
@@ -275,8 +103,8 @@ Composition, not an in-place edit, is what keeps every existing consumer of the 
 =>IN= is stored as a bare byte offset, not as a =parser::cursor=, per D19's own instruction that it be ordinary, inspectable machine state rather than a cursor buried inside a scanner's local variables — the property F29's user-defined parsing words will depend on, since a Forth-level word like =PARSE= has to be able to read and write =>IN= through the same interface the outer loop itself uses.
 =input_source::cursor_at_in= is the bridge back to the combinator library: it rebuilds a =parser::cursor= by replaying =parser::cursor::bump= from the start of the source text, which is what keeps line/column diagnostics correct without =input_source= maintaining a second, parallel line/column tracker of its own.
 
-The outer loop itself is =interpret=: scan one word via =reader::scan_word= (the D19 token layer discussed in Phase 1, still at its current path), look it up in the =machine::dictionary= newest-first (free redefinition shadowing, unchanged since F9), run it through =machine::apply_primitive= if it resolves to a primitive, else classify it as a number per the state's own =BASE= and push it, else diagnose an unknown word at the word's own start position.
-Number classification per =BASE= is new machinery, not a generalization of =reader::is_number_token=/=token_to_cell= in place: those two stay fixed to decimal (D8's original scope, predating =BASE=), and =is_number_token_in_base=/=token_to_cell_in_base= sit in =interp.hpp= instead, agreeing with the decimal-only pair at =base == 10= (checked directly, by =static_assert=) and generalizing to any base 2..36 by treating =A=..=Z= as digits 10..35 — which composes for free with D8's case folding, since every token reaching this classification has already been folded to uppercase by =scan_word=.
+The outer loop itself is =interpret=: scan one word via =parser::scan_word= (the D19 token layer discussed in Phase 1, relocated to =parser/= at step F26), look it up in the =machine::dictionary= newest-first (free redefinition shadowing, unchanged since F9), run it through =machine::apply_primitive= if it resolves to a primitive, else classify it as a number per the state's own =BASE= and push it, else diagnose an unknown word at the word's own start position.
+Number classification per =BASE= is new machinery, not a generalization of =parser::is_number_token=/=token_to_cell= in place: those two stay fixed to decimal (D8's original scope, predating =BASE=), and =is_number_token_in_base=/=token_to_cell_in_base= sit in =interp.hpp= instead, agreeing with the decimal-only pair at =base == 10= (checked directly, by =static_assert=) and generalizing to any base 2..36 by treating =A=..=Z= as digits 10..35 — which composes for free with D8's case folding, since every token reaching this classification has already been folded to uppercase by =scan_word=.
 
 #+transclude: [[file:../src/smd/forth/interpreter/interp.hpp::aa1d6f83-9b3c-4e2a-8d5f-3c7b1e9a4f62]] :lines 2- :src cpp :end "aa1d6f83-9b3c-4e2a-8d5f-3c7b1e9a4f62 end"
 
@@ -287,45 +115,95 @@ An unknown word's diagnosis, by contrast, is always positioned: at the scanned t
 F24's own merge criterion, verbatim: =1 2 + .= run through =interpret= leaves output ="3 "= and an empty data stack; =BASE= defaults to 10 and setting it to 16 makes =FF .= print =255 = (=interp.test.cpp='s =HexBaseHandling=); an unknown word's diagnosed error carries the position of the word itself, not the source's start (=UnknownWordCarriesPosition=); a stack underflow reached through =interpret= is ===-equal, error value for error value, to calling =machine::apply_primitive= directly for the same misuse (=UnderflowMatchesApplyPrimitiveDirectly=).
 The F5 number/word tests — =-1= is a number, =1-= is a word — move here intact, now exercised through the full interpreter loop rather than only the token-layer classifier (=NegativeOneIsANumberOneMinusIsAWord=).
 
-* Phase 8: The Colon Compiler and the Session Image (step F25, docs/forth-plan-2.md)
+* Phase 8: The Colon Compiler and the Session Image (step F25, docs/forth-plan-2.md; extended at step F26)
 
-Step F25 is what first writes =STATE= to a nonzero value: =interpret= (=interp.hpp=) now compiles as well as interprets, and D15's session image gets a first, real (if not yet publicly wired) type.
-Nothing from Phase 7 or earlier is deleted this step — the R1 pipeline and F24's own interpret-state-only behavior both still build and pass; F26 ("the cut") is still the step that removes them.
+Step F25 is what first writes =STATE= to a nonzero value: =interpret= (=interp.hpp=) now compiles as well as interprets, and D15's session image gets a first, real type.
+At F25 nothing from Phase 7 was deleted yet — the R1 pipeline and F24's own interpret-state-only behavior both still built and passed alongside it; step F26 ("the cut") is what actually removed them, and this section now describes the post-cut state directly rather than narrating the transition.
 
-=machine::emit= (F14's =codegen.hpp=) relocates to its own header, =machine/emit.hpp=, byte for byte — D16's "the emission utilities ... survive as the compiling words' toolkit" instruction, read literally: =codegen.hpp= now includes =emit.hpp= and calls the same function, unchanged, so the R1 pipeline's own behavior does not move at all.
+=machine::emit= (F14's =codegen.hpp=, now history — =docs/history/architecture-grammar-era.org=) relocated to its own header, =machine/emit.hpp=, byte for byte at step F25 — D16's "the emission utilities ... survive as the compiling words' toolkit" instruction, read literally.
 
 #+transclude: [[file:../src/smd/forth/machine/emit.hpp::c2f6a5d1-3b9e-4a7c-8d2f-6e1b9c4a7f3d]] :lines 2- :src cpp :end "c2f6a5d1-3b9e-4a7c-8d2f-6e1b9c4a7f3d end"
 
-=machine::dictionary= gains a sixth binding alternative, =compiled_colon_word= (=dictionary.hpp=): an entry point into the interpreter's own code space, plus the captured (unverified until F30, D20) declared-effect span.
-This is deliberately *not* a reuse of the existing =colon_word= binding, whose =core_id= is an index into the elaborator's arena — a pipeline the colon compiler does not participate in and that F26 deletes outright; see DIV-0013 for the reasoning and for why =colon_word= itself is untouched (every R1 consumer — =elaborate.hpp=, =eval_direct.hpp=, =codegen.hpp=, =stack_effect.hpp= — keeps resolving it exactly as before).
-Adding a sixth alternative to the closed =dictionary_binding= variant is safe for the one exhaustive =std::visit= over it (=elaborate.hpp='s =elaborate_word_ref=): its own visitor has a catch-all "not yet callable" arm that a =compiled_colon_word= simply falls into, unreachable in practice since nothing feeds one into an R1-pipeline dictionary.
+=machine::dictionary= gained a sixth binding alternative at step F25, =compiled_colon_word= (=dictionary.hpp=): an entry point into the interpreter's own code space, plus the captured (unverified until F30, D20) declared-effect span.
+That was deliberately *not* a reuse of the R1 elaborator's own =colon_word= binding, whose =core_id= was an index into the elaborator's arena; see DIV-0013 for the original reasoning.
+Step F26 deletes the elaborator, and =colon_word= (plus its =stack_effect= payload type and =dictionary::define_colon=) along with it: =compiled_colon_word= is now the *only* colon-definition binding kind in =dictionary_binding=, five alternatives instead of six.
+DIV-0013 left the rename-or-fold choice at that point to this step's own discretion; F26 keeps the =compiled_= prefix rather than renaming (not worth touching every consumer of the name for a cosmetic gain) — see DIV-0013's own closure note and DIV-0014.
 
 =interpreter::compile_buffer= (=interpreter/compilebuf.hpp=) is the incrementally-appendable code space D15 calls for: a thin wrapper around =machine::compiled_program= (retained per D16, not a second code representation) that grows one instruction at a time via =machine::emit=, as `:` ... `;` pairs are met.
 Instruction 0 is reserved at construction as a permanent =halt= landing pad.
 
 #+transclude: [[file:../src/smd/forth/interpreter/compilebuf.hpp::f7a3c9e1-6d4b-4a2f-8c1e-9b5d7a3f2e6c]] :lines 2- :src cpp :end "f7a3c9e1-6d4b-4a2f-8c1e-9b5d7a3f2e6c end"
 
-=call_word= is D14's own "interpreting a defined word runs its code on the VM against the live forth_state" made concrete: it pushes the halt pad's own index as a return address, then calls =machine::run_from= (=vm.hpp=, this step's one addition to that header — see Phase 5, above, and DIV-0013) at the word's own entry point, against the already-live state.
+=call_word= is D14's own "interpreting a defined word runs its code on the VM against the live forth_state" made concrete: it pushes the halt pad's own index as a return address, then calls =machine::run_from= (=vm.hpp=, Phase 9 covers this header's own retained shape in full) at the word's own entry point, against the already-live state.
 =run_from= is the genuine additive VM entry point D14/DIV-0013 call for: it runs =run='s own fetch-execute loop starting from an arbitrary instruction index, without =run='s own F16 data-space seeding step — the seeding is a batch, whole-program concern, correct once per top-level run and wrong to repeat on every single interpreted word call (each repeat would =allot= more cells, unconditionally, without bound).
-=run= itself is now implemented in terms of =run_from= (seed, then delegate to =run_from(program, state, program.program_entry, fuel)=); its own signature and every observable behavior for an ordinary top-level call are unchanged, so the R1 pipeline and every one of its own tests are unaffected.
-An earlier draft of this step instead pointed =compile_buffer='s own =compiled_program::program_entry= at the word being called and reused =machine::run= completely unmodified, relying on =compile_buffer= never setting =data_space_size= above its default (0) to make =run='s own seed step a no-op; DIV-0013 records why that shape was rejected on review (mutating shared, conceptually-const program state to fake an entry point, correct only by an incidental invariant rather than by construction) in favor of =run_from=.
+=run= itself is implemented in terms of =run_from= (seed, then delegate to =run_from(program, state, program.program_entry, fuel)=); DIV-0013 records why an earlier draft that instead pointed =compile_buffer='s own =compiled_program::program_entry= at the word being called and reused =machine::run= unmodified was rejected on review (mutating shared, conceptually-const program state to fake an entry point, correct only by an incidental invariant rather than by construction).
 
-=interpret= itself now branches on =st.state()=: interpreting (0) runs a primitive or calls a =compiled_colon_word= (both against the same live =st=, D14 — there is no second evaluator); compiling (1, entered by `:`) emits =op::prim=/=op::call=/=op::push= into the =compile_buffer= instead of running/pushing.
-`:`, `;`, `EXIT`, and `RECURSE` are recognized by direct name comparison before any dictionary lookup — the same technique the elaborator already uses for `I`/`J`/`LEAVE`/`UNLOOP` — since generalized immediate-word dispatch through the dictionary itself is F27's own job.
+=interpret= itself branches on =st.state()=: interpreting (0) runs a primitive, calls a =compiled_colon_word=, or pushes a =variable_word=/=constant_word='s address/value (both against the same live =st=, D14 — there is no second evaluator); compiling (1, entered by `:`) emits =op::prim=/=op::call=/=op::push= into the =compile_buffer= instead of running/pushing.
+`:`, `;`, `EXIT`, `RECURSE` (step F25), and `VARIABLE`/`CREATE`/`CONSTANT` (step F26) are all recognized by direct name comparison before any dictionary lookup — generalized immediate-word dispatch through the dictionary itself is still F27's own job, not this one.
 `:` records the entry point (=compile_buffer::here()=) *before* compiling the body, so `RECURSE` (a self-`call` to that same entry point) resolves without any back-patching — F14's discipline, carried forward unchanged.
-A declared `( ... -- ... )` effect comment immediately after the name is captured as a =foundation::source_span= (=scan_colon_header=, D20: stored, unverified until F30) rather than silently vanishing as ordinary intertoken space the way any other comment does — capturing it needs its own name scan that skips =reader::scan_word='s usual trailing comment-swallow, since the comment must still be visible afterward to capture.
+A declared `( ... -- ... )` effect comment immediately after the name is captured as a =foundation::source_span= (=scan_colon_header=, D20: stored, unverified until F30) rather than silently vanishing as ordinary intertoken space the way any other comment does — capturing it needs its own name scan that skips =parser::scan_word='s usual trailing comment-swallow, since the comment must still be visible afterward to capture.
+=VARIABLE=/=CREATE= (step F26) allot one cell or zero, respectively, from =st.machine().data_space()= directly (no elaboration-time data space to coordinate with any more — Phase 4's old =elaborate_variable=/=elaborate_create= are history) and install a =machine::variable_word=; =CONSTANT= pops the data stack's own top cell — ordinary Forth-2012 semantics, not R1's own elaboration-time constant-folding, which required a syntactically preceding literal token.
 
 #+transclude: [[file:../src/smd/forth/interpreter/interp.hpp::aa1d6f83-9b3c-4e2a-8d5f-3c7b1e9a4f62]] :lines 2- :src cpp :end "aa1d6f83-9b3c-4e2a-8d5f-3c7b1e9a4f62 end"
 
-=interpreter::session= (=interpreter/session.hpp=) is D15's session image: a =compile_buffer=, a =machine::dictionary=, the data-space high-water mark, and captured output — a plain, trivially destructible aggregate, so a session built inside one constexpr evaluation is a literal value usable unmodified at ordinary runtime.
+=interpreter::session= (=interpreter/session.hpp=) is D15's session image: a =compile_buffer=, a =machine::dictionary=, the data-space high-water mark, captured output, and (step F26's own addition) a final-data-stack snapshot — a plain, trivially destructible aggregate, so a session built inside one constexpr evaluation is a literal value usable unmodified at ordinary runtime.
 =build_session= is the one boundary a session is ever built across (D15: "a session cannot span constant-expression evaluations"); =call_defined_word= is how a built session's own top-level definition is run again, by name, against a fresh live state seeded via =seed_from_session= (F16's seeding discipline generalized from one batch =compiled_program= to a whole session).
-=forth.hpp='s =compiled_forth<Source>= is *not* retargeted to build one of these — that is F26's job, once the R1 pipeline it currently builds is gone.
+=forth.hpp='s =compiled_forth<Source>= is retargeted onto this at step F26 (Phase 6, above) — the =stack= field this paragraph flags as F26's own addition exists specifically because that retarget needed something to hand its own =.stack()= accessor back, D15's original field list having stopped at output.
 
 #+transclude: [[file:../src/smd/forth/interpreter/session.hpp::b4d8e2a6-7c1f-4e3a-9d5b-2a8f6c1e4d9b]] :lines 2- :src cpp :end "b4d8e2a6-7c1f-4e3a-9d5b-2a8f6c1e4d9b end"
 
 #+transclude: [[file:../src/smd/forth/interpreter/session.hpp::c6e9f1b3-8a2d-4c7e-9f1a-3b6d8e2c5a7f]] :lines 2- :src cpp :end "c6e9f1b3-8a2d-4c7e-9f1a-3b6d8e2c5a7f end"
 
 F25's own merge criteria, verbatim: =: SQUARED DUP * ;  4 SQUARED= leaves =[16]= via =interpret= (=interp.test.cpp='s =SquaredMergeCriterion=); =: QUAD SQUARED SQUARED ; 3 QUAD= leaves =[81]=, one colon word calling another (=QuadMergeCriterion=); =;= and =EXIT= while interpreting are diagnosed rather than silently accepted or mistaken for unknown words (=SemicolonWhileInterpretingIsDiagnosed=, =ExitWhileInterpretingIsDiagnosed=); a session image round-trips — built once at namespace-scope constexpr initialization, then run again from that exact same (trivially copyable) object both inside a =static_assert= and inside a Catch2 =TEST_CASE= (=session.test.cpp='s =RoundTripsAtRuntimeFromTheSameConstexprObject=, mirroring F14's own compile-time/runtime agreement proof pattern, D14a).
+F26 adds the F16 memory-word merge criterion to this same list, now reached through =interpret= directly rather than through R1's elaborator: =VARIABLE X  5 X !  X @ 3 + X !  X @  7 CONSTANT LUCKY  LUCKY LUCKY += leaves =[8 14]= (=interp.test.cpp='s =MemoryWordsMergeCriterion=), and =CREATE BUF 4 ALLOT ...= leaves =[30]= (=CreateAllotMergeCriterion=).
 
-See DIV-0013 (=docs/divergences/DIV-0013-colon-compiler-binding-and-invocation.md=) for the two design choices this step had to make that the plan left open: the =compiled_colon_word= binding shape, and how interpreting a defined word invokes the VM without either duplicating its fetch-execute loop or re-seeding the live data space on every call.
-There is no =:= yet: every dictionary hit this step can actually reach is a =machine::primitive=, and a non-primitive binding (unreachable from =machine::default_dictionary= today, reachable in principle from a caller-supplied dictionary) is diagnosed rather than silently skipped, per D7.
+See DIV-0013 (=docs/divergences/DIV-0013-colon-compiler-binding-and-invocation.md=) for the two design choices F25 had to make that the plan left open: the =compiled_colon_word= binding shape, and how interpreting a defined word invokes the VM without either duplicating its fetch-execute loop or re-seeding the live data space on every call.
+
+* Phase 9: The Cut (step F26, docs/forth-plan-2.md)
+
+Step F26 is the irreversible step: it deletes the R1 pipeline outright (=reader/read_program.hpp=, =reader/syntax_tree.hpp=, the whole =elaborator/= directory, =machine/eval_direct.hpp=, =machine/codegen.hpp=, and every one of their own tests), retargets the public API onto D15's session image (Phase 6), and extends the text interpreter with =VARIABLE=/=CREATE=/=CONSTANT= (Phase 8) so the F16 memory-word merge criteria still pass through it.
+Everything that pipeline described lives on, frozen, at =docs/history/architecture-grammar-era.org=; this phase covers only what changed or what survived unchanged and needed a new home in this living document.
+
+** The instruction set and VM carry (D16)
+
+D16 says the opcode enum, =instr=, =compiled_program=, and the VM loop are retained across the cut — only what *feeds* them (codegen from an elaborated tree, versus direct emission from the text interpreter) changed.
+=machine/instruction.hpp= and =machine/vm.hpp= are untouched by step F26; their own transclusions moved here from the old Phase 5 (now history) verbatim, since the code itself did not change.
+
+#+transclude: [[file:../src/smd/forth/machine/instruction.hpp::5b9e9c1a-6b0e-4b7a-9f3a-7a5b7c9d2e1f]] :lines 2- :src cpp :end "5b9e9c1a-6b0e-4b7a-9f3a-7a5b7c9d2e1f end"
+
+#+transclude: [[file:../src/smd/forth/machine/instruction.hpp::c520a0cc-7a47-4db4-a218-617a1cfebe8d]] :lines 2- :src cpp :end "c520a0cc-7a47-4db4-a218-617a1cfebe8d end"
+
+#+transclude: [[file:../src/smd/forth/machine/vm.hpp::e2a7c9f4-5d1b-4e8a-9c3f-7b2d6a4e1f8c]] :lines 2- :src cpp :end "e2a7c9f4-5d1b-4e8a-9c3f-7b2d6a4e1f8c end"
+
+#+transclude: [[file:../src/smd/forth/machine/vm.hpp::3b356d6c-c4c1-4676-b16a-48e975b5d46b]] :lines 2- :src cpp :end "3b356d6c-c4c1-4676-b16a-48e975b5d46b end"
+
+=run_from='s own fetch-execute loop is exactly what =interpreter::compile_buffer::call_word= (Phase 8) calls to interpret a defined word, and exactly what =machine::run= itself delegates to after seeding the data space for a whole top-level run — one loop, two entry points, unchanged by the cut.
+=machine/vm.test.cpp='s own "survives-to-runtime proof" (F14's merge criterion: the same compiled object, run once inside a =static_assert= and once inside a Catch2 =TEST_CASE=) no longer has a source-text =compile()= helper to build its test programs from — that helper composed the now-deleted =read_program=/=elaborate=/=codegen= sequence.
+Programs the VM-level tests still need are hand-built directly with =machine::emit= instead (the same technique =interpreter/compilebuf.test.cpp= already used for its own hand-compiled "DUP *" example); the proof itself is *also* re-established one level up, on a real =interpreter::session= built by the text interpreter and run again via =call_defined_word= — =VmTest - SurvivesToRuntimeProofOnASessionImage=, mirroring =session.test.cpp='s own =RoundTripsAtRuntimeFromTheSameConstexprObject= — since that is the shape a real front end now builds (this step's own explicit merge criterion).
+
+** The stack-effect lattice, extracted for F30 (D20)
+
+=elaborator/stack_effect.hpp= mixed two things: a pure, tree-independent abstract-interpretation lattice (effect composition, the per-primitive net-effect table, declared-effect-comment parsing) and a tree-walking analysis (=analyze_body=, =check_exit_in_do_loops=, =analyze_colon_effect=) over the elaborated core's own =core_if=/=core_do_loop=/... node kinds.
+The tree-walk dies with the elaborator; the lattice does not, because F30 ("effect lint") needs it, retargeted to =instr= ranges over the interpreter's own code space instead of a deleted tree.
+Step F26 relocates the lattice, verbatim, to =interpreter/effect_lint.hpp= — F30's own named destination — so it survives the elaborator's deletion with something concrete to land in; F30 is what gives it a new consumer, not this step.
+
+#+transclude: [[file:../src/smd/forth/interpreter/effect_lint.hpp::3fd1b4b2-6cf1-4b6e-9b6b-3f2c0a8f7d21]] :lines 2- :src cpp :end "3fd1b4b2-6cf1-4b6e-9b6b-3f2c0a8f7d21 end"
+
+D20's own effect-gate carries a real gap across this step, recorded in full in DIV-0014: between F26 and F30 there is no stack-effect *checking* at all (the R1 checker died with the elaborator; its replacement is F30's own job) — a declared =( ... -- ... )= comment is still captured and stored (=scan_colon_header=, Phase 8) but never verified in this window.
+
+** The colon-definition binding, closed (DIV-0013)
+
+DIV-0013 named this step as where its own binding-shape question closes: once =colon_word= and its R1 consumers are gone, =compiled_colon_word= is the only colon-definition binding left in =dictionary_binding= (five alternatives, not six).
+Phase 8's own section above records the closure directly; DIV-0013 and DIV-0014 both carry it for the historical record.
+
+** DIV-0012's fold: closed in one half, deferred in the other
+
+DIV-0012 asked this step to close two things: relocate =reader/forth_chars.hpp= (done — Phase 1, now =parser/forth_chars.hpp=), and fold =interpreter::forth_state='s own =input_source=/=BASE=/=STATE= directly into =machine::forth_state=, collapsing the composed wrapper.
+This step does *not* do the second fold.
+DIV-0012's own orchestrator amendment names F28 (uniform execution tokens) and F29 (parsing words as primitives) as the steps that actually need it — a parsing-word primitive executes as =machine::apply_primitive(op, machine::forth_state&)=, which cannot see an =input_source= that lives only on the interpreter's own wrapper.
+F26 itself has no merge criterion that needs the fold, and this step's own scope — the deletion itself, the =forth.hpp= retarget, and the =VARIABLE=/=CREATE=/=CONSTANT= addition the F16 memory-word merge criteria require — is already at the edge of one mergeable change; folding =machine::forth_state= touches every one of its remaining consumers (=machine::run=/=run_from=, every =machine/*.test.cpp=, =forth.hpp=, all of =interpreter/=) on top of that.
+This is filed as a concrete reason against D13 per DIV-0012's own instruction, not settled silently: see DIV-0014's own record, and DIV-0012's revisit condition, updated in place to point at F28 rather than F26.
+
+** DIV-0014
+
+See DIV-0014 (=docs/divergences/DIV-0014-the-cut.md=) for the complete record of this step's own decisions: the =forth.hpp= retarget's exact shape (why =.run()= now returns the session image itself rather than a =foundation::result=, and why the old R1-era "runtime error distinct from compile error" distinction does not survive the retarget), the =VARIABLE=/=CREATE=/=CONSTANT= addition, the =session::stack= field, the effect-gate suspension window, and the DIV-0012 deferral above.

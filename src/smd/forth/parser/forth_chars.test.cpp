@@ -1,24 +1,24 @@
-// src/smd/forth/reader/forth_chars.test.cpp                        -*-C++-*-
+// src/smd/forth/parser/forth_chars.test.cpp                        -*-C++-*-
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 
-#include <smd/forth/reader/forth_chars.hpp>
-#include <smd/forth/reader/forth_chars.hpp> // test 2nd include OK
+#include <smd/forth/parser/forth_chars.hpp>
+#include <smd/forth/parser/forth_chars.hpp> // test 2nd include OK
 
 #include <catch2/catch_test_macros.hpp>
 
 #include <string_view>
 
 using smd::forth::parser::cursor;
-using smd::forth::reader::fold_char;
-using smd::forth::reader::forth_lexeme;
-using smd::forth::reader::is_digit;
-using smd::forth::reader::is_number_token;
-using smd::forth::reader::is_word_char;
-using smd::forth::reader::scan_paren_comment;
-using smd::forth::reader::scan_word;
-using smd::forth::reader::skip_forth_space;
-using smd::forth::reader::token_text;
-using smd::forth::reader::token_to_cell;
+using smd::forth::parser::fold_char;
+using smd::forth::parser::forth_lexeme;
+using smd::forth::parser::is_digit;
+using smd::forth::parser::is_number_token;
+using smd::forth::parser::is_word_char;
+using smd::forth::parser::scan_paren_comment;
+using smd::forth::parser::scan_word;
+using smd::forth::parser::skip_forth_space;
+using smd::forth::parser::token_text;
+using smd::forth::parser::token_to_cell;
 
 namespace {
 

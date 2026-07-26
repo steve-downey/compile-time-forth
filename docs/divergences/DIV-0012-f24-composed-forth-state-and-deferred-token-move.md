@@ -1,6 +1,8 @@
 # DIV-0012: F24's interpreter state is composed, not an in-place edit of `machine::forth_state`; the D19 token-layer move is deferred to F26
 
-- **Status:** open — both items close at F26 (see the orchestrator's amendment below)
+- **Status:** half-closed at F26 — the token-layer move is closed (see the
+  F26 addendum below); the composed-`forth_state` fold is deferred to F28,
+  not closed, per that same addendum's own filed reason
 - **Date:** 2026-07-25
 - **Step:** F24 (the interpreter, interpret state only), docs/forth-plan-2.md
 - **Authority diverged from:** docs/forth-plan-2.md (F24's own step text and D19)
@@ -119,12 +121,48 @@ piece of work: once `reader/` and the elaborator are gone, fold
 that fold cannot happen, that reason supersedes this amendment and must be
 filed against D13 rather than settled silently.
 
+## F26 addendum: the token-layer move, closed; the fold, deferred with a filed reason
+
+Step F26 ("the cut") relocated `forth_chars.hpp` from `src/smd/forth/reader/`
+to `src/smd/forth/parser/forth_chars.hpp`, re-namespaced
+`smd::forth::reader` to `smd::forth::parser`, and re-pointed its one
+surviving includer (`interpreter/interp.hpp`) — exactly the mechanical move
+this record already described as pending, now done. `reader/` no longer
+exists.
+
+The orchestrator amendment above predicted that once `reader/` and the
+elaborator were gone, the layering objection motivating composition (rather
+than an in-place edit of `machine::forth_state`) would disappear, and asked
+F26 to fold `input_source`/`BASE`/`STATE` into `machine::forth_state`
+directly if it found no concrete reason not to. F26 does not do that fold.
+The layering objection is indeed gone — but F26's own scope was already at
+the edge of one mergeable step without it: the deletion itself, the
+`forth.hpp` retarget onto D15's session image (a nontrivial redesign of the
+public API in its own right), and the `VARIABLE`/`CREATE`/`CONSTANT`
+addition to `interpret()` that step's own merge criteria require, are
+already three substantial pieces of work in one commit. The fold touches
+every remaining consumer of `machine::forth_state` at once — `machine::run`/
+`run_from`, every `machine/*.test.cpp` that constructs one directly,
+`forth.hpp`, and all of `interpreter/` — on top of that, with no F26 merge
+criterion that actually needs it done this step. DIV-0012's own amendment
+itself names the steps that *do* need it (F28's uniform execution tokens,
+F29's parsing-word primitives), not F26 or F27.
+
+This is filed as the "concrete reason" the amendment's own text anticipates,
+against D13, per its own instruction not to settle the question silently:
+the reason is scope management, not a technical obstruction — nothing about
+F26's own work makes the fold harder later than it would have been now, and
+deferring it costs nothing beyond leaving `interpreter::forth_state` a thin
+composed wrapper for two more steps. See DIV-0014 for F26's own complete
+record.
+
 ## Revisit condition
 
-Both items close at step F26.
-The deferred token-layer move closes because `reader/` is deleted and
-`forth_chars.hpp` must land somewhere by construction.
-The composition closes because `machine::forth_state`'s R1-era consumers are
-deleted in the same step, removing the layering objection that justified
-wrapping rather than growing it — see the orchestrator amendment above for
-why leaving it wrapped would obstruct F28 and F29.
+The token-layer move is closed, as of F26 (see addendum above).
+The composed-`forth_state` fold is deferred, not closed: it should happen no
+later than immediately before F28 begins (D18's uniform execution tokens
+need `machine::forth_state` itself to carry the input stream, per the
+orchestrator amendment above), and may happen as its own small step before
+then if a future agent finds it convenient. If F28 itself finds a further
+reason the fold should not happen even then, that reason supersedes this
+record and must be filed against D13 in its own right.

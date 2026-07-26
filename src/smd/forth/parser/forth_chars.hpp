@@ -1,7 +1,7 @@
-// src/smd/forth/reader/forth_chars.hpp                              -*-C++-*-
+// src/smd/forth/parser/forth_chars.hpp                               -*-C++-*-
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
-#ifndef SRC_SMD_FORTH_READER_FORTH_CHARS_HPP
-#define SRC_SMD_FORTH_READER_FORTH_CHARS_HPP
+#ifndef SRC_SMD_FORTH_PARSER_FORTH_CHARS_HPP
+#define SRC_SMD_FORTH_PARSER_FORTH_CHARS_HPP
 
 #include <smd/forth/foundation/parse_error.hpp>
 #include <smd/forth/foundation/source_pos.hpp>
@@ -14,7 +14,19 @@
 #include <cstdint>
 #include <string_view>
 
-namespace smd::forth::reader {
+namespace smd::forth::parser {
+
+// Step F5 (docs/forth-plan.md): the Forth-aware token layer, D19's "below the
+// word" combinator-library machinery. Relocated here from
+// src/smd/forth/reader/forth_chars.hpp at step F26 ("the cut",
+// docs/forth-plan-2.md): D19 always placed this file's own contents under
+// parser/ conceptually ("combinator library machinery several consumers sit
+// on top of"), and DIV-0012 deferred the actual move to this step because
+// reader/ was still alive and every one of this file's own consumers still
+// had to keep building. reader/ is deleted wholesale by this same step, so
+// the deferral's own reason is gone; this is a pure relocation plus a
+// namespace rename (smd::forth::reader -> smd::forth::parser) -- no
+// declaration below changed behavior.
 
 // e9a1c6a1-9d3d-4a6a-9f2e-7d3f2b3c8a1c
 /// Uppercase-folds a single ASCII letter; every other character passes
@@ -36,7 +48,7 @@ namespace smd::forth::reader {
 /// @ref skip_forth_space has already consumed any leading `\` or `( ... )`
 /// comment, so no comment-starting character needs special-casing here.
 [[nodiscard]] constexpr auto is_word_char(char c) -> bool {
-    return !parser::is_space(c);
+    return !is_space(c);
 }
 
 /// True for an ASCII decimal digit.
@@ -59,8 +71,8 @@ namespace smd::forth::reader {
 /// declared stack-effect comment (D9); @ref skip_forth_space uses this same
 /// scanner internally but discards the span, since ordinary intertoken space
 /// only needs comments skipped, not preserved.
-[[nodiscard]] constexpr auto scan_paren_comment(parser::cursor cur)
-    -> parser::parse_result<foundation::source_span> {
+[[nodiscard]] constexpr auto scan_paren_comment(cursor cur)
+    -> parse_result<foundation::source_span> {
     if (cur.empty() || cur.peek() != '(') {
         return foundation::parse_error{cur.position(), "expected ( comment"};
     }
@@ -73,7 +85,7 @@ namespace smd::forth::reader {
         return foundation::parse_error{start, "unterminated ( comment"};
     }
     cur = cur.bump();
-    return parser::parse_state<foundation::source_span>{
+    return parse_state<foundation::source_span>{
         foundation::source_span{start, cur.position()}, cur};
 }
 // b2f4d9a0-6c1e-4f8b-9a2d-3e5c7f1a9b4d end
@@ -84,12 +96,11 @@ namespace smd::forth::reader {
 /// comments (a space-delimited `(` up to its closing `)`), repeating until
 /// none of the three remain.
 ///
-/// Distinct from @ref parser::skip_intertoken_space, which only skips plain
+/// Distinct from @ref skip_intertoken_space, which only skips plain
 /// ASCII whitespace and knows nothing about either comment form.
-[[nodiscard]] constexpr auto skip_forth_space(parser::cursor cur)
-    -> parser::cursor {
+[[nodiscard]] constexpr auto skip_forth_space(cursor cur) -> cursor {
     for (;;) {
-        cur = parser::skip_intertoken_space(cur);
+        cur = skip_intertoken_space(cur);
         if (cur.empty()) {
             return cur;
         }
@@ -117,10 +128,10 @@ namespace smd::forth::reader {
 
 /// Wraps @p p so it first skips @ref skip_forth_space, then runs @p p, then
 /// skips @ref skip_forth_space again -- the Forth-aware analogue of
-/// @ref parser::lexeme, which only skips plain whitespace around @p p.
-template <parser::parser_like P>
+/// @ref lexeme, which only skips plain whitespace around @p p.
+template <parser_like P>
 [[nodiscard]] constexpr auto forth_lexeme(P p) {
-    return parser::parser{[p](parser::cursor cur) {
+    return parser{[p](cursor cur) {
         auto start = skip_forth_space(cur);
         auto r = p(start);
         if (!r.has_value()) {
@@ -128,8 +139,7 @@ template <parser::parser_like P>
         }
         auto rest = skip_forth_space(r.value().rest);
         using V = decltype(r.value().value);
-        return parser::parse_result<V>{
-            parser::parse_state<V>{r.value().value, rest}};
+        return parse_result<V>{parse_state<V>{r.value().value, rest}};
     }};
 }
 
@@ -144,17 +154,17 @@ using token_text = foundation::static_vector<char, MaxName>;
 ///
 /// @tparam MaxName Maximum number of characters in the scanned token.
 template <int MaxName = 32>
-[[nodiscard]] constexpr auto scan_word(parser::cursor cur)
-    -> parser::parse_result<token_text<MaxName>> {
-    auto p = forth_lexeme(parser::map(
-        parser::some<MaxName>(parser::satisfy(is_word_char, "expected word")),
-        [](token_text<MaxName> raw) {
-            token_text<MaxName> folded{};
-            for (char c : raw) {
-                folded.push_back(fold_char(c));
-            }
-            return folded;
-        }));
+[[nodiscard]] constexpr auto scan_word(cursor cur)
+    -> parse_result<token_text<MaxName>> {
+    auto p =
+        forth_lexeme(map(some<MaxName>(satisfy(is_word_char, "expected word")),
+                         [](token_text<MaxName> raw) {
+                             token_text<MaxName> folded{};
+                             for (char c : raw) {
+                                 folded.push_back(fold_char(c));
+                             }
+                             return folded;
+                         }));
     return p(cur);
 }
 // d4e6f9c3-8a3b-4c9d-9e4f-5a7b9d3c2f8a end
@@ -196,6 +206,6 @@ template <int MaxName = 32>
 }
 // e5f7a0d4-9b4c-4d0e-af5a-6b8c0e4d3a9b end
 
-} // namespace smd::forth::reader
+} // namespace smd::forth::parser
 
 #endif

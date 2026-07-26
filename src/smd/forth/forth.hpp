@@ -3,39 +3,51 @@
 #ifndef SRC_SMD_FORTH_FORTH_HPP
 #define SRC_SMD_FORTH_FORTH_HPP
 
-#include <smd/forth/elaborator/elaborate.hpp>
-#include <smd/forth/foundation/result.hpp>
 #include <smd/forth/foundation/static_vector.hpp>
+#include <smd/forth/interpreter/session.hpp>
 #include <smd/forth/machine/cell.hpp>
-#include <smd/forth/machine/codegen.hpp>
-#include <smd/forth/machine/forth_state.hpp>
-#include <smd/forth/machine/instruction.hpp>
-#include <smd/forth/machine/vm.hpp>
-#include <smd/forth/reader/read_program.hpp>
 
 #include <algorithm>
 #include <cstddef>
 #include <string_view>
 
-// Step F15 (docs/forth-plan.md): the public one-shot API. Steps F5-F14 are
-// only reachable by naming individual pipeline stages by hand
-// (reader::read_program -> elaborator::elaborate -> machine::codegen ->
-// machine::run, exactly the sequence every prior step's own test file
-// already builds locally as a small `compile()` helper -- see e.g.
-// machine/vm.test.cpp's identically-shaped helper). This header promotes
-// that same sequence to the one thing an external caller is meant to use:
-// `compiled_forth<"...">`, a namespace-scope constexpr value keyed on the
-// source text itself via `source_literal`, plus `forth_program`'s
-// `.run()`/`.stack()`/`.output()` convenience surface.
+// Step F26 (docs/forth-plan-2.md, "the cut"): the public one-shot API,
+// retargeted from the R1 pipeline (reader::read_program ->
+// elaborator::elaborate -> machine::codegen -> machine::run, step F15) onto
+// D15's session image (interpreter::session / interpreter::build_session,
+// step F25). The R1 pipeline this header used to compose is deleted by this
+// same step (docs/divergences/DIV-0011's true-Forth pivot); see DIV-0014 for
+// the full record of what changed here and why.
 //
-// `source_literal` is a pattern reused, not copied, from
-// ~/src/compile-time-scheme/main/src/smd/smdscheme/smdscheme.hpp's
-// `source_literal<N>` + `compiled_closure<Source>` (docs/forth-plan.md
-// section 5, "reuse as pattern only"): reimplemented here under
-// `smd::forth` with this project's own file-prolog/guard/namespace
-// conventions, and `compiled_forth` composes three pipeline stages
-// (read -> elaborate -> codegen) rather than Scheme's single
-// `compile_to_closure` call.
+// The architecture shift this retarget reflects: under D13/D14 there is no
+// separate "compile" phase distinct from "run the top level" -- the text
+// interpreter both compiles `:` ... `;` definitions and directly executes
+// every top-level word as it meets it, in the same pass. R1's forth_program
+// therefore compiled once (read/elaborate/codegen) and *ran* the result
+// fresh, from scratch, once per accessor call (`.run()`/`.stack()`/
+// `.output()` each constructed a new machine::forth_state and called
+// machine::run against it, independently). compiled_forth<Source>'s own
+// single namespace-scope constexpr initialization now *is* that one run: it
+// builds the whole session -- code space, final dictionary, data-space
+// high-water mark, captured output, and (F26's own addition to
+// interpreter::session) the final data stack -- exactly once, and
+// `.run()`/`.stack()`/`.output()` are now cheap accessors over that already-
+// built image rather than three independent re-executions. A malformed
+// program is still a hard compile error (`.value()` on a failed
+// foundation::result inside a constexpr initializer is not a core constant
+// expression): what used to be a separate, later, per-call *runtime* failure
+// (a well-formed program that ran out of fuel, for instance) is now folded
+// into that same single build-time evaluation too, since running the top
+// level is no longer separable from building the session at all. See
+// DIV-0014 for the consequence this has for a program like the old `SPIN`
+// budget-exhaustion example (moved to interpreter/control_flow_corpus.hpp,
+// not reachable through this header until control flow exists at F27
+// regardless).
+//
+// source_literal<N> is unchanged from step F15 -- reused, not copied, from
+// ~/src/compile-time-scheme/main's own source_literal<N>/compiled_closure
+// pattern (docs/forth-plan.md section 5); nothing about this retarget
+// touches it.
 
 namespace smd::forth {
 
@@ -71,206 +83,135 @@ struct source_literal {
 // 0f3a01ca-389f-4ca6-b09c-6b6423482246 end
 // 18245977-b4d2-4011-bac7-a36f7680aeb4 end
 
-namespace detail {
-
-/// Runs the whole read -> elaborate -> codegen pipeline (F5/F7, F11/F12,
-/// F14) over @p source, threading every capacity template parameter
-/// through to its owning stage.
-///
-/// @p source is passed to both @ref reader::read_program and
-/// @ref elaborator::elaborate: F12's stack-effect checker re-slices a
-/// declared effect comment out of the original source text a second time
-/// (see `elaborator::elaborate`'s own doc comment in
-/// `elaborator/elaborate.hpp`), so the same text is threaded through
-/// twice, not shared via the already-parsed tree.
-template <int MaxCode, int MaxNodes, int MaxBody, int MaxName, int MaxDepth,
-          int MaxWords, int MaxData, int MaxWarnings>
-constexpr auto compile_program(std::string_view source)
-    -> foundation::result<machine::compiled_program<MaxCode, MaxWords>> {
-    auto tree =
-        reader::read_program<MaxNodes, MaxBody, MaxName, MaxDepth>(source);
-    if (!tree.has_value()) {
-        return tree.error();
-    }
-    auto unit =
-        elaborator::elaborate<MaxNodes, MaxBody, MaxName, MaxWords, MaxData,
-                              MaxWarnings>(tree.value(), source);
-    if (!unit.has_value()) {
-        return unit.error();
-    }
-    return machine::codegen<MaxCode, MaxNodes, MaxBody, MaxName, MaxWords,
-                            MaxData, MaxWarnings>(unit.value());
-}
-
-} // namespace detail
-
 // bb43d007-745e-4e1b-8057-b97766788d6b
-/// A compiled Forth program bundled with the runtime capacities its own
-/// @ref run needs, ready to run or inspect.
+/// A built D15 session image (@ref interpreter::session), bundled with the
+/// same three-accessor convenience surface step F15 established
+/// (`run`/`stack`/`output`).
 ///
-/// @ref compiled_forth is the intended way to obtain one of these: this
-/// class's own constructor takes an already-successful
-/// @ref machine::compiled_program by value and performs no elaboration or
-/// codegen of its own.
+/// Unlike the R1-era @c forth_program this class replaces, @ref
+/// forth_program carries no separate "compiled program" distinct from the
+/// session it wraps, and none of its three accessors re-executes anything:
+/// the whole program -- every top-level word and every `:` ... `;`
+/// definition -- already ran once, when the @ref session_type this class
+/// wraps was built (@ref compiled_forth below is the one place that
+/// happens). `run`/`stack`/`output` are cheap reads over that
+/// already-finished result.
 ///
-/// @tparam MaxCode      Instruction-array capacity (@ref
-///                      machine::compiled_program).
-/// @tparam MaxWords     Word-table capacity (@ref
-///                      machine::compiled_program).
-/// @tparam StackDepth   Data stack capacity for every @ref run's fresh
-///                      @ref machine::forth_state.
-/// @tparam RStackDepth  Return stack capacity, likewise.
-/// @tparam MaxData      Data-space capacity, likewise; independent of (but
-///                      must be at least as large as) the source program's
-///                      own @ref machine::compiled_program::data_space_size.
-/// @tparam MaxOut       Output-buffer capacity, likewise.
-template <int MaxCode, int MaxWords, int StackDepth, int RStackDepth,
-          int MaxData, int MaxOut>
+/// @tparam MaxCode  Code-space instruction-array capacity (@ref
+///                  interpreter::session).
+/// @tparam MaxWords Dictionary/code-space word-table capacity, likewise.
+/// @tparam MaxData  Data-space capacity, likewise.
+/// @tparam MaxOut   Output-buffer capacity, likewise.
+/// @tparam MaxName  Maximum word-name length, likewise.
+/// @tparam MaxStack Final-data-stack snapshot capacity, likewise (F26's own
+///                  addition to @ref interpreter::session).
+template <int MaxCode, int MaxWords, int MaxData, int MaxOut, int MaxName,
+          int MaxStack>
 class forth_program {
   public:
-    /// The state type a @ref run produces.
-    using state_type =
-        machine::forth_state<StackDepth, RStackDepth, MaxData, MaxOut>;
+    /// The session type this class wraps.
+    using session_type = interpreter::session<MaxCode, MaxWords, MaxData,
+                                              MaxOut, MaxName, MaxStack>;
 
-    /// Wraps an already-compiled @p program; performs no compilation
-    /// itself.
-    constexpr explicit forth_program(
-        machine::compiled_program<MaxCode, MaxWords> program);
+    /// Wraps an already-built @p session; performs no interpretation of its
+    /// own.
+    constexpr explicit forth_program(session_type session);
 
-    /// Runs this program against a freshly constructed @ref state_type and
-    /// returns it, or the first diagnosed runtime error (stack
-    /// underflow/overflow, division by zero, budget exhaustion, an
-    /// out-of-range instruction pointer, or an unimplemented reserved
-    /// opcode -- see @ref machine::run).
-    ///
-    /// Each call constructs a brand-new @ref state_type and runs this
-    /// program's own @ref machine::compiled_program against it from
-    /// scratch: a @ref forth_program carries no mutable execution state of
-    /// its own (`compiled_forth<Source>` is a namespace-scope @c constexpr
-    /// *value*, so it could not carry one), so two calls to @ref run never
-    /// observe each other's side effects -- but a caller that calls
-    /// @ref run, @ref stack, and @ref output on the same object runs the
-    /// whole program three times over, not once. This is a deliberate,
-    /// documented choice (see handoff.md's Step F15 section), not an
-    /// accidental quadratic surprise: it is the only option available
-    /// without giving @ref forth_program mutable state of its own, and it
-    /// is exactly right for the plan's own merge-criterion-sized programs.
-    ///
-    /// @param fuel The VM's step budget (@ref machine::run); defaults to
-    ///             the same 100000 @ref machine::run itself defaults to.
-    [[nodiscard]] constexpr auto run(int fuel = 100000) const
-        -> foundation::result<state_type>;
+    /// The whole built session image: code space, final dictionary,
+    /// data-space high-water mark, captured output, and final data stack.
+    /// Unlike the R1-era @c forth_program::run, this never fails at the
+    /// call site -- any failure already happened, at compile time, when
+    /// @ref compiled_forth built this object's own session (see this
+    /// header's own top-of-file comment).
+    [[nodiscard]] constexpr auto run() const -> session_type const &;
 
-    /// Runs this program (@ref run, with @p fuel) and returns a snapshot of
-    /// the resulting data stack, bottom cell first and top cell last -- the
-    /// same bottom-to-top order @ref machine::primitive::dot_s prints in
-    /// (`machine/forth_state.hpp`).
-    ///
-    /// Unlike @ref run, a runtime error does not prevent a result here:
-    /// @ref machine::run mutates its @ref state_type argument in place
-    /// even when it returns an error partway through, so @ref stack
-    /// returns whatever the data stack held at the point execution
-    /// stopped, successful or not. A caller that must distinguish "ran to
-    /// completion" from "stopped early with a diagnosed error" needs
-    /// @ref run itself, not this convenience accessor.
-    [[nodiscard]] constexpr auto stack(int fuel = 100000) const
-        -> foundation::static_vector<machine::cell, StackDepth>;
+    /// The final data stack @ref run's own session left behind, bottom cell
+    /// first and top cell last -- the same bottom-to-top order @ref
+    /// machine::primitive::dot_s prints in. A thin accessor over @ref
+    /// session_type::stack; see that field's own doc comment
+    /// (`interpreter/session.hpp`) for how it is populated.
+    [[nodiscard]] constexpr auto stack() const
+        -> foundation::static_vector<machine::cell, MaxStack>;
 
-    /// Runs this program (@ref run, with @p fuel) and returns a snapshot of
-    /// the resulting output buffer. Same best-effort-on-error contract as
-    /// @ref stack.
-    [[nodiscard]] constexpr auto output(int fuel = 100000) const
+    /// The output @ref run's own session accumulated while it was built. A
+    /// thin accessor over @ref session_type::output.
+    [[nodiscard]] constexpr auto output() const
         -> foundation::static_vector<char, MaxOut>;
 
   private:
-    machine::compiled_program<MaxCode, MaxWords> program_;
+    session_type session_;
 };
 
-template <int MaxCode, int MaxWords, int StackDepth, int RStackDepth,
-          int MaxData, int MaxOut>
-constexpr forth_program<
-    MaxCode, MaxWords, StackDepth, RStackDepth, MaxData,
-    MaxOut>::forth_program(machine::compiled_program<MaxCode, MaxWords> program)
-    : program_(program) {}
+template <int MaxCode, int MaxWords, int MaxData, int MaxOut, int MaxName,
+          int MaxStack>
+constexpr forth_program<MaxCode, MaxWords, MaxData, MaxOut, MaxName,
+                        MaxStack>::forth_program(session_type session)
+    : session_(session) {}
 
-template <int MaxCode, int MaxWords, int StackDepth, int RStackDepth,
-          int MaxData, int MaxOut>
+template <int MaxCode, int MaxWords, int MaxData, int MaxOut, int MaxName,
+          int MaxStack>
 constexpr auto
-forth_program<MaxCode, MaxWords, StackDepth, RStackDepth, MaxData, MaxOut>::run(
-    int fuel) const -> foundation::result<state_type> {
-    state_type state{};
-    auto status = machine::run(program_, state, fuel);
-    if (!status.has_value()) {
-        return status.error();
-    }
-    return state;
+forth_program<MaxCode, MaxWords, MaxData, MaxOut, MaxName, MaxStack>::run()
+    const -> session_type const & {
+    return session_;
 }
 
-template <int MaxCode, int MaxWords, int StackDepth, int RStackDepth,
-          int MaxData, int MaxOut>
-constexpr auto forth_program<MaxCode, MaxWords, StackDepth, RStackDepth,
-                             MaxData, MaxOut>::stack(int fuel) const
-    -> foundation::static_vector<machine::cell, StackDepth> {
-    state_type state{};
-    (void)machine::run(program_, state, fuel);
-    foundation::static_vector<machine::cell, StackDepth> snapshot{};
-    for (int offset = state.data().depth() - 1; offset >= 0; --offset) {
-        snapshot.push_back(state.data().peek(offset).value());
-    }
-    return snapshot;
+template <int MaxCode, int MaxWords, int MaxData, int MaxOut, int MaxName,
+          int MaxStack>
+constexpr auto
+forth_program<MaxCode, MaxWords, MaxData, MaxOut, MaxName, MaxStack>::stack()
+    const -> foundation::static_vector<machine::cell, MaxStack> {
+    return session_.stack;
 }
 
-template <int MaxCode, int MaxWords, int StackDepth, int RStackDepth,
-          int MaxData, int MaxOut>
-constexpr auto forth_program<MaxCode, MaxWords, StackDepth, RStackDepth,
-                             MaxData, MaxOut>::output(int fuel) const
-    -> foundation::static_vector<char, MaxOut> {
-    state_type state{};
-    (void)machine::run(program_, state, fuel);
-    return state.output();
+template <int MaxCode, int MaxWords, int MaxData, int MaxOut, int MaxName,
+          int MaxStack>
+constexpr auto
+forth_program<MaxCode, MaxWords, MaxData, MaxOut, MaxName, MaxStack>::output()
+    const -> foundation::static_vector<char, MaxOut> {
+    return session_.output;
 }
 // bb43d007-745e-4e1b-8057-b97766788d6b end
 
 // 61611656-475a-405f-a35b-179c4d88f71e
-/// The public one-shot entry point (docs/forth-plan.md Step F15): compiles
-/// @p Source's text through the whole pipeline exactly once, at
-/// namespace-scope @c constexpr initialization, and stores the result as a
-/// ready-to-run @ref forth_program.
+/// The public one-shot entry point (docs/forth-plan.md Step F15; retargeted
+/// onto D15's session image at step F26): builds @p Source's whole session
+/// (@ref interpreter::build_session) exactly once, at namespace-scope
+/// @c constexpr initialization, and stores the result as a ready-to-inspect
+/// @ref forth_program.
 ///
-/// A @p Source that fails to parse, fails elaboration (an unresolved word,
-/// an unbalanced control structure, a failed stack-effect analysis, ...),
-/// or overflows any of the capacities below is a **hard compile error**:
+/// A @p Source that fails to interpret -- an unknown word, a stack
+/// underflow, a budget-exhausted top-level loop, or anything else @ref
+/// interpreter::interpret diagnoses -- is a **hard compile error**:
 /// `.value()` on a @ref foundation::result holding an error is not a core
-/// constant expression (`std::get` on the wrong @c std::variant
-/// alternative throws), so a namespace-scope @c constexpr initializer that
-/// calls it fails the whole translation unit rather than merely returning
-/// a runtime-checkable failure -- the same discipline
-/// `machine/eval_direct.test.cpp`'s and `machine/vm.test.cpp`'s own
-/// namespace-scope @c constexpr programs already rely on for known-good
-/// inputs; @ref compiled_forth makes that same discipline the *public*
-/// contract (see `test_neg_syntax_error.cpp` for the failure side,
-/// deliberately exercised).
+/// constant expression, so a namespace-scope @c constexpr initializer that
+/// calls it fails the whole translation unit rather than merely returning a
+/// runtime-checkable failure (see `test_neg_syntax_error.cpp` for the
+/// failure side, deliberately exercised). This is a strictly wider net than
+/// F15's own R1-era contract caught: under D13/D14, building a session *is*
+/// running the top level, so what R1 would have surfaced as a *runtime*
+/// @c forth_program::run failure (budget exhaustion, for instance) is now
+/// caught here too, at the same single evaluation. See DIV-0014.
 ///
 /// Every capacity is a template parameter with a project-standard default
-/// (D2): the pipeline-stage capacities (@p MaxCode, @p MaxNodes,
-/// @p MaxBody, @p MaxName, @p MaxDepth, @p MaxWords, @p MaxData,
-/// @p MaxWarnings) default to the same values @ref reader::read_program,
-/// @ref elaborator::elaborate, and @ref machine::codegen already default
-/// to on their own; the runtime-state capacities (@p StackDepth,
-/// @p RStackDepth, @p MaxOut) are new to this step, chosen generously for
-/// a one-shot caller who has not sized a @ref machine::forth_state by
-/// hand.
+/// (D2): @p MaxCode/@p MaxWords/@p MaxData/@p MaxOut/@p MaxName/@p MaxStack
+/// match @ref interpreter::session's own defaults; @p BuildDepth/
+/// @p BuildRDepth size the transient build-time @ref machine::forth_state
+/// @ref interpreter::build_session constructs internally (not part of the
+/// returned session); @p Fuel is the interpreter loop's own step budget for
+/// that one build.
 ///
 /// @tparam Source The Forth source text, as an NTTP (@ref source_literal).
 // 9affe4fc-3d72-4f41-8fd0-d2338f9ab603
-template <source_literal Source, int MaxCode = 4096, int MaxNodes = 1024,
-          int MaxBody = 64, int MaxName = 32, int MaxDepth = 32,
-          int MaxWords = 256, int MaxData = 1024, int MaxWarnings = 64,
-          int StackDepth = 64, int RStackDepth = 64, int MaxOut = 4096>
+template <source_literal Source, int MaxCode = 4096, int MaxWords = 256,
+          int MaxData = 1024, int MaxOut = 4096, int MaxName = 32,
+          int MaxStack = 64, int BuildDepth = 64, int BuildRDepth = 64,
+          int Fuel = 100000>
 inline constexpr auto compiled_forth =
-    forth_program<MaxCode, MaxWords, StackDepth, RStackDepth, MaxData, MaxOut>{
-        detail::compile_program<MaxCode, MaxNodes, MaxBody, MaxName, MaxDepth,
-                                MaxWords, MaxData, MaxWarnings>(Source.view())
+    forth_program<MaxCode, MaxWords, MaxData, MaxOut, MaxName, MaxStack>{
+        interpreter::build_session<MaxCode, MaxWords, MaxData, MaxOut, MaxName,
+                                   BuildDepth, BuildRDepth, MaxStack>(
+            Source.view(), Fuel)
             .value()};
 // 9affe4fc-3d72-4f41-8fd0-d2338f9ab603 end
 // 61611656-475a-405f-a35b-179c4d88f71e end

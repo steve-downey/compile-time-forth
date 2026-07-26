@@ -4,165 +4,127 @@
 #include <smd/forth/machine/vm.hpp>
 #include <smd/forth/machine/vm.hpp> // test 2nd include OK
 
-#include <smd/forth/elaborator/elaborate.hpp>
-#include <smd/forth/foundation/static_vector.hpp>
-#include <smd/forth/machine/codegen.hpp>
+#include <smd/forth/foundation/source_pos.hpp>
+#include <smd/forth/interpreter/session.hpp>
+#include <smd/forth/machine/cell.hpp>
+#include <smd/forth/machine/emit.hpp>
 #include <smd/forth/machine/forth_state.hpp>
-#include <smd/forth/reader/read_program.hpp>
+#include <smd/forth/machine/instruction.hpp>
 
 #include <catch2/catch_test_macros.hpp>
 
-#include <string_view>
-
-using smd::forth::elaborator::elaborate;
-using smd::forth::machine::codegen;
+using smd::forth::foundation::source_pos;
+using smd::forth::interpreter::build_session;
+using smd::forth::interpreter::call_defined_word;
+using smd::forth::interpreter::seed_from_session;
+using smd::forth::machine::cell;
 using smd::forth::machine::compiled_program;
+using smd::forth::machine::emit;
 using smd::forth::machine::forth_state;
 using smd::forth::machine::op;
+using smd::forth::machine::primitive;
 using smd::forth::machine::run;
 using smd::forth::machine::run_from;
-using smd::forth::reader::read_program;
 
 TEST_CASE("VmTest - HeaderIsIdempotent") { REQUIRE(true); }
 
+// Step F26 ("the cut"): machine::codegen (source text -> compiled_program,
+// via the R1 elaborated core) is deleted along with the rest of the R1
+// pipeline (docs/divergences/DIV-0011); this file no longer has a "compile
+// this source string" helper. Every compiled_program below is instead
+// hand-built directly with machine::emit, the same technique
+// interpreter/compilebuf.test.cpp's own hand-compiled "DUP *" example
+// already uses for compile_buffer -- proving the VM's own opcode semantics
+// (push/prim/call/ret/branch/branch0/halt, run vs. run_from, fuel,
+// data-space seeding) does not need a front end at all, only instr values.
+//
+// Programs that used to reach the VM through IF/BEGIN/DO *source syntax*
+// (ABS, COUNTDOWN, SPIN, the counted-loop set, ...) had their source text
+// and expected results preserved verbatim in
+// interpreter/control_flow_corpus.hpp for F27 -- interpret() is what will
+// give the text interpreter those words back; this file does not attempt to
+// hand-emit IF/BEGIN/DO bytecode to keep exercising them here. The F16
+// memory-word and CREATE/ALLOT merge criteria likewise moved to the layer
+// that now actually compiles source text -- interp.test.cpp's own
+// MemoryWordsMergeCriterion/CreateAllotMergeCriterion -- rather than staying
+// duplicated at this hand-built-bytecode layer.
+
 namespace {
 
-// Small capacities: these tests never need the header's production defaults.
-constexpr int test_max_code = 512;
-constexpr int test_max_nodes = 256;
-constexpr int test_max_body = 32;
-constexpr int test_max_name = 16;
-constexpr int test_max_parse_depth = 8;
-constexpr int test_max_words = 64;
-constexpr int test_max_data = 16;
-constexpr int test_max_warnings = 8;
+constexpr int test_max_code = 64;
+constexpr int test_max_words = 8;
 constexpr int test_stack_depth = 16;
 constexpr int test_rstack_depth = 8;
+constexpr int test_max_data = 16;
 constexpr int test_out = 64;
 
 using test_state =
     forth_state<test_stack_depth, test_rstack_depth, test_max_data, test_out>;
 using test_program = compiled_program<test_max_code, test_max_words>;
 
-/// Runs the whole read -> elaborate -> codegen pipeline. @pre parsing,
-/// elaboration, and codegen all succeed for @p source -- the same
-/// precondition @c eval_direct.test.cpp's own @c run_program documents for
-/// its analogous helper.
-constexpr auto compile(std::string_view source) -> test_program {
-    auto tree = read_program<test_max_nodes, test_max_body, test_max_name,
-                             test_max_parse_depth>(source);
-    auto unit =
-        elaborate<test_max_nodes, test_max_body, test_max_name, test_max_words,
-                  test_max_data, test_max_warnings>(tree.value(), source);
-    auto program =
-        codegen<test_max_code, test_max_nodes, test_max_body, test_max_name,
-                test_max_words, test_max_data, test_max_warnings>(unit.value());
-    return program.value();
+/// Hand-builds "SQUARED": `: SQUARED DUP * ;  4 SQUARED`'s own shape --
+/// `dup`, `star`, `ret` at instruction 0, then a top-level `push 4`,
+/// `call 0`, `halt` -- without any source-text pipeline. Dictionary index 0
+/// (@ref test_program::entry_points[0]) is SQUARED's own entry point, for
+/// tests that call into it directly via @ref run_from.
+constexpr auto squared_program() -> test_program {
+    test_program p{};
+    int const squared_entry = p.code.size(); // 0
+    (void)emit(p, op::prim, static_cast<cell>(primitive::dup), source_pos{});
+    (void)emit(p, op::prim, static_cast<cell>(primitive::star), source_pos{});
+    (void)emit(p, op::ret, cell{0}, source_pos{});
+    p.program_entry = p.code.size();
+    (void)emit(p, op::push, cell{4}, source_pos{});
+    (void)emit(p, op::call, static_cast<cell>(squared_entry), source_pos{});
+    (void)emit(p, op::halt, cell{0}, source_pos{});
+    p.entry_points.push_back(squared_entry);
+    return p;
 }
 
-/// True if @p out's contents equal @p expect, character for character.
-/// Mirrors @c eval_direct.test.cpp's identical helper -- both backends'
-/// tests check output the same way, deliberately, so the two never quietly
-/// drift apart on what "the same output" means.
-template <int MaxOut>
-constexpr auto
-output_equals(smd::forth::foundation::static_vector<char, MaxOut> const &out,
-              std::string_view expect) -> bool {
-    if (out.size() != static_cast<int>(expect.size())) {
-        return false;
-    }
-    for (int i = 0; i < out.size(); ++i) {
-        if (out[i] != expect[static_cast<std::size_t>(i)]) {
-            return false;
-        }
-    }
-    return true;
+/// A program that never halts: `branch` back to its own start, forever --
+/// the VM-level, hand-emitted analogue of `BEGIN FALSE UNTIL` (which is what
+/// interpreter/control_flow_corpus.hpp's own spin_program preserves at the
+/// source-text level for F27). Exercises @ref consume_vm_fuel's own
+/// diagnosis directly, independent of any front end.
+constexpr auto spin_program() -> test_program {
+    test_program p{};
+    (void)emit(p, op::branch, cell{0}, source_pos{});
+    p.program_entry = 0;
+    return p;
 }
 
-// -- The survives-to-runtime proof (docs/forth-plan.md Step F14) -----------
-//
-// Every program below is a `constexpr` object at namespace scope, built
-// once by the read -> elaborate -> codegen pipeline. Each one is then run
-// through the VM twice: once inside a `static_assert` (compile time) and
-// once inside a `TEST_CASE` (ordinary runtime) -- the *same* compiled
-// object both times, not just the same source text re-compiled twice. This
-// is F14's own merge criterion, verbatim: "the entire F13 test set passes
-// through codegen+VM at compile time via static_assert and at runtime via
-// Catch2 REQUIRE on the same program object declared constexpr at namespace
-// scope."
+/// A program whose top level declares one cell of data space
+/// (`data_space_size = 1`, set directly rather than via `VARIABLE`) and
+/// stores/fetches through address 0: `run` seeds that cell before
+/// executing, so `42 0 !  0 @` (Forth's own `( x a-addr -- )` argument
+/// order for `!`) leaves `[42]`; @ref run_from does not, so the same
+/// program run from its own entry point diagnoses the first store as out of
+/// bounds against a data space nobody has seeded.
+constexpr auto memory_program() -> test_program {
+    test_program p{};
+    p.data_space_size = 1;
+    p.program_entry = p.code.size();
+    (void)emit(p, op::push, cell{42}, source_pos{});
+    (void)emit(p, op::push, cell{0}, source_pos{});
+    (void)emit(p, op::prim, static_cast<cell>(primitive::store), source_pos{});
+    (void)emit(p, op::push, cell{0}, source_pos{});
+    (void)emit(p, op::prim, static_cast<cell>(primitive::fetch), source_pos{});
+    (void)emit(p, op::halt, cell{0}, source_pos{});
+    return p;
+}
 
-// `: SQUARED DUP * ;  4 SQUARED` -- stack [16].
-constexpr test_program squared_program =
-    compile(": SQUARED DUP * ;  4 SQUARED");
-
-// `: ABS DUP 0< IF NEGATE THEN ;  -7 ABS` -- stack [7].
-constexpr test_program abs_program =
-    compile(": ABS DUP 0< IF NEGATE THEN ;  -7 ABS");
-
-// `: COUNTDOWN BEGIN DUP . 1- DUP 0= UNTIL DROP ;  3 COUNTDOWN` -- stack [],
-// output "3 2 1 ".
-constexpr test_program countdown_program =
-    compile(": COUNTDOWN BEGIN DUP . 1- DUP 0= UNTIL DROP ;  3 COUNTDOWN");
-
-// `: SPIN BEGIN FALSE UNTIL ; SPIN` -- budget exhaustion under a small fuel.
-constexpr test_program spin_program =
-    compile(": SPIN BEGIN FALSE UNTIL ; SPIN");
-
-// `: UPTO3 0 BEGIN DUP 3 < WHILE 1 + REPEAT ; UPTO3` -- stack [3]. Exercises
-// BEGIN...WHILE...REPEAT as real repetition through the VM, matching
-// EvalDirectTest - WhileLoopIsRealRepetition.
-constexpr test_program upto3_program =
-    compile(": UPTO3 0 BEGIN DUP 3 < WHILE 1 + REPEAT ; UPTO3");
-
-// `: INNER DUP 0< IF EXIT THEN DROP ; : OUTER INNER 99 ; -3 OUTER` -- stack
-// [-3 99]. Exercises `ret` as EXIT and a call as its own definition
-// boundary, matching EvalDirectTest - ExitUnwindsOnlyToItsOwnCallBoundary.
-constexpr test_program exit_boundary_program =
-    compile(": INNER DUP 0< IF EXIT THEN DROP ; : OUTER INNER 99 ; -3 OUTER");
-
-// `VARIABLE X  5 X !  X @ 3 + X !  X @` -- stack [8], and
-// `7 CONSTANT LUCKY  LUCKY LUCKY +` -- stack [14], step F16's own merge
-// criterion, matching EvalDirectTest - MemoryWordsMergeCriterion.
-constexpr test_program memory_words_program =
-    compile("VARIABLE X  5 X !  X @ 3 + X !  X @ "
-            "7 CONSTANT LUCKY  LUCKY LUCKY +");
-
-// `CREATE BUF 4 ALLOT` -- BUF is usable as a base address; stack [30] once
-// both allotted cells are stored through and summed, matching
-// EvalDirectTest - CreateAllotMergeCriterion.
-constexpr test_program create_allot_program = compile("CREATE BUF 4 ALLOT "
-                                                      "10 BUF ! 20 BUF 3 + ! "
-                                                      "BUF @ BUF 3 + @ +");
-
-// `VARIABLE X  99 X 5 + !` -- codegen succeeds (an ordinary, well-formed
-// program); the store itself is what fails at runtime, since X is a
-// one-cell VARIABLE and X + 5 lands past the data space's own high-water
-// mark. Matches EvalDirectTest - OutOfBoundsStoreIsDiagnosed.
-constexpr test_program oob_store_program = compile("VARIABLE X  99 X 5 + !");
-
-// -- Counted loops (docs/forth-plan.md Step F17), through the VM ------------
-
-// `: SUMTO 0 SWAP 1+ 0 DO I + LOOP ;  5 SUMTO` -- stack [15].
-constexpr test_program sumto_program =
-    compile(": SUMTO 0 SWAP 1+ 0 DO I + LOOP ;  5 SUMTO");
-
-// `: FIND5 10 0 DO I 5 = IF I LEAVE THEN LOOP ;  FIND5` -- stack [5].
-constexpr test_program find5_program =
-    compile(": FIND5 10 0 DO I 5 = IF I LEAVE THEN LOOP ;  FIND5");
-
-// Nested loops + J: sum J over 3x3 iterations = 9.
-constexpr test_program tens_program =
-    compile(": TENS 0 3 0 DO 3 0 DO J + LOOP LOOP ;  TENS");
-
-// `+LOOP`: sum 0+2+4+6+8 = 20.
-constexpr test_program sumeven_program =
-    compile(": SUMEVEN 0 10 0 DO I + 2 +LOOP ;  SUMEVEN");
+constexpr test_program squared = squared_program();
+constexpr test_program spin = spin_program();
+constexpr test_program memory = memory_program();
 
 } // namespace
 
+// -- The survives-to-runtime proof (docs/forth-plan.md Step F14), on a
+// hand-built compiled_program -----------------------------------------------
+
 static_assert([] {
     test_state state{};
-    auto r = run(squared_program, state, /*fuel=*/100000);
+    auto r = run(squared, state, /*fuel=*/1000);
     if (!r.has_value()) {
         return false;
     }
@@ -171,7 +133,7 @@ static_assert([] {
 
 TEST_CASE("VmTest - SquaredMergeCriterion") {
     test_state state{};
-    auto r = run(squared_program, state, 100000);
+    auto r = run(squared, state, 1000);
     REQUIRE(r.has_value());
     CHECK(state.data().depth() == 1);
     CHECK(state.data().peek(0).value() == 16);
@@ -179,47 +141,13 @@ TEST_CASE("VmTest - SquaredMergeCriterion") {
 
 static_assert([] {
     test_state state{};
-    auto r = run(abs_program, state, /*fuel=*/100000);
-    if (!r.has_value()) {
-        return false;
-    }
-    return state.data().depth() == 1 && state.data().peek(0).value() == 7;
-}());
-
-TEST_CASE("VmTest - AbsMergeCriterion") {
-    test_state state{};
-    auto r = run(abs_program, state, 100000);
-    REQUIRE(r.has_value());
-    CHECK(state.data().depth() == 1);
-    CHECK(state.data().peek(0).value() == 7);
-}
-
-static_assert([] {
-    test_state state{};
-    auto r = run(countdown_program, state, /*fuel=*/100000);
-    if (!r.has_value()) {
-        return false;
-    }
-    return state.data().depth() == 0 && output_equals(state.output(), "3 2 1 ");
-}());
-
-TEST_CASE("VmTest - CountdownMergeCriterion") {
-    test_state state{};
-    auto r = run(countdown_program, state, 100000);
-    REQUIRE(r.has_value());
-    CHECK(state.data().depth() == 0);
-    CHECK(output_equals(state.output(), "3 2 1 "));
-}
-
-static_assert([] {
-    test_state state{};
-    auto r = run(spin_program, state, /*fuel=*/10);
+    auto r = run(spin, state, /*fuel=*/10);
     return !r.has_value();
 }());
 
 TEST_CASE("VmTest - BudgetExhaustionIsDiagnosed") {
     test_state state{};
-    auto r = run(spin_program, state, 10);
+    auto r = run(spin, state, 10);
     REQUIRE_FALSE(r.has_value());
 }
 
@@ -227,234 +155,135 @@ TEST_CASE("VmTest - BudgetExhaustionIsDiagnosed") {
 // program.
 static_assert([] {
     test_state state{};
-    return run(squared_program, state, /*fuel=*/1000).has_value();
+    return run(squared, state, /*fuel=*/1000).has_value();
 }());
-
-static_assert([] {
-    test_state state{};
-    auto r = run(upto3_program, state, /*fuel=*/100000);
-    if (!r.has_value()) {
-        return false;
-    }
-    return state.data().depth() == 1 && state.data().peek(0).value() == 3;
-}());
-
-TEST_CASE("VmTest - WhileLoopIsRealRepetition") {
-    test_state state{};
-    auto r = run(upto3_program, state, 100000);
-    REQUIRE(r.has_value());
-    CHECK(state.data().depth() == 1);
-    CHECK(state.data().peek(0).value() == 3);
-}
-
-static_assert([] {
-    test_state state{};
-    auto r = run(exit_boundary_program, state, /*fuel=*/100000);
-    if (!r.has_value()) {
-        return false;
-    }
-    return state.data().depth() == 2 && state.data().peek(0).value() == 99 &&
-           state.data().peek(1).value() == -3;
-}());
-
-TEST_CASE("VmTest - ExitUnwindsOnlyToItsOwnCallBoundary") {
-    test_state state{};
-    auto r = run(exit_boundary_program, state, 100000);
-    REQUIRE(r.has_value());
-    REQUIRE(state.data().depth() == 2);
-    CHECK(state.data().peek(0).value() == 99);
-    CHECK(state.data().peek(1).value() == -3);
-}
-
-// -- Memory words (Step F16 merge criteria) ----------------------------------
-
-static_assert([] {
-    test_state state{};
-    auto r = run(memory_words_program, state, /*fuel=*/100000);
-    if (!r.has_value()) {
-        return false;
-    }
-    return state.data().depth() == 2 && state.data().peek(0).value() == 14 &&
-           state.data().peek(1).value() == 8;
-}());
-
-TEST_CASE("VmTest - MemoryWordsMergeCriterion") {
-    test_state state{};
-    auto r = run(memory_words_program, state, 100000);
-    REQUIRE(r.has_value());
-    REQUIRE(state.data().depth() == 2);
-    CHECK(state.data().peek(0).value() == 14);
-    CHECK(state.data().peek(1).value() == 8);
-}
 
 // -- run_from: the additive entry point (step F25, DIV-0013) ---------------
-//
-// run_from is what interpreter::compile_buffer::call_word (interpreter/
-// compilebuf.hpp) actually calls to interpret a defined word: it starts
-// execution at an arbitrary instruction index against an already-live
-// state, without run's own F16 data-space seeding. These two tests check
-// both halves of that contract directly against vm.hpp's own public API,
-// independent of the interpreter that consumes it.
 
-// SQUARED's own entry point, called directly rather than through the
-// top-level program that calls it (mirroring codegen.test.cpp's
-// EntryPointRecordedBeforeBody, which locates this same index): a return
-// address pointing at squared_program's own trailing halt instruction
-// (its last instruction, codegen.test.cpp's own EveryProgramEndsInHalt)
-// lets run's ordinary `ret` handling stop cleanly, exactly the way
-// compile_buffer's own dedicated halt-pad instruction does for the
-// interpreter's code space.
 static_assert([] {
-    int const squared_index = 47;
-    int const entry = squared_program.entry_points[squared_index];
-    int const halt_index = squared_program.code.size() - 1;
-    if (entry < 0 || squared_program.code[halt_index].code != op::halt) {
+    int const entry = squared.entry_points[0];
+    if (entry < 0) {
+        return false;
+    }
+    int const halt_index = squared.code.size() - 1;
+    if (squared.code[halt_index].code != op::halt) {
         return false;
     }
 
     test_state state{};
-    auto push_ret = state.returns().push(
-        static_cast<smd::forth::machine::cell>(halt_index));
+    auto push_ret = state.returns().push(static_cast<cell>(halt_index));
     auto push_arg = state.data().push(5);
     if (!push_ret.has_value() || !push_arg.has_value()) {
         return false;
     }
-    auto r = run_from(squared_program, state, entry, 1000);
+    auto r = run_from(squared, state, entry, 1000);
     return r.has_value() && state.data().depth() == 1 &&
            state.data().peek(0).value() == 25;
 }());
 
 TEST_CASE("VmTest - RunFromCallsAWordsEntryPointDirectly") {
-    int const squared_index = 47;
-    int const entry = squared_program.entry_points[squared_index];
-    int const halt_index = squared_program.code.size() - 1;
+    int const entry = squared.entry_points[0];
     REQUIRE(entry >= 0);
-    REQUIRE(squared_program.code[halt_index].code == op::halt);
+    int const halt_index = squared.code.size() - 1;
+    REQUIRE(squared.code[halt_index].code == op::halt);
 
     test_state state{};
-    REQUIRE(state.returns()
-                .push(static_cast<smd::forth::machine::cell>(halt_index))
-                .has_value());
+    REQUIRE(state.returns().push(static_cast<cell>(halt_index)).has_value());
     REQUIRE(state.data().push(5).has_value());
-    auto r = run_from(squared_program, state, entry, 1000);
+    auto r = run_from(squared, state, entry, 1000);
     REQUIRE(r.has_value());
     CHECK(state.data().depth() == 1);
     CHECK(state.data().peek(0).value() == 25);
 }
 
-// memory_words_program declares `VARIABLE X`, so its own data_space_size is
-// 1 (see VmTest - MemoryWordsMergeCriterion, above, which runs it through
-// `run` and succeeds). Calling run_from directly at the same top-level
-// entry point, against a fresh state whose data space nobody has seeded,
-// diagnoses the first store through X as out of bounds instead of silently
-// succeeding -- the concrete evidence that run_from does not repeat run's
-// own F16 seeding step.
+// memory declares one cell of data space (data_space_size == 1); run seeds
+// it before its own fetch-execute loop starts, so the store/fetch succeed.
+static_assert([] {
+    test_state state{};
+    auto r = run(memory, state, /*fuel=*/1000);
+    return r.has_value() && state.data().depth() == 1 &&
+           state.data().peek(0).value() == 42;
+}());
+
+TEST_CASE("VmTest - RunSeedsDataSpace") {
+    test_state state{};
+    auto r = run(memory, state, 1000);
+    REQUIRE(r.has_value());
+    CHECK(state.data().depth() == 1);
+    CHECK(state.data().peek(0).value() == 42);
+}
+
+// Calling run_from directly at the same entry point, against a fresh state
+// nobody has seeded, diagnoses the first store as out of bounds instead of
+// silently succeeding -- the concrete evidence that run_from does not repeat
+// run's own F16 seeding step.
 static_assert([] {
     test_state state{};
     if (state.data_space().size() != 0) {
         return false;
     }
-    auto r = run_from(memory_words_program, state,
-                      memory_words_program.program_entry, 100000);
+    auto r = run_from(memory, state, memory.program_entry, 1000);
     return !r.has_value() && state.data_space().size() == 0;
 }());
 
 TEST_CASE("VmTest - RunFromDoesNotSeedDataSpace") {
     test_state state{};
     REQUIRE(state.data_space().size() == 0);
-    auto r = run_from(memory_words_program, state,
-                      memory_words_program.program_entry, 100000);
+    auto r = run_from(memory, state, memory.program_entry, 1000);
     CHECK_FALSE(r.has_value());
     CHECK(state.data_space().size() == 0);
 }
 
+// -- The survives-to-runtime proof, re-established on a session image
+// (F26's own explicit merge criterion) --------------------------------------
+//
+// D15's session image is now what a real front end builds (interpreter::
+// build_session, interpreter/session.hpp), so this is the shape F14's own
+// "same compiled object, run once at compile time and once at runtime"
+// proof takes going forward: build once, at namespace-scope constexpr
+// initialization, from source text through the real text interpreter; run
+// its own SQUARED definition again via call_defined_word (which reaches
+// this same vm.hpp's own run_from under the hood, interpreter/
+// compilebuf.hpp's call_word), both inside a static_assert and inside a
+// Catch2 TEST_CASE, against the identical session object. (session.test.cpp
+// already carries this exact proof as its own dedicated merge criterion,
+// RoundTripsAtRuntimeFromTheSameConstexprObject -- it is repeated here,
+// briefly, because this file is where the VM-level survives-to-runtime
+// proof has always lived, and F26's own merge criteria name this file's
+// tradition by name.)
+
+namespace {
+
+constexpr auto built_session =
+    build_session<64, 64, 256, 128>(": SQUARED DUP * ;");
+static_assert(built_session.has_value());
+
+inline constexpr auto squared_session = built_session.value();
+
+} // namespace
+
 static_assert([] {
-    test_state state{};
-    auto r = run(create_allot_program, state, /*fuel=*/100000);
-    if (!r.has_value()) {
+    auto sess = squared_session; // call_defined_word mutates sess.code's own
+                                 // program_entry field; copy first.
+    smd::forth::machine::forth_state<64, 64, 256, 128> state{};
+    if (!seed_from_session(sess, state).has_value()) {
         return false;
     }
-    return state.data().depth() == 1 && state.data().peek(0).value() == 30;
-}());
-
-TEST_CASE("VmTest - CreateAllotMergeCriterion") {
-    test_state state{};
-    auto r = run(create_allot_program, state, 100000);
-    REQUIRE(r.has_value());
-    CHECK(state.data().depth() == 1);
-    CHECK(state.data().peek(0).value() == 30);
-}
-
-static_assert([] {
-    test_state state{};
-    auto r = run(oob_store_program, state, /*fuel=*/100000);
-    return !r.has_value();
-}());
-
-TEST_CASE("VmTest - OutOfBoundsStoreIsDiagnosed") {
-    test_state state{};
-    auto r = run(oob_store_program, state, 100000);
-    CHECK_FALSE(r.has_value());
-}
-
-// -- Counted loops agree with the direct evaluator (both backends) ----------
-
-static_assert([] {
-    test_state state{};
-    auto r = run(sumto_program, state, /*fuel=*/100000);
+    if (!state.data().push(4).has_value()) {
+        return false;
+    }
+    auto r = call_defined_word(sess, state, "SQUARED");
     return r.has_value() && state.data().depth() == 1 &&
-           state.data().peek(0).value() == 15;
+           state.data().peek().value() == 16;
 }());
 
-TEST_CASE("VmTest - SumToCountedLoop") {
-    test_state state{};
-    auto r = run(sumto_program, state, 100000);
+TEST_CASE("VmTest - SurvivesToRuntimeProofOnASessionImage") {
+    auto sess = squared_session;
+    smd::forth::machine::forth_state<64, 64, 256, 128> state{};
+    REQUIRE(seed_from_session(sess, state).has_value());
+    REQUIRE(state.data().push(4).has_value());
+    auto r = call_defined_word(sess, state, "SQUARED");
     REQUIRE(r.has_value());
-    CHECK(state.data().depth() == 1);
-    CHECK(state.data().peek(0).value() == 15);
-}
-
-static_assert([] {
-    test_state state{};
-    auto r = run(find5_program, state, /*fuel=*/100000);
-    return r.has_value() && state.data().depth() == 1 &&
-           state.data().peek(0).value() == 5;
-}());
-
-TEST_CASE("VmTest - Find5Leave") {
-    test_state state{};
-    auto r = run(find5_program, state, 100000);
-    REQUIRE(r.has_value());
-    CHECK(state.data().depth() == 1);
-    CHECK(state.data().peek(0).value() == 5);
-}
-
-static_assert([] {
-    test_state state{};
-    auto r = run(tens_program, state, /*fuel=*/100000);
-    return r.has_value() && state.data().depth() == 1 &&
-           state.data().peek(0).value() == 9;
-}());
-
-TEST_CASE("VmTest - NestedLoopJ") {
-    test_state state{};
-    auto r = run(tens_program, state, 100000);
-    REQUIRE(r.has_value());
-    CHECK(state.data().depth() == 1);
-    CHECK(state.data().peek(0).value() == 9);
-}
-
-static_assert([] {
-    test_state state{};
-    auto r = run(sumeven_program, state, /*fuel=*/100000);
-    return r.has_value() && state.data().depth() == 1 &&
-           state.data().peek(0).value() == 20;
-}());
-
-TEST_CASE("VmTest - PlusLoop") {
-    test_state state{};
-    auto r = run(sumeven_program, state, 100000);
-    REQUIRE(r.has_value());
-    CHECK(state.data().depth() == 1);
-    CHECK(state.data().peek(0).value() == 20);
+    REQUIRE(state.data().depth() == 1);
+    CHECK(state.data().peek().value() == 16);
 }

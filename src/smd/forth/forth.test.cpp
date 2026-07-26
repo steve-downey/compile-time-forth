@@ -12,7 +12,8 @@ using smd::forth::compiled_forth;
 TEST_CASE("ForthTest - HeaderIsIdempotent") { REQUIRE(true); }
 
 // caa1756c-1684-4c8a-9cf9-cbd9dbf6bc21
-// docs/forth-plan.md Step F15's own merge criterion, verbatim:
+// docs/forth-plan.md Step F15's own merge criterion, verbatim, still true
+// after step F26 retargets compiled_forth onto D15's session image:
 // `compiled_forth<": SQUARED DUP * ;  4 SQUARED">.stack()` static-asserts
 // to `[16]` -- a one-element stack snapshot whose only cell is 16.
 static_assert([] {
@@ -58,39 +59,39 @@ TEST_CASE("ForthTest - OutputMergeCriterion") {
     CHECK(out[2] == ' ');
 }
 
-// .run(): the full result<forth_state> surface, success case.
+// .run(): the whole built session image (step F26 retargets this from the
+// R1-era result<forth_state> to interpreter::session -- see forth.hpp's own
+// top-of-file comment and DIV-0014). Unlike the old .run(), this never fails
+// at the call site: any failure already happened, at compile time, when
+// compiled_forth's own namespace-scope constexpr initializer built the
+// session (test_neg_syntax_error.cpp exercises that failure side).
 static_assert([] {
-    auto r = compiled_forth<": SQUARED DUP * ;  4 SQUARED">.run();
-    if (!r.has_value()) {
-        return false;
-    }
-    return r.value().data().depth() == 1 &&
-           r.value().data().peek(0).value() == 16;
+    auto const &img = compiled_forth<": SQUARED DUP * ;  4 SQUARED">.run();
+    return img.stack.size() == 1 && img.stack[0] == 16;
 }());
 
-TEST_CASE("ForthTest - RunSucceeds") {
-    auto r = compiled_forth<": SQUARED DUP * ;  4 SQUARED">.run();
-    REQUIRE(r.has_value());
-    CHECK(r.value().data().depth() == 1);
-    CHECK(r.value().data().peek(0).value() == 16);
+TEST_CASE("ForthTest - RunReturnsTheBuiltSessionImage") {
+    auto const &img = compiled_forth<": SQUARED DUP * ;  4 SQUARED">.run();
+    REQUIRE(img.stack.size() == 1);
+    CHECK(img.stack[0] == 16);
 }
 
-// .run() propagates a genuine runtime failure (budget exhaustion) rather
-// than silently succeeding or hard-failing compilation -- only a bad
-// *compile-time* result (a failed parse/elaborate/codegen) is a hard
-// compile error (see test_neg_syntax_error.cpp); a program that compiles
-// fine but does not terminate within its fuel budget is an ordinary
-// runtime error, exactly as machine::run itself diagnoses it.
-static_assert([] {
-    auto r = compiled_forth<": SPIN BEGIN FALSE UNTIL ; SPIN">.run(
-        /*fuel=*/10);
-    return !r.has_value();
-}());
-
-TEST_CASE("ForthTest - RunPropagatesRuntimeError") {
-    auto r = compiled_forth<": SPIN BEGIN FALSE UNTIL ; SPIN">.run(/*fuel=*/10);
-    REQUIRE_FALSE(r.has_value());
-}
+// docs/forth-plan-2.md's own F26 note: a program that "compiles fine but
+// does not terminate within its fuel budget" used to be an *ordinary
+// runtime* error from the old R1-era .run(fuel) -- distinct from a hard
+// compile error, and exercised here with SPIN (`BEGIN FALSE UNTIL`) under a
+// deliberately small fuel. That distinction no longer exists: under D13/D14
+// there is no separate "compile" phase from "run the top level" (building
+// compiled_forth's own session *is* running it), so a budget-exhausted
+// top-level loop is now a hard *compile* error too, caught by the same
+// build-time evaluation as any other diagnosed failure. SPIN itself also
+// needs control flow (BEGIN/UNTIL), which F25's interpret() does not have
+// yet regardless (F27 is what adds it) -- its source text and expected
+// "budget exhaustion" behavior are preserved verbatim in
+// interpreter/control_flow_corpus.hpp::spin_program for F27 to reproduce
+// through interpret() directly, where a recoverable (non-hard-error) runtime
+// result is still the right shape (interpreter::build_session's own
+// foundation::result<session> return channel). See DIV-0014.
 
 // Capacities are template parameters with defaults (D2), not hardcoded: a
 // caller may override the pipeline's own capacities (here, MaxCode) while
@@ -109,9 +110,10 @@ TEST_CASE("ForthTest - CapacitiesAreOverridable") {
 }
 
 // Step F16's own merge criterion, through the public one-shot API: no
-// forth_program/compiled_forth change was needed to support it -- data-space
-// seeding lives entirely inside machine::run (vm.hpp), which
-// forth_program::run/stack/output already call for every fresh state.
+// forth_program/compiled_forth change was needed beyond the F26 retarget
+// itself -- VARIABLE/CONSTANT are now interpreter-recognized defining words
+// (interp.hpp, F26), so this program runs through interpreter::interpret
+// exactly like any other.
 static_assert([] {
     auto s = compiled_forth<"VARIABLE X  5 X !  X @ 3 + X !  X @ "
                             "7 CONSTANT LUCKY  LUCKY LUCKY +">.stack();

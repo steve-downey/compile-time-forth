@@ -9,6 +9,7 @@
 #include <smd/forth/foundation/static_vector.hpp>
 #include <smd/forth/interpreter/compilebuf.hpp>
 #include <smd/forth/interpreter/interp.hpp>
+#include <smd/forth/machine/cell.hpp>
 #include <smd/forth/machine/dictionary.hpp>
 #include <smd/forth/machine/forth_state.hpp>
 
@@ -19,12 +20,24 @@
 namespace smd::forth::interpreter {
 
 // Step F25 (docs/forth-plan-2.md), D15: "the artifact is a session image."
-// compiled_forth<Source> (forth.hpp) is NOT retargeted to build one of these
-// yet -- that is F26's own job, once the R1 pipeline it currently builds is
-// deleted. This header exists so F26 has something to retarget onto, and so
-// this step's own merge criterion (a session round-trips: build at
-// constexpr, run its top-level again at runtime from the same object) has
-// something to build and run.
+// This header exists so F26 has something to retarget onto, and so that
+// step's own merge criterion (a session round-trips: build at constexpr, run
+// its top-level again at runtime from the same object) has something to
+// build and run.
+//
+// Step F26 ("the cut") retargets forth.hpp's compiled_forth<Source> onto
+// this type and adds one field beyond D15's own original list (code space,
+// dictionary, data-space high-water mark, captured output): @ref
+// session::stack, a snapshot of the data stack @ref build_session's own
+// transient build-time forth_state held when interpret() finished. D15
+// itself does not ask for this -- it was written before compiled_forth's own
+// retarget had to answer "what does .stack() return now", and a session
+// built by directly interpreting top-level code (rather than only compiling
+// it, R1's own separation) genuinely does leave a final data stack behind,
+// the same way it leaves captured output behind. Capturing it is additive,
+// harmless to every existing consumer (a new field with a default member
+// initializer breaks no designated-initializer call site), and keeps this
+// type flat and trivially destructible exactly like @ref output already is.
 
 /// D15's session image: everything a session needs to run one of its own
 /// top-level definitions again, once the constant-expression evaluation that
@@ -45,8 +58,9 @@ namespace smd::forth::interpreter {
 ///                  to be constructed with.
 /// @tparam MaxOut   @ref output's own capacity.
 /// @tparam MaxName  Maximum word-name length, shared with @ref dictionary.
+/// @tparam MaxStack @ref stack's own capacity (F26).
 template <int MaxCode = 4096, int MaxWords = 256, int MaxData = 1024,
-          int MaxOut = 256, int MaxName = 32>
+          int MaxOut = 256, int MaxName = 32, int MaxStack = 64>
 struct session {
     /// The code space every `:` ... `;` pair the session compiled appended
     /// to (D15's "code space").
@@ -66,6 +80,16 @@ struct session {
     /// The output the session accumulated while it was built (D15's
     /// "captured output").
     foundation::static_vector<char, MaxOut> output{};
+
+    /// A snapshot of the data stack the session's own build-time
+    /// @ref machine::forth_state held when @ref build_session's own
+    /// @ref interpret call finished, bottom cell first and top cell last --
+    /// the same bottom-to-top order @ref machine::primitive::dot_s prints in
+    /// (`machine/forth_state.hpp`). Not part of D15's original field list;
+    /// added at step F26 so `forth.hpp`'s retargeted `compiled_forth<Source>`
+    /// has something to hand `.stack()` back (see this struct's own doc
+    /// comment above).
+    foundation::static_vector<machine::cell, MaxStack> stack{};
 };
 
 namespace detail {
@@ -81,9 +105,9 @@ static_assert(std::is_trivially_destructible_v<session<64, 32, 256, 128>>);
 /// address a `VARIABLE`/`CREATE` the session defined baked in as a literal,
 /// exactly as @ref machine::run already does for a single compiled program.
 template <int MaxCode, int MaxWords, int MaxData, int MaxOut, int MaxName,
-          int MaxDepth, int MaxRDepth>
+          int MaxStack, int MaxDepth, int MaxRDepth>
 constexpr auto seed_from_session(
-    session<MaxCode, MaxWords, MaxData, MaxOut, MaxName> const &sess,
+    session<MaxCode, MaxWords, MaxData, MaxOut, MaxName, MaxStack> const &sess,
     machine::forth_state<MaxDepth, MaxRDepth, MaxData, MaxOut> &state)
     -> machine::status {
     auto r = state.data_space().allot(sess.data_space_high_water);
@@ -114,9 +138,9 @@ constexpr auto seed_from_session(
 ///                     machine::dictionary::lookup).
 /// @param fuel        The VM's own execution step budget.
 template <int MaxCode, int MaxWords, int MaxData, int MaxOut, int MaxName,
-          int MaxDepth, int MaxRDepth>
+          int MaxStack, int MaxDepth, int MaxRDepth>
 constexpr auto call_defined_word(
-    session<MaxCode, MaxWords, MaxData, MaxOut, MaxName> &sess,
+    session<MaxCode, MaxWords, MaxData, MaxOut, MaxName, MaxStack> &sess,
     machine::forth_state<MaxDepth, MaxRDepth, MaxData, MaxOut> &state,
     std::string_view name, int fuel = 100000) -> machine::status {
     auto const *entry = sess.dictionary.lookup(name);
@@ -142,15 +166,18 @@ constexpr auto call_defined_word(
 /// at constexpr or ordinary runtime).
 ///
 /// @tparam MaxDepth  The transient build-time @ref forth_state's data stack
-///                    capacity; not part of the returned @ref session (only
-///                    its final dictionary/code/data-space/output survive).
+///                    capacity; also @ref session::stack's own snapshot
+///                    capacity ceiling (@p MaxStack must be at least as
+///                    large as whatever depth the program actually leaves
+///                    behind, same discipline as every other capacity here).
 /// @tparam MaxRDepth Likewise, the build-time return stack capacity.
+/// @tparam MaxStack  @ref session::stack's own capacity (F26).
 template <int MaxCode = 4096, int MaxWords = 256, int MaxData = 1024,
           int MaxOut = 256, int MaxName = 32, int MaxDepth = 64,
-          int MaxRDepth = 64>
+          int MaxRDepth = 64, int MaxStack = 64>
 constexpr auto build_session(std::string_view text, int fuel = 100000)
     -> foundation::result<
-        session<MaxCode, MaxWords, MaxData, MaxOut, MaxName>> {
+        session<MaxCode, MaxWords, MaxData, MaxOut, MaxName, MaxStack>> {
     forth_state<MaxDepth, MaxRDepth, MaxData, MaxOut, MaxName> st{text};
     auto dict = machine::default_dictionary<MaxWords, MaxName>();
     compile_buffer<MaxCode, MaxWords> buf;
@@ -160,11 +187,20 @@ constexpr auto build_session(std::string_view text, int fuel = 100000)
         return r.error();
     }
 
-    return session<MaxCode, MaxWords, MaxData, MaxOut, MaxName>{
+    // Snapshot the build-time data stack bottom-to-top (F26): same order
+    // machine::primitive::dot_s prints in, and the same convention
+    // forth.hpp's own (now-superseded) R1-era forth_program::stack used.
+    foundation::static_vector<machine::cell, MaxStack> stack_snapshot{};
+    for (int offset = st.machine().data().depth() - 1; offset >= 0; --offset) {
+        stack_snapshot.push_back(st.machine().data().peek(offset).value());
+    }
+
+    return session<MaxCode, MaxWords, MaxData, MaxOut, MaxName, MaxStack>{
         .code = buf,
         .dictionary = dict,
         .data_space_high_water = st.machine().data_space().size(),
         .output = st.machine().output(),
+        .stack = stack_snapshot,
     };
 }
 // c6e9f1b3-8a2d-4c7e-9f1a-3b6d8e2c5a7f end

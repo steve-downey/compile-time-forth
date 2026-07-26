@@ -61,38 +61,20 @@ constexpr auto word_name_equals_folded(word_name<MaxName> const &name,
     return true;
 }
 
-/// A minimal stack-effect summary attached to a colon-word dictionary entry.
-///
-/// F12's stack-effect analysis is the real owner of this information; this
-/// struct only records enough for F9/F11 to thread something through:
-/// how many cells the word is known to consume/produce, and whether that
-/// count has actually been computed yet. F12 may replace or extend this
-/// shape once real stack-effect checking lands.
-struct stack_effect {
-    int inputs = 0;     ///< Cells consumed, meaningful only if @ref known.
-    int outputs = 0;    ///< Cells produced, meaningful only if @ref known.
-    bool known = false; ///< True once a real effect has been computed.
-
-    friend constexpr auto operator==(stack_effect const &, stack_effect const &)
-        -> bool = default;
-};
-
-/// A resolved colon-definition binding.
-struct colon_word {
-    /// Handle into the elaborated-core arena F11 will build. Deliberately a
-    /// bare @c int (rather than a typed @c arena_box) -- F9 does not know
-    /// F11's elaborated-core node type, so it cannot name a typed handle to
-    /// it yet; F11 is expected to reinterpret this as an index into its own
-    /// arena.
-    int core_id = -1;
-    stack_effect effect{}; ///< See @ref stack_effect.
-};
-
 /// A colon definition compiled directly by the F25 colon compiler
 /// (`interpreter::interpret`, D13), one instruction at a time, as the text
-/// interpreter meets `:` ... `;` -- not to be confused with @ref colon_word,
-/// whose `core_id` is an index into the elaborator's arena (a pipeline this
-/// binding does not participate in; see docs/divergences/DIV-0013).
+/// interpreter meets `:` ... `;`.
+///
+/// Named `compiled_colon_word` rather than the shorter `colon_word` for
+/// historical reasons DIV-0013 records in full: F25 needed a binding kind
+/// distinct from the R1 elaborator's own `colon_word` (whose `core_id` was
+/// an index into an elaborator arena this compiler never built), so it added
+/// this one alongside it rather than repurposing it. Step F26 ("the cut")
+/// deletes the elaborator and, with it, `colon_word` and its `stack_effect`
+/// payload type -- this is now the *only* colon-definition binding kind, but
+/// keeps its `compiled_` prefix (DIV-0013 leaves the rename/fold choice to
+/// this step's own discretion; renaming was judged not worth touching every
+/// consumer of this name for a cosmetic gain, see DIV-0014).
 ///
 /// @ref entry_point is recorded *before* the body is compiled (F14's own
 /// discipline, carried forward unchanged): a `RECURSE` inside the body
@@ -122,12 +104,12 @@ struct compiled_colon_word {
 /// A `VARIABLE`- or `CREATE`-defined word's binding: the data-space address
 /// it names.
 ///
-/// F11 also uses this binding for `CREATE` (there is no separate binding
-/// kind for it): `CREATE NAME` installs @c NAME at the current data-space
-/// top with no cells allotted, while `VARIABLE NAME` allots exactly one
-/// cell first; both end up as "a name bound to an @ref addr" at the
-/// dictionary level, and F16's `ALLOT` is what later actually extends
-/// storage past a `CREATE`d address.
+/// The same binding kind serves both words (there is no separate binding
+/// kind for `CREATE`): `CREATE NAME` installs @c NAME at the current
+/// data-space top with no cells allotted, while `VARIABLE NAME` allots
+/// exactly one cell first (`interpreter::interpret`, F26); both end up as "a
+/// name bound to an @ref addr" at the dictionary level, and `ALLOT` (F16) is
+/// what later actually extends storage past a `CREATE`d address.
 ///
 /// @note Was a placeholder plain @ref cell until DIV-0004
 /// (`docs/divergences/DIV-0004-dictionary-addr-placeholder.md`) was
@@ -152,9 +134,8 @@ struct foreign_word {
 };
 
 /// The set of things a dictionary entry can be bound to.
-using dictionary_binding =
-    std::variant<primitive, colon_word, variable_word, constant_word,
-                 foreign_word, compiled_colon_word>;
+using dictionary_binding = std::variant<primitive, variable_word, constant_word,
+                                        foreign_word, compiled_colon_word>;
 
 /// One dictionary entry: a folded name plus what it is bound to.
 template <int MaxName = 32>
@@ -186,11 +167,6 @@ class dictionary {
     constexpr auto define_primitive(std::string_view name_text, primitive op)
         -> status;
 
-    /// Defines @p name_text as a colon word.
-    /// Diagnoses dictionary-full rather than overflowing.
-    constexpr auto define_colon(std::string_view name_text, colon_word word)
-        -> status;
-
     /// Defines @p name_text as a variable.
     /// Diagnoses dictionary-full rather than overflowing.
     constexpr auto define_variable(std::string_view name_text,
@@ -220,9 +196,7 @@ class dictionary {
 
     /// Looks up @p name_text like @ref lookup, but returns the matching
     /// entry's index (0-based, insertion order) rather than a pointer, or
-    /// `-1` if no entry matches. F11's elaborator uses this to resolve a
-    /// word reference to the @c word_index a @ref colon_word call
-    /// (`core_call`/`core_push_xt` in the elaborated core) stores.
+    /// `-1` if no entry matches.
     [[nodiscard]] constexpr auto lookup_index(std::string_view name_text) const
         -> int;
 
@@ -259,13 +233,6 @@ constexpr auto
 dictionary<MaxWords, MaxName>::define_primitive(std::string_view name_text,
                                                 primitive op) -> status {
     return insert(name_text, dictionary_binding{op});
-}
-
-template <int MaxWords, int MaxName>
-constexpr auto
-dictionary<MaxWords, MaxName>::define_colon(std::string_view name_text,
-                                            colon_word word) -> status {
-    return insert(name_text, dictionary_binding{word});
 }
 
 template <int MaxWords, int MaxName>
@@ -407,8 +374,6 @@ namespace detail {
 // fixed-capacity foundation::static_vector, never a destructor-owning heap
 // container. Checked against one concrete instantiation (256 words, 32-char
 // names) as a representative sample.
-static_assert(std::is_trivially_destructible_v<stack_effect>);
-static_assert(std::is_trivially_destructible_v<colon_word>);
 static_assert(std::is_trivially_destructible_v<variable_word>);
 static_assert(std::is_trivially_destructible_v<constant_word>);
 static_assert(std::is_trivially_destructible_v<foreign_word>);
