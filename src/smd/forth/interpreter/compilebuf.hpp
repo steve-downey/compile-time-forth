@@ -57,8 +57,7 @@ class compile_buffer {
     /// Appends one instruction (@ref machine::emit), diagnosing @ref MaxCode
     /// overflow rather than exceeding capacity.
     constexpr auto emit(machine::op code, machine::cell operand,
-                        foundation::source_pos pos)
-        -> foundation::result<int>;
+                        foundation::source_pos pos) -> foundation::result<int>;
 
     /// The next instruction index @ref emit will append at -- a colon
     /// word's own entry point is exactly this value, captured by `:` before
@@ -95,13 +94,14 @@ constexpr compile_buffer<MaxCode, MaxWords>::compile_buffer() {
     // least one (every capacity this project uses is comfortably larger),
     // and using it would require threading a foundation::result through a
     // constructor with no way to report failure anyway.
-    program_.code.push_back(machine::instr{.code = machine::op::halt,
-                                           .operand = machine::cell{0}});
+    program_.code.push_back(
+        machine::instr{.code = machine::op::halt, .operand = machine::cell{0}});
 }
 
 template <int MaxCode, int MaxWords>
-constexpr auto compile_buffer<MaxCode, MaxWords>::emit(
-    machine::op code, machine::cell operand, foundation::source_pos pos)
+constexpr auto
+compile_buffer<MaxCode, MaxWords>::emit(machine::op code, machine::cell operand,
+                                        foundation::source_pos pos)
     -> foundation::result<int> {
     return machine::emit(program_, code, operand, pos);
 }
@@ -164,10 +164,10 @@ template <int MaxCode, int MaxWords, int MaxDepth, int MaxRDepth, int MaxData,
           int MaxOut>
 constexpr auto
 call_word(compile_buffer<MaxCode, MaxWords> &buf,
-         machine::forth_state<MaxDepth, MaxRDepth, MaxData, MaxOut> &state,
-         int entry_point, int fuel) -> machine::status {
-    auto push_return = state.returns().push(
-        static_cast<machine::cell>(buf.halt_pad()));
+          machine::forth_state<MaxDepth, MaxRDepth, MaxData, MaxOut> &state,
+          int entry_point, int fuel) -> machine::status {
+    auto push_return =
+        state.returns().push(static_cast<machine::cell>(buf.halt_pad()));
     if (!push_return.has_value()) {
         return push_return;
     }
@@ -196,8 +196,8 @@ static_assert([] {
     auto r1 = buf.emit(machine::op::prim,
                        static_cast<machine::cell>(machine::primitive::star),
                        foundation::source_pos{});
-    auto r2 = buf.emit(machine::op::ret, machine::cell{0},
-                       foundation::source_pos{});
+    auto r2 =
+        buf.emit(machine::op::ret, machine::cell{0}, foundation::source_pos{});
     if (!r0.has_value() || !r1.has_value() || !r2.has_value()) {
         return false;
     }

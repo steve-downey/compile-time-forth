@@ -40,12 +40,12 @@ TEST_CASE("CompileBufTest - EmitAppendsAtHere") {
 TEST_CASE("CompileBufTest - CallWordRunsAgainstLiveState") {
     compile_buffer<64, 32> buf;
     int const entry = buf.here();
-    REQUIRE(buf.emit(op::prim, static_cast<smd::forth::machine::cell>(
-                                    primitive::dup),
+    REQUIRE(buf.emit(op::prim,
+                     static_cast<smd::forth::machine::cell>(primitive::dup),
                      source_pos{})
                 .has_value());
-    REQUIRE(buf.emit(op::prim, static_cast<smd::forth::machine::cell>(
-                                    primitive::star),
+    REQUIRE(buf.emit(op::prim,
+                     static_cast<smd::forth::machine::cell>(primitive::star),
                      source_pos{})
                 .has_value());
     REQUIRE(buf.emit(op::ret, 0, source_pos{}).has_value());

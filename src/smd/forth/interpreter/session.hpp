@@ -70,8 +70,7 @@ struct session {
 
 namespace detail {
 
-static_assert(
-    std::is_trivially_destructible_v<session<64, 32, 256, 128>>);
+static_assert(std::is_trivially_destructible_v<session<64, 32, 256, 128>>);
 
 } // namespace detail
 
@@ -116,12 +115,10 @@ constexpr auto seed_from_session(
 /// @param fuel        The VM's own execution step budget.
 template <int MaxCode, int MaxWords, int MaxData, int MaxOut, int MaxName,
           int MaxDepth, int MaxRDepth>
-constexpr auto
-call_defined_word(session<MaxCode, MaxWords, MaxData, MaxOut, MaxName> &sess,
-                  machine::forth_state<MaxDepth, MaxRDepth, MaxData, MaxOut>
-                      &state,
-                  std::string_view name, int fuel = 100000)
-    -> machine::status {
+constexpr auto call_defined_word(
+    session<MaxCode, MaxWords, MaxData, MaxOut, MaxName> &sess,
+    machine::forth_state<MaxDepth, MaxRDepth, MaxData, MaxOut> &state,
+    std::string_view name, int fuel = 100000) -> machine::status {
     auto const *entry = sess.dictionary.lookup(name);
     if (entry == nullptr) {
         return foundation::parse_error{foundation::source_pos{},
@@ -152,7 +149,8 @@ template <int MaxCode = 4096, int MaxWords = 256, int MaxData = 1024,
           int MaxOut = 256, int MaxName = 32, int MaxDepth = 64,
           int MaxRDepth = 64>
 constexpr auto build_session(std::string_view text, int fuel = 100000)
-    -> foundation::result<session<MaxCode, MaxWords, MaxData, MaxOut, MaxName>> {
+    -> foundation::result<
+        session<MaxCode, MaxWords, MaxData, MaxOut, MaxName>> {
     forth_state<MaxDepth, MaxRDepth, MaxData, MaxOut, MaxName> st{text};
     auto dict = machine::default_dictionary<MaxWords, MaxName>();
     compile_buffer<MaxCode, MaxWords> buf;
