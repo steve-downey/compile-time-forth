@@ -577,6 +577,7 @@ interpret(forth_state<MaxDepth, MaxRDepth, MaxData, MaxOut, MaxName> &st,
                 }
                 continue;
             }
+            // eabc2d13-9f50-4eb9-98e8-7d69cca95046
             if (text == "CONSTANT") {
                 // Forth-2012 CONSTANT semantics directly, not R1's
                 // elaborate_constant (which required a syntactically
@@ -612,6 +613,7 @@ interpret(forth_state<MaxDepth, MaxRDepth, MaxData, MaxOut, MaxName> &st,
                 }
                 continue;
             }
+            // eabc2d13-9f50-4eb9-98e8-7d69cca95046 end
 
             auto const *entry = dict.lookup(text);
             if (entry != nullptr) {
