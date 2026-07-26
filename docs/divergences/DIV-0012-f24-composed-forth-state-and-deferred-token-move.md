@@ -1,6 +1,6 @@
 # DIV-0012: F24's interpreter state is composed, not an in-place edit of `machine::forth_state`; the D19 token-layer move is deferred to F26
 
-- **Status:** accepted-permanent (composition), open (deferred move, closes at F26)
+- **Status:** open — both items close at F26 (see the orchestrator's amendment below)
 - **Date:** 2026-07-25
 - **Step:** F24 (the interpreter, interpret state only), docs/forth-plan-2.md
 - **Authority diverged from:** docs/forth-plan-2.md (F24's own step text and D19)
@@ -81,10 +81,50 @@ now, say so explicitly").
   machinery several consumers sit on top of, not as something the
   interpreter component itself owns.
 
+## Orchestrator amendment (filed at F24 merge)
+
+F24's step author proposed the composition as permanent. It is accepted for
+F24 and F25, but **not** as permanent, and the "Why" above understates one
+thing.
+
+D13 does not say the interpreter needs `SOURCE`/`>IN`/`BASE`/`STATE` nearby;
+it says they *are* machine state in `forth_state`. That wording is
+load-bearing for two later steps:
+
+- **F29 (parsing words).** `PARSE`, `WORD`, `CHAR`, and `S"` are ordinary
+  Forth words that read the input stream. Primitives execute as
+  `machine::apply_primitive(op, machine::forth_state&)` — `interp.hpp` calls
+  it exactly that way, via `st.machine()`. A primitive therefore cannot see
+  an `input_source` that lives only on the wrapper. Under the composed shape,
+  no parsing word can be a `machine::primitive`.
+- **F28/D18 (every word has an execution token).** `'`, `[']`, and `EXECUTE`
+  are uniform over every binding kind, and an XT is executed by the VM
+  against machine state. A parsing word reachable through `EXECUTE` needs the
+  input stream reachable from whatever the VM runs against.
+
+The layering objection that motivated composition is real but is entirely an
+artifact of the R1 pipeline: `machine::forth_state` has four consumers today
+(`machine::run`, `eval_program`, `forth.hpp`, and the machine tests) only
+because `eval_direct`/`codegen` still exist. **Those consumers die at F26.**
+The alternative the "Why" dismisses as "duplicating" — defining
+`input_source` under `machine/` — is not duplication; it is what D13 already
+calls these fields. It was simply not worth doing while the old pipeline was
+still standing.
+
+So the composed shape is correct for now and wrong to freeze. F26 already
+inherits the token-layer move; it inherits this too, and the two are the same
+piece of work: once `reader/` and the elaborator are gone, fold
+`input_source`, `BASE`, and `STATE` down into `machine::forth_state` and let
+`interpreter::forth_state` collapse into it. If F26 finds a concrete reason
+that fold cannot happen, that reason supersedes this amendment and must be
+filed against D13 rather than settled silently.
+
 ## Revisit condition
 
-The composition decision is permanent: nothing about F25's colon compiler
-or F26's cut requires `machine::forth_state` itself to grow these fields
-rather than continuing to be wrapped.
-The deferred-move item closes at step F26, when `reader/` is deleted and
+Both items close at step F26.
+The deferred token-layer move closes because `reader/` is deleted and
 `forth_chars.hpp` must land somewhere by construction.
+The composition closes because `machine::forth_state`'s R1-era consumers are
+deleted in the same step, removing the layering objection that justified
+wrapping rather than growing it — see the orchestrator amendment above for
+why leaving it wrapped would obstruct F28 and F29.

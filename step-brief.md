@@ -32,6 +32,15 @@ covers all of this in prose, transcluding both files in full:
   and `STATE` (`.state()`/`.set_state()`, default 0). See DIV-0012 for why
   this is composition, not an in-place edit of `machine::forth_state` —
   every existing R1-pipeline consumer of that narrower type is unaffected.
+  **This shape is temporary; do not treat it as settled.** D13 says
+  `SOURCE`/`>IN`/`BASE`/`STATE` *are* machine state, and F26 is scheduled to
+  fold them down into `machine::forth_state` once the R1 consumers that
+  forced the wrapper are deleted — otherwise F29's parsing words cannot be
+  primitives (`apply_primitive` only ever sees the narrow type) and D18's
+  uniform XT/`EXECUTE` cannot reach the input stream. Read DIV-0012's
+  orchestrator amendment before designing anything around `.machine()`.
+  Build F25 against the composed shape as it stands — do not do F26's fold
+  early — but keep the seam thin and add nothing that makes the fold harder.
 - `input_source` (`src/smd/forth/interpreter/input_source.hpp`, anchor
   `6a8b2e4f-1c9d-4a3e-8f5b-2d7c9e1a4b6f`) — `SOURCE`/`>IN` as a
   `std::string_view` plus a plain `int` offset, per D19: `>IN` is real
@@ -90,7 +99,11 @@ covers all of this in prose, transcluding both files in full:
 ## Standing constraints
 
 - `TOOLCHAIN=gcc-16` for `make compile|test`; `make lint` runs clean, all
-  hooks — a lint failure is real.
+  hooks — a lint failure is real. **Run `make lint` as the very last thing
+  before you commit, and commit whatever it reformats.** F24 ran it before a
+  final edit and committed a tree that failed clang-format; the orchestrator
+  caught it at the merge gate. clang-format is pinned to v21.1.2 by
+  `.pre-commit-config.yaml` and is stricter than a system clang-format.
 - Nothing is deleted until F26: the R1 pipeline (reader/elaborator/
   eval_direct/codegen/vm, all reachable via `forth.hpp`'s `compiled_forth`)
   must keep building and keep passing its own tests. F24 touched none of it.
