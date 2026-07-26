@@ -4,6 +4,7 @@
 #define SRC_SMD_FORTH_FORTH_HPP
 
 #include <smd/forth/foundation/static_vector.hpp>
+#include <smd/forth/interpreter/prelude.hpp>
 #include <smd/forth/interpreter/session.hpp>
 #include <smd/forth/machine/cell.hpp>
 
@@ -176,9 +177,21 @@ forth_program<MaxCode, MaxWords, MaxData, MaxOut, MaxName, MaxStack>::output()
 // 61611656-475a-405f-a35b-179c4d88f71e
 /// The public one-shot entry point (docs/forth-plan.md Step F15; retargeted
 /// onto D15's session image at step F26): builds @p Source's whole session
-/// (@ref interpreter::build_session) exactly once, at namespace-scope
-/// @c constexpr initialization, and stores the result as a ready-to-inspect
-/// @ref forth_program.
+/// (@ref interpreter::build_session_with_prelude) exactly once, at
+/// namespace-scope @c constexpr initialization, and stores the result as a
+/// ready-to-inspect @ref forth_program.
+///
+/// Step F35 (docs/forth-plan-2.md), DIV-0027: as of this step, "@p Source's
+/// whole session" means @ref interpreter::prelude_source compiled first,
+/// into the same dictionary and code space @p Source goes on to share --
+/// "a prelude of Forth source, compiled by every session before user
+/// source." Every session built through this one public entry point pays
+/// @ref interpreter::prelude_source's own constant, measured step-count cost
+/// (35 interpreter-loop tokens, see @ref interpreter::prelude_source's own
+/// doc comment) and gains its derived words (`NIP`/`TUCK`/`?DUP`) and its
+/// `POSTPONE`-alias control words (`WHEN`/`OTHERWISE`/`ENDIF`, a full
+/// `IF`/`ELSE`/`THEN` replacement under new names) whether or not @p Source
+/// itself ever uses them.
 ///
 /// A @p Source that fails to interpret -- an unknown word, a stack
 /// underflow, a budget-exhausted top-level loop, or anything else @ref
@@ -209,8 +222,9 @@ template <source_literal Source, int MaxCode = 4096, int MaxWords = 256,
           int Fuel = 100000>
 inline constexpr auto compiled_forth =
     forth_program<MaxCode, MaxWords, MaxData, MaxOut, MaxName, MaxStack>{
-        interpreter::build_session<MaxCode, MaxWords, MaxData, MaxOut, MaxName,
-                                   BuildDepth, BuildRDepth, MaxStack>(
+        interpreter::build_session_with_prelude<MaxCode, MaxWords, MaxData,
+                                                MaxOut, MaxName, BuildDepth,
+                                                BuildRDepth, MaxStack>(
             Source.view(), Fuel)
             .value()};
 // 9affe4fc-3d72-4f41-8fd0-d2338f9ab603 end

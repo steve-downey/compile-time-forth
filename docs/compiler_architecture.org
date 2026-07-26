@@ -20,7 +20,7 @@ Steps F5 through F15 (=docs/forth-plan.md=, the superseded R1 plan) built a clas
 DIV-0011 (=docs/divergences/DIV-0011-true-forth-pivot.md=) retired that design in favor of D13: the Forth-2012 section 3.4 text interpreter, with no reader phase and no elaboration phase, is the architecture.
 Steps F24/F25 built the new front end alongside the old one; step F26 ("the cut", =docs/forth-plan-2.md=) deleted the R1 pipeline outright once the new one could stand on its own.
 Phases 2 through 5 below described the deleted pipeline (grammar, syntax tree, elaboration, and two of its three codegen backends) and have moved to =docs/history/architecture-grammar-era.org=, a frozen one-time snapshot — they are no longer part of this living document's own read path.
-As of this revision the lexical layer (Phase 1), the public one-shot API (Phase 6), the text interpreter (Phase 7), the colon compiler and session image (Phase 8), the cut itself (Phase 9), immediacy and control flow (Phase 10), execution tokens and defining words (Phase 11), parsing words and strings (Phase 12), CATCH and THROW (Phase 13), and conformance (Phase 14) are current.
+As of this revision the lexical layer (Phase 1), the public one-shot API (Phase 6), the text interpreter (Phase 7), the colon compiler and session image (Phase 8), the cut itself (Phase 9), immediacy and control flow (Phase 10), execution tokens and defining words (Phase 11), parsing words and strings (Phase 12), CATCH and THROW (Phase 13), conformance (Phase 14), the effect lint (Phase 15), and the bootstrap prelude (Phase 16) are current.
 
 * Pipeline overview
 
@@ -522,3 +522,45 @@ One genuine, documented behavioral widening from the deleted elaborator's own pe
 A hand-computed peak-depth merge criterion: `DUP DUP DROP DROP` has net effect zero but peaks at three cells, verified directly against `effect_inputs`/`peak_depth` (`EffectLintTest - PeakDepthIsARealNumberAssertedAgainstAHandComputation`), which also verifies `compiled_program::required_stack_depth`'s own first fill.
 
 See DIV-0019 (=docs/divergences/DIV-0019-f30-effect-lint-design.md=) for the complete design record.
+
+* Phase 16: The Bootstrap Prelude (step F35, docs/forth-plan-2.md)
+
+The demonstration that Forth metaprogramming is just programming: `interpreter::prelude_source` (`interpreter/prelude.hpp`) is Forth source text `interpreter::interpret` compiles like any other, defining derived words and — as far as `POSTPONE` reaches — control-flow words themselves, in Forth rather than C++.
+Everything it needs already existed by F29: the text interpreter, `STATE`, immediate words, `POSTPONE`, `IMMEDIATE`, execution tokens, and parsing words; this step adds no new C++ machinery beyond the injection point below.
+
+#+transclude: [[file:../src/smd/forth/interpreter/prelude.hpp::c46f1cb1-63a2-4d0e-9e2c-6a45f2c9d5b1]] :lines 2- :src forth :end "c46f1cb1-63a2-4d0e-9e2c-6a45f2c9d5b1 end"
+
+`NIP`/`TUCK`/`?DUP` are ordinary colon-word compositions of already-installed primitives and control words (`?DUP`'s own `DUP IF DUP THEN` needs nothing beyond `IF`/`THEN` as ordinary immediate dictionary entries, D13's own ordinary "execute ... when immediate" rule); `WHEN`/`OTHERWISE`/`ENDIF` are each a whole-body `POSTPONE` of `IF`/`ELSE`/`THEN` respectively.
+
+** The injection point: `compiled_forth<Source>` alone, not `build_session`
+
+#+transclude: [[file:../src/smd/forth/interpreter/prelude.hpp::7d3e9a5c-2b4f-4e1a-8c6d-9f1b3a7e5c2d]] :lines 2- :src cpp :end "7d3e9a5c-2b4f-4e1a-8c6d-9f1b3a7e5c2d end"
+
+`interpreter::build_session` (Phase 8) is untouched; `interpreter::build_session_with_prelude` concatenates `prelude_source` and a caller's own text into one `SOURCE` (a single `machine::forth_state`, since `machine::input_source` has no way to resume over a second, independent text once built, D13) and delegates to `build_session` for the rest.
+Only `forth.hpp`'s own `compiled_forth<Source>` — the public one-shot API, and the actual "session" D15 names — was switched to call it; every direct `build_session` caller in this project's own test suite keeps building a prelude-free session at whatever capacities it already used, several of them (`MaxCode=64`) sized tightly enough that always injecting the prelude there would have forced raising them for no benefit those tests need.
+See DIV-0027 (=docs/divergences/DIV-0027-f35-bootstrap-prelude.md=) for the full record of this choice, and of exactly which words moved out of `machine::default_dictionary` and which stayed (`1+`/`1-` stayed, despite being equally derivable, because `interpreter::corpus::sumto_program`/`countdown_program` exercise them through `default_dictionary` directly, with no prelude in the path at all, in `interp.test.cpp` — the acceptance battery `control_flow_corpus.hpp` names).
+
+** The dictionary-size result
+
+`machine::default_dictionary` drops from 98 entries (through step F32) to 95: `?DUP`/`NIP`/`TUCK`'s own C++-installed primitive bindings are removed from it (their `machine::primitive` enumerators and `apply_primitive` VM cases stay — nothing else reaches them once no dictionary entry names them, a harmless unreachable leftover, not a deletion) and their names are instead defined in `prelude_source`, as ordinary colon words, available only to a session built through `compiled_forth<Source>`/`build_session_with_prelude`.
+`dictionary.test.cpp`'s own `DefaultDictionaryInstallsAllPrimitives` asserts the new count directly.
+
+** The control-word result: a full `IF`/`ELSE`/`THEN` replacement holds
+
+DIV-0015 (Phase 10) records the boundary this step's own merge criterion is hedged against: the structural control words have no VM-representable form, so `POSTPONE` of one composes only when it is the *entire* body of the definition postponing it — `: ENDIF POSTPONE THEN ; IMMEDIATE` is D17's own stated example, and it works, but by installing `ENDIF` as a plain `control_word` alias for `THEN`'s own tag, not by compiling anything.
+This step's own finding: `apply_control_word`'s own `if_`/`else_`/`then_` cases (Phase 10) are each exactly as self-contained as `then_` alone — none reads or depends on anything the *other* two left behind beyond the orig/dest discipline the data stack already carries by design — so the identical whole-body-alias shape closes all three, not only `THEN`.
+`WHEN`/`OTHERWISE`/`ENDIF`, used together, reproduce `IF ... ELSE ... THEN` end to end under new names: **"a full `IF` replacement" holds**, in exactly the sense DIV-0015 already staked out (a whole-body alias, not a from-scratch reimplementation — there remains no way to reach `op::branch0`/the orig-dest discipline except through the same C++ `apply_control_word` case the original word already used, and mixing `POSTPONE IF` with other code in one definition remains diagnosed, unchanged).
+See DIV-0027 for the complete finding.
+
+** The step-count result
+
+`interpreter::consume_interp_fuel` (Phase 7) charges one fuel unit per token `interpret`'s own outer loop scans, so `prelude_source`'s own token count is exactly the per-session step-count tax D22 asks this step to measure: 35 tokens (`:`/name/body/`;`/`IMMEDIATE` counted literally), a constant added to every `compiled_forth<Source>` session regardless of what @c Source itself goes on to interpret.
+Every existing capacity `compiled_forth<Source>`'s own call sites use already had ample headroom (`MaxCode` 512 explicitly at its tightest, 4096 by default; `MaxWords` 256 by default) for the prelude's own ~10 compiled instructions (`NIP`/`TUCK`/`?DUP`; `WHEN`/`OTHERWISE`/`ENDIF` compile nothing, being aliases) and 6 dictionary entries; none needed raising.
+
+** Merge criteria
+
+The derived arithmetic/stack words (`NIP`/`TUCK`/`?DUP`) and a full `IF`/`ELSE`/`THEN` replacement (`WHEN`/`OTHERWISE`/`ENDIF`), both defined in `prelude_source`, exercised directly through `build_session_with_prelude` (`prelude.test.cpp`'s own `PreludeTest -` prefix) and, unchanged, through every `compiled_forth<Source>`-based test in the project (`forth.test.cpp`, all six `core_suite_*` conformance shards, the Hayes ttester, `test_neg_syntax_error.cpp`'s own negative-compile test).
+`interpreter::control_flow_corpus.hpp`'s own program battery keeps passing verbatim through `interp.test.cpp`'s own direct `default_dictionary`-plus-`interpret` path, with no prelude in the path at all — the constraint that kept `1+`/`1-` out of this step's own word-moving scope (DIV-0027).
+`machine::default_dictionary` drops from 98 to 95 entries; the prelude adds a constant, measured 35-token interpreter-loop step-count tax to every `compiled_forth<Source>` session.
+
+See DIV-0027 (=docs/divergences/DIV-0027-f35-bootstrap-prelude.md=) for the complete design record.

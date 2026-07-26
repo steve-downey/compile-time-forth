@@ -41,7 +41,7 @@
 - [x] Step F32: conformance
 - [ ] Step F33: sender backend
 - [ ] Step F34: foreign function interface
-- [ ] Step F35: bootstrap prelude (stretch)
+- [x] Step F35: bootstrap prelude (stretch)
 - [ ] Step F36: consolidation
 
 ## Blog series (docs/blog/AGENTS.md — distinct Sonnet blog agent, one post per step)

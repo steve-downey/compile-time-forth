@@ -568,10 +568,10 @@ constexpr auto dictionary<MaxWords, MaxName>::size() const -> int {
 /// Builds a dictionary with every F8/F13/F16/F28/F29/F32 primitive installed
 /// under its Forth name (`+ - * / MOD NEGATE ABS MIN MAX AND OR XOR INVERT
 /// LSHIFT RSHIFT 1- 1+ 0= 0< = <> < > <= >= TRUE FALSE DUP DROP SWAP OVER
-/// ROT ?DUP NIP TUCK DEPTH >R R> R@ . .S EMIT CR @ ! +! ALLOT , PARSE WORD
+/// ROT DEPTH >R R> R@ . .S EMIT CR @ ! +! ALLOT , PARSE WORD
 /// CHAR COUNT TYPE`, plus the runtime half of `ABORT"`, plus step F32's own
-/// six D21 address-unit words `CELL+ CHAR+ C@ C! CELLS CHARS`) -- 60 dictionary
-/// names over 55 distinct @ref primitive enumerators (four of the six D21
+/// six D21 address-unit words `CELL+ CHAR+ C@ C! CELLS CHARS`) -- 57 dictionary
+/// names over 52 distinct @ref primitive enumerators (four of the six D21
 /// words below alias an existing enumerator rather than adding one; see
 /// that group's own comment) (`.`, `.S`, `EMIT`, `CR` are step F13's
 /// output words, D10; `1-` is also from that step, see DIV-0007; `1+` is
@@ -593,16 +593,50 @@ constexpr auto dictionary<MaxWords, MaxName>::size() const -> int {
 /// moment it is met, so each is immediate; see @ref control_builtin's own
 /// doc comment), 6 more, and step F31's `CATCH THROW ABORT` (D11/D18 --
 /// none immediate: each works identically interpreting or compiled,
-/// exactly like `EXECUTE`), 3 more, for 98 entries total.
+/// exactly like `EXECUTE`), 3 more, for 95 entries total.
 ///
-/// @tparam MaxWords Dictionary capacity; must be at least 98 plus whatever
+/// Step F35 (docs/forth-plan-2.md), DIV-0027: `?DUP`/`NIP`/`TUCK` were
+/// C++-installed primitives here through step F32 (their own @ref primitive
+/// enumerators, `question_dup`/`nip`/`tuck`, still exist in
+/// `machine/forth_state.hpp` and still have real @ref apply_primitive VM
+/// cases -- nothing here *deletes* them, this dictionary just stops naming
+/// them), 98 entries total. This step moves their *names* out of this
+/// function and into `interpreter::prelude_source`
+/// (`interpreter/prelude.hpp`), defined there in Forth itself
+/// (`: NIP SWAP DROP ;`, `: TUCK SWAP OVER ;`, `: ?DUP DUP IF DUP THEN ;`)
+/// -- the measurable "the prelude moves words out of C++ and into Forth"
+/// result D22's own step-count-delta criterion asks for. This function
+/// itself, and every caller that builds a dictionary directly (this
+/// project's own lower-level tests that call @ref default_dictionary and
+/// `interpreter::interpret` without going through
+/// `interpreter::build_session_with_prelude` -- `interp.test.cpp`'s own
+/// `control_flow_corpus`-driven tests among them), is unaffected and still
+/// sees exactly the 95 entries above: only a session built through
+/// `forth.hpp`'s own `compiled_forth<Source>` (the public one-shot API)
+/// gains `NIP`/`TUCK`/`?DUP` back, as compiled colon words rather than
+/// primitives. `1+`/`1-` stay primitives here, unmoved, precisely because
+/// `interpreter::corpus::sumto_program`/`countdown_program` exercise them
+/// through @ref default_dictionary directly, with no prelude in the path at
+/// all (`interp.test.cpp`) -- moving them would break that acceptance
+/// battery rather than merely shrinking a count. See DIV-0027 for the full
+/// design record, including why `MIN`/`MAX` (each derivable from `2DUP`,
+/// not currently in this project's own vocabulary at all) were left as
+/// primitives rather than adding a new word solely to enable moving another
+/// (D12's own "1+" policy: do not add vocabulary a criterion does not
+/// demand).
+///
+/// @tparam MaxWords Dictionary capacity; must be at least 95 plus whatever
 ///                  room the caller wants for later colon/variable/constant/
-///                  foreign definitions.
+///                  foreign definitions -- plus, for a caller that goes on
+///                  to compile @ref interpreter::prelude_source
+///                  (`interpreter::build_session_with_prelude`,
+///                  `interpreter/prelude.hpp`), 6 more for its own derived
+///                  words and control-word aliases.
 /// @tparam MaxName  Maximum name length.
 template <int MaxWords = 256, int MaxName = 32>
 constexpr auto default_dictionary() -> dictionary<MaxWords, MaxName> {
     dictionary<MaxWords, MaxName> dict;
-    constexpr std::array<std::pair<std::string_view, primitive>, 60> words{{
+    constexpr std::array<std::pair<std::string_view, primitive>, 57> words{{
         {"+", primitive::plus},
         {"-", primitive::minus},
         {"*", primitive::star},
@@ -635,9 +669,6 @@ constexpr auto default_dictionary() -> dictionary<MaxWords, MaxName> {
         {"SWAP", primitive::swap},
         {"OVER", primitive::over},
         {"ROT", primitive::rot},
-        {"?DUP", primitive::question_dup},
-        {"NIP", primitive::nip},
-        {"TUCK", primitive::tuck},
         {"DEPTH", primitive::depth},
         {">R", primitive::to_r},
         {"R>", primitive::r_from},

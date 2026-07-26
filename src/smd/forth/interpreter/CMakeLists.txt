@@ -11,6 +11,7 @@ target_sources(
                 control_flow_corpus.hpp
                 effect_lint.hpp
                 interp.hpp
+                prelude.hpp
                 session.hpp
 )
 
@@ -24,6 +25,7 @@ if(FORTH_ENABLE_TESTING)
             control_flow_corpus.test.cpp
             effect_lint.test.cpp
             interp.test.cpp
+            prelude.test.cpp
             session.test.cpp
     )
 
