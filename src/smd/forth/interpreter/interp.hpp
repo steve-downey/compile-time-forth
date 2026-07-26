@@ -370,6 +370,532 @@ template <int MaxName>
         colon_header<MaxName>{.name = folded_name}, after_name};
 }
 
+/// Bookkeeping for the definition currently being compiled, if any --
+/// replaces the four loose locals @ref interpret used before step F27
+/// (`compiling_name`/`compiling_entry`/`compiling_effect`/
+/// `compiling_has_effect`) with one value, now that control flow needs four
+/// more fields alongside them. Meaningful only while the owning @ref
+/// interpret call's own `st.state() != 0`; reset to a fresh value at every
+/// `:` (D13: one colon definition's own bookkeeping never leaks into the
+/// next, since nested `:` is diagnosed rather than allowed).
+///
+/// @ref loop_depth exists for step F27's own control-flow discipline (D17):
+/// it lets `LEAVE`/`UNLOOP`/`I`/`J` diagnose use outside a `DO ... LOOP`,
+/// and lets `;` diagnose an unresolved `DO` (one whose matching `LOOP`/
+/// `+LOOP` was never reached). It is *not* the data stack itself -- unlike
+/// `IF`/`BEGIN`'s own orig/dest markers, which genuinely live on @p st's
+/// data stack per D17 ("the data stack serving as the control-flow stack as
+/// the standard permits"), @ref loop_depth is private bookkeeping @ref
+/// apply_control_word's own `do_`/`loop_`/`plus_loop_` cases maintain
+/// directly. That split is deliberate: an early draft of this step also
+/// tried to diagnose an unresolved `IF`/`BEGIN` at `;` by checking that @p
+/// st's data stack depth returned to what it was at `:`, and that check is
+/// unsound -- an immediate word's own body can legitimately leave real data
+/// on that same stack when it runs at compile time (`: DOUBLE-IT 21 ;
+/// IMMEDIATE` genuinely leaves a `21` behind wherever it is met while
+/// compiling, exactly as `[ ... ] LITERAL`'s own bracketed computation
+/// does), so a plain depth comparison cannot tell that apart from a
+/// genuinely unresolved `IF`. `LOOP`/`+LOOP` without a matching `DO` is
+/// still diagnosed (via @ref loop_depth, see above); `THEN`/`REPEAT`
+/// without a matching `IF`/`BEGIN` is still diagnosed, just later, when the
+/// data stack (a genuine data stack at that point, not a control-flow
+/// stack) does not hold what they expect to pop (D7: a diagnosed
+/// underflow, not UB) -- the "mismatched THEN without IF" merge criterion
+/// this step names explicitly is exactly that case.
+///
+/// @ref has_postponed_alias and @ref postponed_target exist for `POSTPONE`
+/// of a C++-native control word (`: ENDIF POSTPONE THEN ; IMMEDIATE`): see
+/// @ref apply_control_word's own `postpone_` case for the full rationale.
+// b4e7b8e3-3275-47e2-81da-1c7eb25ae1db
+template <int MaxName>
+struct compiling_context {
+    machine::word_name<MaxName> name{};
+    int entry = -1;
+    foundation::source_span effect{};
+    bool has_effect = false;
+    int loop_depth = 0;
+    bool has_postponed_alias = false;
+    machine::control_builtin postponed_target{};
+};
+// b4e7b8e3-3275-47e2-81da-1c7eb25ae1db end
+
+/// Appends @p entry's own *compiled* form to @p buf -- the action every
+/// non-immediate dictionary entry gets when the text interpreter meets it
+/// while compiling (D13), and also what `POSTPONE`/`COMPILE,` (step F27)
+/// reuse for any target that has one: a primitive emits @ref
+/// machine::op::prim, a @ref machine::compiled_colon_word emits @ref
+/// machine::op::call to its own entry point, and a @ref
+/// machine::variable_word/@ref machine::constant_word each emit @ref
+/// machine::op::push (an address or a value, baked in as a literal exactly
+/// as `interpret`'s own pre-F27 compiling dispatch already did).
+///
+/// A @ref machine::control_word has no compiled form -- its whole point (see
+/// @ref machine::control_builtin's own doc comment) is that it can *only*
+/// run as C++ code with direct access to @p buf, never as VM bytecode with
+/// no such access -- so that case, and @ref machine::foreign_word (not
+/// compilable before step F19 either), both diagnose rather than emit
+/// anything.
+template <int MaxCode, int MaxBufWords, int MaxName>
+[[nodiscard]] constexpr auto
+compile_entry(machine::dictionary_entry<MaxName> const &entry,
+              compile_buffer<MaxCode, MaxBufWords> &buf,
+              foundation::source_pos pos) -> machine::status {
+    if (auto const *op = std::get_if<machine::primitive>(&entry.binding)) {
+        auto r =
+            buf.emit(machine::op::prim, static_cast<machine::cell>(*op), pos);
+        if (!r.has_value()) {
+            return r.error();
+        }
+        return std::monostate{};
+    }
+    if (auto const *cw =
+            std::get_if<machine::compiled_colon_word>(&entry.binding)) {
+        auto r = buf.emit(machine::op::call,
+                          static_cast<machine::cell>(cw->entry_point), pos);
+        if (!r.has_value()) {
+            return r.error();
+        }
+        return std::monostate{};
+    }
+    if (auto const *vw = std::get_if<machine::variable_word>(&entry.binding)) {
+        auto r = buf.emit(machine::op::push,
+                          static_cast<machine::cell>(vw->address), pos);
+        if (!r.has_value()) {
+            return r.error();
+        }
+        return std::monostate{};
+    }
+    if (auto const *cnw = std::get_if<machine::constant_word>(&entry.binding)) {
+        auto r = buf.emit(machine::op::push, cnw->value, pos);
+        if (!r.has_value()) {
+            return r.error();
+        }
+        return std::monostate{};
+    }
+    return foundation::parse_error{pos, "word has no compiled form"};
+}
+
+// d1a4f7b2-6c8e-4a3d-9b5f-2e7c4a9d1b6e
+/// Performs one C++-native control word's own action (step F27, D17):
+/// `IF ELSE THEN`, `BEGIN UNTIL`, `BEGIN WHILE REPEAT`, `DO LOOP +LOOP LEAVE
+/// UNLOOP I J`, `LITERAL`, `POSTPONE`, `IMMEDIATE`, `[`, `]`, `COMPILE,`.
+///
+/// Every control word but `[`, `]`, and `IMMEDIATE` is diagnosed as
+/// compile-only if @p st is interpreting (`state() == 0`) -- the same
+/// "compile-only, used while interpreting" shape @ref interpret already
+/// gives `;`/`EXIT`/`RECURSE` directly.
+///
+/// **`IF`/`WHILE`**: emit a sentinel @ref machine::op::branch0 (operand -1,
+/// which can never be a real instruction index) and push the emitted
+/// instruction's own index (its "orig", Forth-2012's term) onto @p st's data
+/// stack, which doubles as the control-flow stack while compiling (D17: "the
+/// data stack serving as the control-flow stack as the standard permits").
+/// **`ELSE`**: pops `IF`'s orig, emits a sentinel @ref machine::op::branch
+/// (the jump past the else-arm), patches the popped orig to land right after
+/// it, and pushes the new branch's own index as its own orig for `THEN` to
+/// resolve. **`THEN`**: pops an orig and patches it to @p buf's own current
+/// position -- the diagnosis an orig-less `THEN` (`THEN` with no matching
+/// `IF`) gets is exactly a data-stack-underflow @ref foundation::result, the
+/// same discipline that makes every other misuse here a diagnosed error
+/// rather than UB (D7).
+///
+/// **`BEGIN`**: pushes @p buf's own current position as a "dest" (no
+/// instruction emitted -- a backward branch target needs no sentinel).
+/// **`UNTIL`**: pops a dest and emits @ref machine::op::branch0 back to it.
+/// **`WHILE`**: emits its own sentinel @ref machine::op::branch0 (an orig,
+/// exactly like `IF`'s), leaving `BEGIN`'s own dest underneath it on the
+/// stack. **`REPEAT`**: pops `WHILE`'s orig and `BEGIN`'s dest (in that
+/// order), emits an unconditional @ref machine::op::branch back to dest, and
+/// patches orig to land just past it.
+///
+/// **`DO`**: emits @ref machine::op::do_setup and pushes @p buf's own
+/// resulting position as a dest, and increments @p cctx's own @ref
+/// compiling_context::loop_depth. **`LOOP`/`+LOOP`**: pops that dest, emits
+/// @ref machine::op::loop_step or @ref machine::op::plus_loop_step with it
+/// as the backward-branch operand, then re-plays F17's own sentinel scan
+/// (`docs/compiler_architecture.org`, Phase 9's own DO...LOOP codegen,
+/// before this step relocated it here token-by-token instead of
+/// tree-structured): every @ref machine::op::leave instruction between dest
+/// and @p buf's own new position that still carries `LEAVE`'s own -1
+/// sentinel operand is patched to that new position, bounded exactly to this
+/// `DO`'s own body since any inner nested loop's own `LOOP`/`+LOOP` already
+/// resolved its own `LEAVE`s first. **`LEAVE`/`UNLOOP`/`I`/`J`**: diagnosed
+/// if @p cctx's own @ref compiling_context::loop_depth does not cover them
+/// (`J` needs two levels of nesting), else each emits its own single
+/// instruction (@ref machine::op::leave with the same -1 sentinel, @ref
+/// machine::op::unloop, or @ref machine::op::push_index at level 0 or 1)
+/// with no control-flow-stack push or pop of its own.
+///
+/// **`LITERAL`**: pops @p st's own data stack (a value some earlier
+/// interpreted code -- typically inside a `[ ... ]` bracket, see below --
+/// left there) and emits it as an @ref machine::op::push literal.
+/// **`[`**: sets `STATE` to 0, dropping @p st back to interpreting for the
+/// tokens up to the matching `]` (an ordinary, non-immediate control word:
+/// found and executed like any other word once @p st is interpreting again,
+/// needing no special dispatch of its own). **`]`**: sets `STATE` back to 1.
+/// **`IMMEDIATE`**: flags @p dict's own most recently defined entry via
+/// @ref machine::dictionary::mark_last_immediate, regardless of that entry's
+/// own binding kind.
+///
+/// **`COMPILE,`**: pops a dictionary index (D11's execution-token
+/// convention, @ref machine::op::push_xt's own documented meaning, ahead of
+/// F28's own fuller execution-token story) and appends that entry's own
+/// compiled form via @ref compile_entry. **`POSTPONE`**: scans the next
+/// source token as a name (bypassing ordinary dispatch entirely, the same
+/// way `:` scans its own following name) and looks it up in @p dict. If the
+/// target is anything @ref compile_entry can compile, `POSTPONE` does
+/// exactly that -- appending a call/push to the *current* definition so that
+/// definition's own later execution runs the target, which is POSTPONE's
+/// Forth-2012 contract regardless of whether the target happens to be
+/// immediate (an immediate @ref machine::compiled_colon_word still has a
+/// real entry point; appending a call to it is correct either way). If the
+/// target is a @ref machine::control_word, no VM code can represent "run
+/// this word's own C++ action later" (@ref machine::control_builtin's own
+/// doc comment), so `POSTPONE` instead records the target on @p cctx itself
+/// (@ref compiling_context::has_postponed_alias /
+/// @ref compiling_context::postponed_target): @ref interpret's own `;`
+/// handling, seeing that flag, defines the word being closed as a plain
+/// alias for the target control word (a @ref machine::control_word entry
+/// with the same tag) instead of a @ref machine::compiled_colon_word. This
+/// is a deliberate, narrower scope than full Forth-2012 `POSTPONE` (which
+/// permits postponing a control word anywhere, freely mixed with ordinary
+/// compiled code, in the same definition): only a definition whose *entire*
+/// body is that one `POSTPONE` is supported, diagnosed otherwise, since
+/// nothing past that single case is needed by this step's own merge
+/// criterion (`: ENDIF POSTPONE THEN ; IMMEDIATE`) or buildable at all
+/// without a unified code/data representation (D18's own header
+/// unification, F28's job, not this one's).
+template <int MaxDepth, int MaxRDepth, int MaxData, int MaxOut, int MaxWords,
+          int MaxCode, int MaxBufWords, int MaxName>
+[[nodiscard]] constexpr auto apply_control_word(
+    machine::control_builtin which,
+    forth_state<MaxDepth, MaxRDepth, MaxData, MaxOut, MaxName> &st,
+    machine::dictionary<MaxWords, MaxName> &dict,
+    compile_buffer<MaxCode, MaxBufWords> &buf, compiling_context<MaxName> &cctx,
+    foundation::source_pos pos) -> machine::status {
+    using machine::cell;
+    using machine::control_builtin;
+    using machine::op;
+
+    auto compile_only = [&]() -> machine::status {
+        return foundation::parse_error{
+            pos, "control word is compile-only, used while interpreting"};
+    };
+    // Patches the branch instruction at code index @c idx to jump to
+    // @c target, diagnosing an out-of-range @c idx (an orig/dest popped off
+    // a data stack that was not actually holding one, e.g. `THEN` with no
+    // matching `IF`) rather than letting static_vector::operator[]'s own
+    // precondition fire (D7: diagnosed, never UB).
+    auto patch = [&](int idx, cell target) -> machine::status {
+        if (idx < 0 || idx >= buf.program().code.size()) {
+            return foundation::parse_error{
+                pos, "control-flow discipline violated: no matching IF/WHILE"};
+        }
+        buf.program().code[idx].operand = target;
+        return std::monostate{};
+    };
+
+    switch (which) {
+    case control_builtin::if_:
+    case control_builtin::while_: {
+        if (st.state() == 0) {
+            return compile_only();
+        }
+        auto r = buf.emit(op::branch0, cell{-1}, pos);
+        if (!r.has_value()) {
+            return r.error();
+        }
+        return st.machine().data().push(static_cast<cell>(r.value()));
+    }
+    case control_builtin::else_: {
+        if (st.state() == 0) {
+            return compile_only();
+        }
+        auto orig = st.machine().data().pop();
+        if (!orig.has_value()) {
+            return orig.error();
+        }
+        auto r = buf.emit(op::branch, cell{-1}, pos);
+        if (!r.has_value()) {
+            return r.error();
+        }
+        auto p = patch(static_cast<int>(orig.value()),
+                       static_cast<cell>(buf.here()));
+        if (!p.has_value()) {
+            return p;
+        }
+        return st.machine().data().push(static_cast<cell>(r.value()));
+    }
+    case control_builtin::then_: {
+        if (st.state() == 0) {
+            return compile_only();
+        }
+        auto orig = st.machine().data().pop();
+        if (!orig.has_value()) {
+            return orig.error();
+        }
+        return patch(static_cast<int>(orig.value()),
+                     static_cast<cell>(buf.here()));
+    }
+    case control_builtin::begin_: {
+        if (st.state() == 0) {
+            return compile_only();
+        }
+        return st.machine().data().push(static_cast<cell>(buf.here()));
+    }
+    case control_builtin::until_: {
+        if (st.state() == 0) {
+            return compile_only();
+        }
+        auto dest = st.machine().data().pop();
+        if (!dest.has_value()) {
+            return dest.error();
+        }
+        auto r = buf.emit(op::branch0, static_cast<cell>(dest.value()), pos);
+        if (!r.has_value()) {
+            return r.error();
+        }
+        return std::monostate{};
+    }
+    case control_builtin::repeat_: {
+        if (st.state() == 0) {
+            return compile_only();
+        }
+        auto orig = st.machine().data().pop(); // WHILE's own orig
+        if (!orig.has_value()) {
+            return orig.error();
+        }
+        auto dest = st.machine().data().pop(); // BEGIN's own dest
+        if (!dest.has_value()) {
+            return dest.error();
+        }
+        auto r = buf.emit(op::branch, static_cast<cell>(dest.value()), pos);
+        if (!r.has_value()) {
+            return r.error();
+        }
+        return patch(static_cast<int>(orig.value()),
+                     static_cast<cell>(buf.here()));
+    }
+    case control_builtin::do_: {
+        if (st.state() == 0) {
+            return compile_only();
+        }
+        auto setup_r = buf.emit(op::do_setup, cell{0}, pos);
+        if (!setup_r.has_value()) {
+            return setup_r.error();
+        }
+        auto pr = st.machine().data().push(static_cast<cell>(buf.here()));
+        if (!pr.has_value()) {
+            return pr;
+        }
+        ++cctx.loop_depth;
+        return std::monostate{};
+    }
+    case control_builtin::loop_:
+    case control_builtin::plus_loop_: {
+        if (st.state() == 0) {
+            return compile_only();
+        }
+        if (cctx.loop_depth <= 0) {
+            return foundation::parse_error{pos,
+                                           which == control_builtin::loop_
+                                               ? "LOOP without a matching DO"
+                                               : "+LOOP without a matching DO"};
+        }
+        auto dest = st.machine().data().pop();
+        if (!dest.has_value()) {
+            return dest.error();
+        }
+        int const dest_idx = static_cast<int>(dest.value());
+        auto r = buf.emit(which == control_builtin::loop_ ? op::loop_step
+                                                          : op::plus_loop_step,
+                          static_cast<cell>(dest_idx), pos);
+        if (!r.has_value()) {
+            return r.error();
+        }
+        int const loop_exit = buf.here();
+        for (int k = dest_idx; k < loop_exit; ++k) {
+            auto &code_k = buf.program().code[k];
+            if (code_k.code == op::leave && code_k.operand == cell{-1}) {
+                code_k.operand = static_cast<cell>(loop_exit);
+            }
+        }
+        --cctx.loop_depth;
+        return std::monostate{};
+    }
+    case control_builtin::leave_: {
+        if (st.state() == 0) {
+            return compile_only();
+        }
+        if (cctx.loop_depth <= 0) {
+            return foundation::parse_error{pos, "LEAVE outside a DO ... LOOP"};
+        }
+        auto r = buf.emit(op::leave, cell{-1}, pos);
+        if (!r.has_value()) {
+            return r.error();
+        }
+        return std::monostate{};
+    }
+    case control_builtin::unloop_: {
+        if (st.state() == 0) {
+            return compile_only();
+        }
+        if (cctx.loop_depth <= 0) {
+            return foundation::parse_error{pos, "UNLOOP outside a DO ... LOOP"};
+        }
+        auto r = buf.emit(op::unloop, cell{0}, pos);
+        if (!r.has_value()) {
+            return r.error();
+        }
+        return std::monostate{};
+    }
+    case control_builtin::i_: {
+        if (st.state() == 0) {
+            return compile_only();
+        }
+        if (cctx.loop_depth < 1) {
+            return foundation::parse_error{pos, "I outside a DO ... LOOP"};
+        }
+        auto r = buf.emit(op::push_index, cell{0}, pos);
+        if (!r.has_value()) {
+            return r.error();
+        }
+        return std::monostate{};
+    }
+    case control_builtin::j_: {
+        if (st.state() == 0) {
+            return compile_only();
+        }
+        if (cctx.loop_depth < 2) {
+            return foundation::parse_error{pos,
+                                           "J requires a nested DO ... LOOP"};
+        }
+        auto r = buf.emit(op::push_index, cell{1}, pos);
+        if (!r.has_value()) {
+            return r.error();
+        }
+        return std::monostate{};
+    }
+    case control_builtin::literal_: {
+        if (st.state() == 0) {
+            return compile_only();
+        }
+        auto v = st.machine().data().pop();
+        if (!v.has_value()) {
+            return v.error();
+        }
+        auto r = buf.emit(op::push, v.value(), pos);
+        if (!r.has_value()) {
+            return r.error();
+        }
+        return std::monostate{};
+    }
+    case control_builtin::bracket_open_: {
+        st.set_state(0);
+        return std::monostate{};
+    }
+    case control_builtin::bracket_close_: {
+        st.set_state(1);
+        return std::monostate{};
+    }
+    case control_builtin::immediate_: {
+        return dict.mark_last_immediate();
+    }
+    case control_builtin::compile_comma_: {
+        if (st.state() == 0) {
+            return compile_only();
+        }
+        auto idx_v = st.machine().data().pop();
+        if (!idx_v.has_value()) {
+            return idx_v.error();
+        }
+        int const idx = static_cast<int>(idx_v.value());
+        if (idx < 0 || idx >= dict.size()) {
+            return foundation::parse_error{pos,
+                                           "COMPILE,: invalid execution token"};
+        }
+        return compile_entry(dict.entry_at(idx), buf, pos);
+    }
+    case control_builtin::postpone_: {
+        if (st.state() == 0) {
+            return compile_only();
+        }
+        auto name_scanned =
+            parser::scan_word<MaxName>(st.source().cursor_at_in());
+        if (!name_scanned.has_value()) {
+            return name_scanned.error();
+        }
+        auto const &folded_name = name_scanned.value().value;
+        if (folded_name.empty()) {
+            return foundation::parse_error{pos,
+                                           "expected a name after POSTPONE"};
+        }
+        st.source().set_in(name_scanned.value().rest.position().offset);
+        std::string_view name_text{
+            folded_name.begin(), static_cast<std::size_t>(folded_name.size())};
+        auto const *target = dict.lookup(name_text);
+        if (target == nullptr) {
+            return foundation::parse_error{pos, "POSTPONE: unknown word"};
+        }
+        if (auto const *ctl =
+                std::get_if<machine::control_word>(&target->binding)) {
+            if (cctx.has_postponed_alias || buf.here() != cctx.entry) {
+                return foundation::parse_error{
+                    pos, "POSTPONE of a control word must be the only "
+                         "content of its definition"};
+            }
+            cctx.has_postponed_alias = true;
+            cctx.postponed_target = ctl->which;
+            return std::monostate{};
+        }
+        return compile_entry(*target, buf, pos);
+    }
+    }
+    return foundation::parse_error{pos, "unknown control word"};
+}
+// d1a4f7b2-6c8e-4a3d-9b5f-2e7c4a9d1b6e end
+
+/// Runs @p entry's own execution semantics against @p st -- the action
+/// every dictionary entry gets when the text interpreter meets it while
+/// interpreting (D13), and also what a compiling loop gives an *immediate*
+/// entry instead of compiling it (D13's "execute ... when immediate"): a
+/// primitive runs via @ref machine::apply_primitive, a @ref
+/// machine::compiled_colon_word runs via @ref call_word (D14: interpreting a
+/// defined word runs the same code a compiled call would), a @ref
+/// machine::variable_word/@ref machine::constant_word each push their own
+/// address/value, and a @ref machine::control_word dispatches to @ref
+/// apply_control_word.
+template <int MaxDepth, int MaxRDepth, int MaxData, int MaxOut, int MaxWords,
+          int MaxCode, int MaxBufWords, int MaxName>
+[[nodiscard]] constexpr auto
+execute_entry(machine::dictionary_entry<MaxName> const &entry,
+              forth_state<MaxDepth, MaxRDepth, MaxData, MaxOut, MaxName> &st,
+              machine::dictionary<MaxWords, MaxName> &dict,
+              compile_buffer<MaxCode, MaxBufWords> &buf,
+              compiling_context<MaxName> &cctx, foundation::source_pos pos,
+              int vm_fuel) -> machine::status {
+    if (auto const *op = std::get_if<machine::primitive>(&entry.binding)) {
+        return machine::apply_primitive(*op, st.machine());
+    }
+    if (auto const *cw =
+            std::get_if<machine::compiled_colon_word>(&entry.binding)) {
+        return call_word(buf, st.machine(), cw->entry_point, vm_fuel);
+    }
+    if (auto const *vw = std::get_if<machine::variable_word>(&entry.binding)) {
+        return st.machine().data().push(
+            static_cast<machine::cell>(vw->address));
+    }
+    if (auto const *cnw = std::get_if<machine::constant_word>(&entry.binding)) {
+        return st.machine().data().push(cnw->value);
+    }
+    if (auto const *ctl = std::get_if<machine::control_word>(&entry.binding)) {
+        return apply_control_word(ctl->which, st, dict, buf, cctx, pos);
+    }
+    return foundation::parse_error{
+        pos, "word is not executable yet (F25: primitives and colon "
+             "words only)"};
+}
+
 // aa1d6f83-9b3c-4e2a-8d5f-3c7b1e9a4f62
 /// The Forth-2012 section 3.4 outer text interpreter (D13): scans one word
 /// at a time from @p st's own @ref input_source and, per @p st's own
@@ -377,38 +903,46 @@ template <int MaxName>
 /// until @p st's source is exhausted or the first diagnosed error, whichever
 /// comes first.
 ///
-/// **Interpreting** (`STATE == 0`): a dictionary hit runs (a @ref
-/// machine::primitive, via @ref machine::apply_primitive), calls (a @ref
-/// machine::compiled_colon_word, via @ref call_word -- D14's "interpreting a
-/// defined word runs its code on the VM against the live forth_state, one
-/// semantics"), or pushes (a @ref machine::variable_word's address or a
-/// @ref machine::constant_word's value); a miss is classified as a number
-/// per @p st's own `BASE` and pushed, or diagnosed as an unknown word. `;`,
-/// `EXIT`, and `RECURSE` are compile-only (D13, Forth-2012): diagnosed here
-/// rather than acted on. `VARIABLE`, `CREATE`, and `CONSTANT` (F26) are
-/// ordinary defining words, recognized here by the same direct-name
-/// technique as `:`: they scan a following name and install a
-/// @ref machine::variable_word (allotting one cell for `VARIABLE`, none for
-/// `CREATE`) or a @ref machine::constant_word (popping the value `CONSTANT`
-/// binds) into @p dict.
+/// **Interpreting** (`STATE == 0`): a dictionary hit runs via @ref
+/// execute_entry (D13's "execute ... when interpreting"); a miss is
+/// classified as a number per @p st's own `BASE` and pushed, or diagnosed as
+/// an unknown word. `;`, `EXIT`, and `RECURSE` are compile-only (D13,
+/// Forth-2012): diagnosed here rather than acted on -- as are the step F27
+/// control words found via @ref execute_entry's own dispatch to @ref
+/// apply_control_word, all but `[`/`]`/`IMMEDIATE`. `VARIABLE`, `CREATE`,
+/// and `CONSTANT` (F26) are ordinary defining words, recognized here by the
+/// same direct-name technique as `:`: they scan a following name and
+/// install a @ref machine::variable_word (allotting one cell for
+/// `VARIABLE`, none for `CREATE`) or a @ref machine::constant_word (popping
+/// the value `CONSTANT` binds) into @p dict.
 ///
-/// **Compiling** (`STATE == 1`, entered by `:`): a dictionary hit emits
-/// (@ref machine::op::prim for a primitive, @ref machine::op::call for a
-/// @ref machine::compiled_colon_word, or @ref machine::op::push for a
-/// variable's address or a constant's value, baked in as a literal exactly
-/// as the R1 elaborator's `core_var`/`core_const` once did) rather than
-/// running; a miss is classified as a number and emitted as
-/// @ref machine::op::push. `;` emits @ref machine::op::ret, installs the
+/// **Compiling** (`STATE == 1`, entered by `:`): a dictionary hit that is
+/// *not* `IMMEDIATE` (step F27, D13's "... or when immediate, else compile")
+/// is appended to @p buf via @ref compile_entry rather than run; one that
+/// *is* immediate runs right away via @ref execute_entry instead, exactly as
+/// interpreting would -- this is how every control word (`IF`/`THEN`/
+/// `DO`/`LOOP`/... , D17) does its own compiling work, and how a
+/// user-defined immediate word (`: ENDIF POSTPONE THEN ; IMMEDIATE`) does
+/// too. A miss is classified as a number and emitted as @ref
+/// machine::op::push. `;` emits @ref machine::op::ret, installs the
 /// finished @ref machine::compiled_colon_word into @p dict, and clears
-/// `STATE`. `EXIT` emits @ref machine::op::ret without closing the
-/// definition. `RECURSE` emits a self-@ref machine::op::call to the entry
-/// point @ref scan_colon_header's own caller (`:` itself, below) recorded
-/// *before* the body was compiled -- F14's discipline, carried forward
-/// unchanged, is what makes this resolve without any back-patching.
-/// `VARIABLE`/`CREATE`/`CONSTANT` are not recognized while compiling (F26
-/// does not give defining-inside-a-colon-definition its own semantics): a
-/// dictionary miss on one of those names inside `:` ... `;` falls through to
-/// the same "unknown word" diagnosis any other undefined name would get.
+/// `STATE` -- unless the definition being closed is a `POSTPONE`-of-a-
+/// control-word alias (@ref compiling_context::has_postponed_alias), in
+/// which case it installs a @ref machine::control_word instead (@ref
+/// apply_control_word's own `postpone_` case has the full rationale); either
+/// way, `;` first diagnoses an unresolved `DO` (@ref compiling_context::
+/// loop_depth still nonzero -- @ref compiling_context's own doc comment
+/// explains why an unresolved `IF`/`BEGIN` is not caught the same way).
+/// `EXIT` emits @ref
+/// machine::op::ret without closing the definition. `RECURSE` emits a
+/// self-@ref machine::op::call to the entry point @ref scan_colon_header's
+/// own caller (`:` itself, below) recorded *before* the body was compiled --
+/// F14's discipline, carried forward unchanged, is what makes this resolve
+/// without any back-patching. `VARIABLE`/`CREATE`/`CONSTANT` are not
+/// recognized while compiling (F26 does not give defining-inside-a-colon-
+/// definition its own semantics): a dictionary miss on one of those names
+/// inside `:` ... `;` falls through to the same "unknown word" diagnosis any
+/// other undefined name would get.
 ///
 /// `\` line comments and `( ... )` comments are ordinary intertoken space to
 /// this loop (@ref parser::skip_forth_space, invoked here via @ref
@@ -464,11 +998,9 @@ interpret(forth_state<MaxDepth, MaxRDepth, MaxData, MaxOut, MaxName> &st,
     // local to this call frame, not part of forth_state itself (DIV-0012:
     // keep the seam thin, add nothing that makes F26's later fold of
     // SOURCE/BASE/STATE into machine::forth_state harder). Meaningful only
-    // while st.state() != 0.
-    machine::word_name<MaxName> compiling_name{};
-    int compiling_entry = -1;
-    foundation::source_span compiling_effect{};
-    bool compiling_has_effect = false;
+    // while st.state() != 0; see compiling_context's own doc comment for why
+    // step F27 grew this from four loose locals into one value.
+    compiling_context<MaxName> cctx{};
 
     for (;;) {
         auto pre = st.source().cursor_at_in();
@@ -513,11 +1045,12 @@ interpret(forth_state<MaxDepth, MaxRDepth, MaxData, MaxOut, MaxName> &st,
                 if (!header.has_value()) {
                     return header.error();
                 }
-                compiling_name = header.value().value.name;
-                compiling_effect = header.value().value.effect;
-                compiling_has_effect = header.value().value.has_effect;
+                cctx = compiling_context<MaxName>{};
+                cctx.name = header.value().value.name;
+                cctx.effect = header.value().value.effect;
+                cctx.has_effect = header.value().value.has_effect;
                 st.source().set_in(header.value().rest.position().offset);
-                compiling_entry = buf.here();
+                cctx.entry = buf.here();
                 st.set_state(1);
                 continue;
             }
@@ -615,46 +1148,17 @@ interpret(forth_state<MaxDepth, MaxRDepth, MaxData, MaxOut, MaxName> &st,
             }
             // eabc2d13-9f50-4eb9-98e8-7d69cca95046 end
 
+            // D13: "if found, execute" -- every binding kind, including a
+            // step F27 control word, runs via execute_entry while
+            // interpreting (@ref execute_entry's own doc comment).
             auto const *entry = dict.lookup(text);
             if (entry != nullptr) {
-                if (auto const *op =
-                        std::get_if<machine::primitive>(&entry->binding)) {
-                    auto r = machine::apply_primitive(*op, st.machine());
-                    if (!r.has_value()) {
-                        return r;
-                    }
-                    continue;
+                auto r = execute_entry(*entry, st, dict, buf, cctx,
+                                       token_start.position(), vm_fuel);
+                if (!r.has_value()) {
+                    return r;
                 }
-                if (auto const *cw = std::get_if<machine::compiled_colon_word>(
-                        &entry->binding)) {
-                    auto r =
-                        call_word(buf, st.machine(), cw->entry_point, vm_fuel);
-                    if (!r.has_value()) {
-                        return r;
-                    }
-                    continue;
-                }
-                if (auto const *vw =
-                        std::get_if<machine::variable_word>(&entry->binding)) {
-                    auto r = st.machine().data().push(
-                        static_cast<machine::cell>(vw->address));
-                    if (!r.has_value()) {
-                        return r;
-                    }
-                    continue;
-                }
-                if (auto const *cnw =
-                        std::get_if<machine::constant_word>(&entry->binding)) {
-                    auto r = st.machine().data().push(cnw->value);
-                    if (!r.has_value()) {
-                        return r;
-                    }
-                    continue;
-                }
-                return foundation::parse_error{
-                    token_start.position(),
-                    "word is not executable yet (F25: primitives and colon "
-                    "words only)"};
+                continue;
             }
 
             if (is_number_token_in_base(text, st.base())) {
@@ -678,23 +1182,59 @@ interpret(forth_state<MaxDepth, MaxRDepth, MaxData, MaxOut, MaxName> &st,
         }
         // 8b4e1c7a-3f9d-4a62-8e5b-1d7c4a9f6e38
         if (text == ";") {
+            if (cctx.has_postponed_alias) {
+                // `: ENDIF POSTPONE THEN ; IMMEDIATE`-style alias (@ref
+                // apply_control_word's own `postpone_` case): nothing was
+                // ever emitted for this definition, so it becomes a plain
+                // machine::control_word entry -- the same tag POSTPONE's own
+                // target carried -- rather than a compiled_colon_word.
+                // buf.here() having moved past cctx.entry means ordinary
+                // code was compiled too (either before the POSTPONE, which
+                // apply_control_word already rejects, or after it): diagnose
+                // rather than silently drop that code.
+                if (buf.here() != cctx.entry) {
+                    return foundation::parse_error{
+                        token_start.position(),
+                        "code after a postponed control word is not "
+                        "supported"};
+                }
+                std::string_view name_text{
+                    cctx.name.begin(),
+                    static_cast<std::size_t>(cctx.name.size())};
+                auto def_r = dict.define_control(
+                    name_text, machine::control_word{cctx.postponed_target});
+                if (!def_r.has_value()) {
+                    return def_r;
+                }
+                cctx = compiling_context<MaxName>{};
+                st.set_state(0);
+                continue;
+            }
+            if (cctx.loop_depth != 0) {
+                // A DO was left without its matching LOOP/+LOOP -- see
+                // compiling_context's own doc comment for why this checks
+                // loop_depth specifically rather than comparing data-stack
+                // depth the way an early draft of this step did.
+                return foundation::parse_error{
+                    token_start.position(),
+                    "unbalanced control-flow structure (unresolved DO)"};
+            }
             auto ret_r = buf.emit(machine::op::ret, machine::cell{0},
                                   token_start.position());
             if (!ret_r.has_value()) {
                 return ret_r.error();
             }
             std::string_view name_text{
-                compiling_name.begin(),
-                static_cast<std::size_t>(compiling_name.size())};
+                cctx.name.begin(), static_cast<std::size_t>(cctx.name.size())};
             auto def_r = dict.define_compiled_colon(
-                name_text, machine::compiled_colon_word{
-                               .entry_point = compiling_entry,
-                               .effect_span = compiling_effect,
-                               .has_effect = compiling_has_effect});
+                name_text,
+                machine::compiled_colon_word{.entry_point = cctx.entry,
+                                             .effect_span = cctx.effect,
+                                             .has_effect = cctx.has_effect});
             if (!def_r.has_value()) {
                 return def_r;
             }
-            compiling_entry = -1;
+            cctx = compiling_context<MaxName>{};
             st.set_state(0);
             continue;
         }
@@ -708,7 +1248,7 @@ interpret(forth_state<MaxDepth, MaxRDepth, MaxData, MaxOut, MaxName> &st,
         }
         if (text == "RECURSE") {
             auto r = buf.emit(machine::op::call,
-                              static_cast<machine::cell>(compiling_entry),
+                              static_cast<machine::cell>(cctx.entry),
                               token_start.position());
             if (!r.has_value()) {
                 return r.error();
@@ -717,54 +1257,26 @@ interpret(forth_state<MaxDepth, MaxRDepth, MaxData, MaxOut, MaxName> &st,
         }
         // 8b4e1c7a-3f9d-4a62-8e5b-1d7c4a9f6e38 end
 
+        // D13: "execute ... when immediate, else compile" -- an immediate
+        // entry (every step F27 control word but `]`/`IMMEDIATE`, or a
+        // user-defined immediate colon word) runs now via execute_entry;
+        // anything else is appended to the definition being compiled via
+        // compile_entry (the same form POSTPONE/COMPILE, reuse).
         auto const *entry = dict.lookup(text);
         if (entry != nullptr) {
-            if (auto const *op =
-                    std::get_if<machine::primitive>(&entry->binding)) {
-                auto r =
-                    buf.emit(machine::op::prim, static_cast<machine::cell>(*op),
-                             token_start.position());
+            if (entry->immediate) {
+                auto r = execute_entry(*entry, st, dict, buf, cctx,
+                                       token_start.position(), vm_fuel);
                 if (!r.has_value()) {
-                    return r.error();
+                    return r;
                 }
                 continue;
             }
-            if (auto const *cw = std::get_if<machine::compiled_colon_word>(
-                    &entry->binding)) {
-                auto r = buf.emit(machine::op::call,
-                                  static_cast<machine::cell>(cw->entry_point),
-                                  token_start.position());
-                if (!r.has_value()) {
-                    return r.error();
-                }
-                continue;
+            auto r = compile_entry(*entry, buf, token_start.position());
+            if (!r.has_value()) {
+                return r;
             }
-            if (auto const *vw =
-                    std::get_if<machine::variable_word>(&entry->binding)) {
-                // A variable's address is baked in as a literal, exactly the
-                // way the R1 elaborator's core_var did (docs/
-                // compiler_architecture.org's Phase 4 section, now history).
-                auto r = buf.emit(machine::op::push,
-                                  static_cast<machine::cell>(vw->address),
-                                  token_start.position());
-                if (!r.has_value()) {
-                    return r.error();
-                }
-                continue;
-            }
-            if (auto const *cnw =
-                    std::get_if<machine::constant_word>(&entry->binding)) {
-                auto r = buf.emit(machine::op::push, cnw->value,
-                                  token_start.position());
-                if (!r.has_value()) {
-                    return r.error();
-                }
-                continue;
-            }
-            return foundation::parse_error{
-                token_start.position(),
-                "word is not compilable yet (F25: primitives and colon "
-                "words only)"};
+            continue;
         }
 
         if (is_number_token_in_base(text, st.base())) {

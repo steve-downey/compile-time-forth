@@ -5,6 +5,7 @@
 #include <smd/forth/interpreter/interp.hpp> // test 2nd include OK
 
 #include <smd/forth/interpreter/compilebuf.hpp>
+#include <smd/forth/interpreter/control_flow_corpus.hpp>
 #include <smd/forth/machine/dictionary.hpp>
 #include <smd/forth/machine/forth_state.hpp>
 
@@ -16,6 +17,7 @@ using smd::forth::interpreter::compile_buffer;
 using smd::forth::interpreter::forth_state;
 using smd::forth::interpreter::interpret;
 using smd::forth::machine::default_dictionary;
+namespace corpus = smd::forth::interpreter::corpus;
 
 namespace {
 
@@ -313,6 +315,176 @@ static_assert([] {
            call_instr.operand == cw->entry_point;
 }());
 
+// -- Step F27 merge criteria: immediacy and control flow ---------------------
+//
+// The complete F13/F16/F17 program battery (interpreter/control_flow_corpus.
+// hpp, preserved verbatim by F26 specifically so this step has something to
+// prove itself against), through interpret() at compile time.
+
+static_assert([] {
+    forth_state<64, 64, 1024, 256> st{corpus::abs_program};
+    auto dict = default_dictionary<>();
+    compile_buffer<> buf;
+    auto r = interpret(st, dict, buf);
+    return r.has_value() && st.machine().data().depth() == 1 &&
+           st.machine().data().peek().value() == 7;
+}());
+
+static_assert([] {
+    forth_state<64, 64, 1024, 256> st{corpus::countdown_program};
+    auto dict = default_dictionary<>();
+    compile_buffer<> buf;
+    auto r = interpret(st, dict, buf);
+    return r.has_value() && st.machine().data().depth() == 0 &&
+           output_of(st) == "3 2 1 ";
+}());
+
+// SPIN never terminates: a small VM fuel diagnoses budget exhaustion rather
+// than hanging the constant evaluator (D22).
+static_assert([] {
+    forth_state<64, 64, 1024, 256> st{corpus::spin_program};
+    auto dict = default_dictionary<>();
+    compile_buffer<> buf;
+    auto r = interpret(st, dict, buf, /*fuel=*/100000, /*vm_fuel=*/25);
+    return !r.has_value();
+}());
+
+static_assert([] {
+    forth_state<64, 64, 1024, 256> st{corpus::upto3_program};
+    auto dict = default_dictionary<>();
+    compile_buffer<> buf;
+    auto r = interpret(st, dict, buf);
+    return r.has_value() && st.machine().data().depth() == 1 &&
+           st.machine().data().peek().value() == 3;
+}());
+
+static_assert([] {
+    forth_state<64, 64, 1024, 256> st{corpus::exit_boundary_program};
+    auto dict = default_dictionary<>();
+    compile_buffer<> buf;
+    auto r = interpret(st, dict, buf);
+    return r.has_value() && st.machine().data().depth() == 2 &&
+           st.machine().data().peek(1).value() == -3 &&
+           st.machine().data().peek(0).value() == 99;
+}());
+
+static_assert([] {
+    forth_state<64, 64, 1024, 256> st{corpus::sumto_program};
+    auto dict = default_dictionary<>();
+    compile_buffer<> buf;
+    auto r = interpret(st, dict, buf);
+    return r.has_value() && st.machine().data().depth() == 1 &&
+           st.machine().data().peek().value() == 15;
+}());
+
+static_assert([] {
+    forth_state<64, 64, 1024, 256> st{corpus::find5_program};
+    auto dict = default_dictionary<>();
+    compile_buffer<> buf;
+    auto r = interpret(st, dict, buf);
+    return r.has_value() && st.machine().data().depth() == 1 &&
+           st.machine().data().peek().value() == 5;
+}());
+
+static_assert([] {
+    forth_state<64, 64, 1024, 256> st{corpus::tens_program};
+    auto dict = default_dictionary<>();
+    compile_buffer<> buf;
+    auto r = interpret(st, dict, buf);
+    return r.has_value() && st.machine().data().depth() == 1 &&
+           st.machine().data().peek().value() == 9;
+}());
+
+static_assert([] {
+    forth_state<64, 64, 1024, 256> st{corpus::sumeven_program};
+    auto dict = default_dictionary<>();
+    compile_buffer<> buf;
+    auto r = interpret(st, dict, buf);
+    return r.has_value() && st.machine().data().depth() == 1 &&
+           st.machine().data().peek().value() == 20;
+}());
+
+static_assert([] {
+    forth_state<64, 64, 1024, 256> st{corpus::first_program};
+    auto dict = default_dictionary<>();
+    compile_buffer<> buf;
+    auto r = interpret(st, dict, buf);
+    return r.has_value() && st.machine().data().depth() == 1 &&
+           st.machine().data().peek().value() == 3;
+}());
+
+// IMMEDIATE and POSTPONE, D17's own stated example: a user-defined immediate
+// word whose entire body is POSTPONE of a C++-native control word becomes a
+// plain alias for it -- ENDIF behaves exactly like THEN.
+static_assert([] {
+    forth_state<64, 64, 1024, 256> st{
+        ": ENDIF POSTPONE THEN ; IMMEDIATE"
+        " : ABS2 DUP 0< IF NEGATE ENDIF ;  -7 ABS2"};
+    auto dict = default_dictionary<>();
+    compile_buffer<> buf;
+    auto r = interpret(st, dict, buf);
+    return r.has_value() && st.machine().data().depth() == 1 &&
+           st.machine().data().peek().value() == 7;
+}());
+
+// POSTPONE's other half: postponing an ordinary (non-immediate) word appends
+// its own compiled form, exactly as compiling it directly would -- DOUBLER
+// need not itself be IMMEDIATE for this to work.
+static_assert([] {
+    forth_state<64, 64, 1024, 256> st{
+        ": DOUBLER POSTPONE DUP POSTPONE * ;  5 DOUBLER"};
+    auto dict = default_dictionary<>();
+    compile_buffer<> buf;
+    auto r = interpret(st, dict, buf);
+    return r.has_value() && st.machine().data().depth() == 1 &&
+           st.machine().data().peek().value() == 25;
+}());
+
+// `[ ... ] LITERAL`: an interpreted computation inside the brackets is baked
+// into the surrounding definition as a single literal.
+static_assert([] {
+    forth_state<64, 64, 1024, 256> st{": SEVEN [ 3 4 + ] LITERAL ;  SEVEN"};
+    auto dict = default_dictionary<>();
+    compile_buffer<> buf;
+    auto r = interpret(st, dict, buf);
+    return r.has_value() && st.machine().data().depth() == 1 &&
+           st.machine().data().peek().value() == 7;
+}());
+
+// Mismatched THEN without IF: diagnosed via the orig/dest discipline itself
+// (nothing to pop off the control-flow stack), not UB (D7).
+static_assert([] {
+    forth_state<64, 64, 1024, 256> st{": BAD THEN ;"};
+    auto dict = default_dictionary<>();
+    compile_buffer<> buf;
+    auto r = interpret(st, dict, buf);
+    return !r.has_value();
+}());
+
+// An unresolved DO (no matching LOOP/+LOOP) is diagnosed at `;` via
+// compiling_context::loop_depth (see that struct's own doc comment for why
+// an unresolved IF/BEGIN is not caught the same way -- that would require
+// comparing data-stack depth, which is unsound once an immediate word's own
+// body can legitimately leave real data behind, exactly as `[ ... ]
+// LITERAL`'s own bracketed computation does).
+static_assert([] {
+    forth_state<64, 64, 1024, 256> st{": BAD 3 0 DO I . ;"};
+    auto dict = default_dictionary<>();
+    compile_buffer<> buf;
+    auto r = interpret(st, dict, buf);
+    return !r.has_value();
+}());
+
+// LEAVE outside any DO ... LOOP is diagnosed rather than compiling a branch
+// to nowhere.
+static_assert([] {
+    forth_state<64, 64, 1024, 256> st{": BAD LEAVE ;"};
+    auto dict = default_dictionary<>();
+    compile_buffer<> buf;
+    auto r = interpret(st, dict, buf);
+    return !r.has_value();
+}());
+
 // -- Runtime-visible mirrors of the merge criteria, plus a few extras -------
 
 TEST_CASE("InterpTest - SimpleArithmeticAndOutput") {
@@ -549,4 +721,275 @@ TEST_CASE("InterpTest - NoEffectCommentLeavesHasEffectFalse") {
         std::get_if<smd::forth::machine::compiled_colon_word>(&entry->binding);
     REQUIRE(cw != nullptr);
     CHECK_FALSE(cw->has_effect);
+}
+
+// -- Step F27: runtime mirrors of the control-flow corpus, plus a few extras
+
+TEST_CASE("InterpTest - AbsMergeCriterion") {
+    forth_state<64, 64, 1024, 256> st{corpus::abs_program};
+    auto dict = default_dictionary<>();
+    compile_buffer<> buf;
+    auto r = interpret(st, dict, buf);
+    REQUIRE(r.has_value());
+    REQUIRE(st.machine().data().depth() == 1);
+    CHECK(st.machine().data().peek().value() == 7);
+}
+
+TEST_CASE("InterpTest - CountdownMergeCriterion") {
+    forth_state<64, 64, 1024, 256> st{corpus::countdown_program};
+    auto dict = default_dictionary<>();
+    compile_buffer<> buf;
+    auto r = interpret(st, dict, buf);
+    REQUIRE(r.has_value());
+    CHECK(st.machine().data().depth() == 0);
+    CHECK(output_of(st) == "3 2 1 ");
+}
+
+TEST_CASE("InterpTest - SpinBudgetExhaustionIsDiagnosed") {
+    forth_state<64, 64, 1024, 256> st{corpus::spin_program};
+    auto dict = default_dictionary<>();
+    compile_buffer<> buf;
+    auto r = interpret(st, dict, buf, /*fuel=*/100000, /*vm_fuel=*/25);
+    REQUIRE_FALSE(r.has_value());
+    CHECK(std::string_view{r.error().message} ==
+          "vm execution budget exhausted");
+}
+
+TEST_CASE("InterpTest - Upto3MergeCriterion") {
+    forth_state<64, 64, 1024, 256> st{corpus::upto3_program};
+    auto dict = default_dictionary<>();
+    compile_buffer<> buf;
+    auto r = interpret(st, dict, buf);
+    REQUIRE(r.has_value());
+    REQUIRE(st.machine().data().depth() == 1);
+    CHECK(st.machine().data().peek().value() == 3);
+}
+
+TEST_CASE("InterpTest - ExitBoundaryMergeCriterion") {
+    forth_state<64, 64, 1024, 256> st{corpus::exit_boundary_program};
+    auto dict = default_dictionary<>();
+    compile_buffer<> buf;
+    auto r = interpret(st, dict, buf);
+    REQUIRE(r.has_value());
+    REQUIRE(st.machine().data().depth() == 2);
+    CHECK(st.machine().data().peek(1).value() == -3);
+    CHECK(st.machine().data().peek(0).value() == 99);
+}
+
+TEST_CASE("InterpTest - SumtoMergeCriterion") {
+    forth_state<64, 64, 1024, 256> st{corpus::sumto_program};
+    auto dict = default_dictionary<>();
+    compile_buffer<> buf;
+    auto r = interpret(st, dict, buf);
+    REQUIRE(r.has_value());
+    REQUIRE(st.machine().data().depth() == 1);
+    CHECK(st.machine().data().peek().value() == 15);
+}
+
+TEST_CASE("InterpTest - Find5MergeCriterion") {
+    forth_state<64, 64, 1024, 256> st{corpus::find5_program};
+    auto dict = default_dictionary<>();
+    compile_buffer<> buf;
+    auto r = interpret(st, dict, buf);
+    REQUIRE(r.has_value());
+    REQUIRE(st.machine().data().depth() == 1);
+    CHECK(st.machine().data().peek().value() == 5);
+}
+
+TEST_CASE("InterpTest - TensMergeCriterion") {
+    forth_state<64, 64, 1024, 256> st{corpus::tens_program};
+    auto dict = default_dictionary<>();
+    compile_buffer<> buf;
+    auto r = interpret(st, dict, buf);
+    REQUIRE(r.has_value());
+    REQUIRE(st.machine().data().depth() == 1);
+    CHECK(st.machine().data().peek().value() == 9);
+}
+
+TEST_CASE("InterpTest - SumevenMergeCriterion") {
+    forth_state<64, 64, 1024, 256> st{corpus::sumeven_program};
+    auto dict = default_dictionary<>();
+    compile_buffer<> buf;
+    auto r = interpret(st, dict, buf);
+    REQUIRE(r.has_value());
+    REQUIRE(st.machine().data().depth() == 1);
+    CHECK(st.machine().data().peek().value() == 20);
+}
+
+TEST_CASE("InterpTest - FirstMergeCriterion") {
+    forth_state<64, 64, 1024, 256> st{corpus::first_program};
+    auto dict = default_dictionary<>();
+    compile_buffer<> buf;
+    auto r = interpret(st, dict, buf);
+    REQUIRE(r.has_value());
+    REQUIRE(st.machine().data().depth() == 1);
+    CHECK(st.machine().data().peek().value() == 3);
+}
+
+TEST_CASE("InterpTest - PostponeAliasesAControlWord") {
+    // D17's own stated example: ENDIF becomes a plain alias for THEN.
+    forth_state<64, 64, 1024, 256> st{
+        ": ENDIF POSTPONE THEN ; IMMEDIATE"
+        " : ABS2 DUP 0< IF NEGATE ENDIF ;  -7 ABS2"};
+    auto dict = default_dictionary<>();
+    compile_buffer<> buf;
+    auto r = interpret(st, dict, buf);
+    REQUIRE(r.has_value());
+    REQUIRE(st.machine().data().depth() == 1);
+    CHECK(st.machine().data().peek().value() == 7);
+
+    auto const *entry = dict.lookup("ENDIF");
+    REQUIRE(entry != nullptr);
+    REQUIRE(std::holds_alternative<smd::forth::machine::control_word>(
+        entry->binding));
+    CHECK(std::get<smd::forth::machine::control_word>(entry->binding).which ==
+          smd::forth::machine::control_builtin::then_);
+    CHECK(entry->immediate);
+}
+
+TEST_CASE("InterpTest - PostponeOfOrdinaryWordCompilesItsForm") {
+    forth_state<64, 64, 1024, 256> st{
+        ": DOUBLER POSTPONE DUP POSTPONE * ;  5 DOUBLER"};
+    auto dict = default_dictionary<>();
+    compile_buffer<> buf;
+    auto r = interpret(st, dict, buf);
+    REQUIRE(r.has_value());
+    REQUIRE(st.machine().data().depth() == 1);
+    CHECK(st.machine().data().peek().value() == 25);
+}
+
+TEST_CASE("InterpTest - PostponeUnknownWordIsDiagnosed") {
+    forth_state<64, 64, 1024, 256> st{": BAD POSTPONE NOSUCHWORD ;"};
+    auto dict = default_dictionary<>();
+    compile_buffer<> buf;
+    auto r = interpret(st, dict, buf);
+    REQUIRE_FALSE(r.has_value());
+}
+
+TEST_CASE("InterpTest - PostponeWhileInterpretingIsDiagnosed") {
+    forth_state<64, 64, 1024, 256> st{"POSTPONE DUP"};
+    auto dict = default_dictionary<>();
+    compile_buffer<> buf;
+    auto r = interpret(st, dict, buf);
+    REQUIRE_FALSE(r.has_value());
+}
+
+TEST_CASE("InterpTest - PostponeControlWordMixedWithOtherCodeIsDiagnosed") {
+    // Only a definition whose entire body is one POSTPONE of a control word
+    // is supported (apply_control_word's own postpone_ case has the full
+    // rationale); code after it is diagnosed rather than silently dropped.
+    forth_state<64, 64, 1024, 256> st{": BAD POSTPONE THEN DROP ;"};
+    auto dict = default_dictionary<>();
+    compile_buffer<> buf;
+    auto r = interpret(st, dict, buf);
+    REQUIRE_FALSE(r.has_value());
+}
+
+TEST_CASE("InterpTest - BracketLiteralBakesInAnInterpretedComputation") {
+    forth_state<64, 64, 1024, 256> st{": SEVEN [ 3 4 + ] LITERAL ;  SEVEN"};
+    auto dict = default_dictionary<>();
+    compile_buffer<> buf;
+    auto r = interpret(st, dict, buf);
+    REQUIRE(r.has_value());
+    REQUIRE(st.machine().data().depth() == 1);
+    CHECK(st.machine().data().peek().value() == 7);
+}
+
+TEST_CASE("InterpTest - MismatchedThenWithoutIfIsDiagnosed") {
+    forth_state<64, 64, 1024, 256> st{": BAD THEN ;"};
+    auto dict = default_dictionary<>();
+    compile_buffer<> buf;
+    auto r = interpret(st, dict, buf);
+    REQUIRE_FALSE(r.has_value());
+}
+
+TEST_CASE("InterpTest - UnresolvedDoIsDiagnosedAtSemicolon") {
+    forth_state<64, 64, 1024, 256> st{": BAD 3 0 DO I . ;"};
+    auto dict = default_dictionary<>();
+    compile_buffer<> buf;
+    auto r = interpret(st, dict, buf);
+    REQUIRE_FALSE(r.has_value());
+}
+
+TEST_CASE("InterpTest - LeaveOutsideLoopIsDiagnosed") {
+    forth_state<64, 64, 1024, 256> st{": BAD LEAVE ;"};
+    auto dict = default_dictionary<>();
+    compile_buffer<> buf;
+    auto r = interpret(st, dict, buf);
+    REQUIRE_FALSE(r.has_value());
+}
+
+TEST_CASE("InterpTest - UnloopIWithoutLoopAreDiagnosed") {
+    {
+        forth_state<64, 64, 1024, 256> st{": BAD UNLOOP ;"};
+        auto dict = default_dictionary<>();
+        compile_buffer<> buf;
+        auto r = interpret(st, dict, buf);
+        REQUIRE_FALSE(r.has_value());
+    }
+    {
+        forth_state<64, 64, 1024, 256> st{": BAD I ;"};
+        auto dict = default_dictionary<>();
+        compile_buffer<> buf;
+        auto r = interpret(st, dict, buf);
+        REQUIRE_FALSE(r.has_value());
+    }
+}
+
+TEST_CASE("InterpTest - JRequiresTwoLevelsOfNesting") {
+    forth_state<64, 64, 1024, 256> st{": BAD 3 0 DO J LOOP ;"};
+    auto dict = default_dictionary<>();
+    compile_buffer<> buf;
+    auto r = interpret(st, dict, buf);
+    REQUIRE_FALSE(r.has_value());
+}
+
+TEST_CASE("InterpTest - ImmediateWordExecutesAtCompileTimeNotRuntime") {
+    // DOUBLE-IT is IMMEDIATE, so meeting it while compiling USES-IT runs it
+    // right then (D13's "execute ... when immediate"): its own "21" is
+    // pushed once, during USES-IT's own compilation, leaving USES-IT's body
+    // empty. Calling USES-IT afterward -- even twice -- adds nothing further,
+    // which is exactly what distinguishes immediate dispatch from compiling
+    // an ordinary call (which would push 21 on every call).
+    forth_state<64, 64, 1024, 256> st{": DOUBLE-IT 21 ; IMMEDIATE"
+                                      " : USES-IT DOUBLE-IT ;"
+                                      " USES-IT USES-IT"};
+    auto dict = default_dictionary<>();
+    compile_buffer<> buf;
+    auto r = interpret(st, dict, buf);
+    REQUIRE(r.has_value());
+    REQUIRE(st.machine().data().depth() == 1);
+    CHECK(st.machine().data().peek().value() == 21);
+}
+
+TEST_CASE("InterpTest - CompileCommaAppendsAnEntrysCompiledForm") {
+    // COMPILE, ( xt -- ): pops a dictionary index (the push_xt convention,
+    // instruction.hpp) and appends that entry's own compiled form -- driven
+    // directly here since there is no `'` (execution-token-producing word,
+    // F28) yet to spell this from pure Forth source.
+    forth_state<64, 64, 1024, 256> st{": X ;"}; // gives cctx somewhere to land
+    auto dict = default_dictionary<>();
+    compile_buffer<> buf;
+
+    int const dup_index = dict.lookup_index("DUP");
+    REQUIRE(dup_index >= 0);
+
+    REQUIRE(st.machine()
+                .data()
+                .push(static_cast<smd::forth::machine::cell>(dup_index))
+                .has_value());
+    smd::forth::interpreter::compiling_context<32> cctx{};
+    cctx.entry = buf.here();
+    st.set_state(1);
+    auto r = smd::forth::interpreter::apply_control_word(
+        smd::forth::machine::control_builtin::compile_comma_, st, dict, buf,
+        cctx, smd::forth::foundation::source_pos{});
+    REQUIRE(r.has_value());
+
+    auto const &code = buf.program().code;
+    REQUIRE(code.size() == cctx.entry + 1);
+    auto const &appended = code[cctx.entry];
+    CHECK(appended.code == smd::forth::machine::op::prim);
+    CHECK(appended.operand == static_cast<smd::forth::machine::cell>(
+                                  smd::forth::machine::primitive::dup));
 }

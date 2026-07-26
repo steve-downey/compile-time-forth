@@ -12,6 +12,7 @@
 #include <smd/forth/machine/forth_state.hpp>
 
 #include <array>
+#include <cstdint>
 #include <string_view>
 #include <type_traits>
 #include <utility>
@@ -133,15 +134,78 @@ struct foreign_word {
     int index = -1;
 };
 
-/// The set of things a dictionary entry can be bound to.
-using dictionary_binding = std::variant<primitive, variable_word, constant_word,
-                                        foreign_word, compiled_colon_word>;
+// 0d3b390a-1051-4f76-867c-b4f161264827
+/// Step F27 (docs/forth-plan-2.md), D17: the C++-installed control words
+/// (`IF ELSE THEN`, `BEGIN UNTIL`, `BEGIN WHILE REPEAT`, `DO LOOP +LOOP
+/// LEAVE UNLOOP I J`, `LITERAL`, `POSTPONE`, `IMMEDIATE`, `[`, `]`,
+/// `COMPILE,`) carry no VM entry point of their own: unlike a primitive
+/// (inlined as @ref op::prim at every reference site) or a @ref
+/// compiled_colon_word (real instructions in the interpreter's own code
+/// space), a control word's whole job is to mutate that code space directly
+/// while a definition is being compiled -- @ref op::branch0 sentinels,
+/// back-patched operands, the return-stack loop machinery's own setup/step
+/// instructions -- and to use the data stack as the Forth-2012 control-flow
+/// stack (the orig/dest discipline) meanwhile. That mutation needs the
+/// interpreter's own @c compile_buffer, a type `machine/` has no reason to
+/// know about, so this enum and @ref control_word are only the
+/// dictionary-level tag identifying *which* action a name is bound to;
+/// `interpreter::apply_control_word` (`interp.hpp`) is what the tag actually
+/// dispatches to.
+enum class control_builtin : std::uint8_t {
+    if_,
+    else_,
+    then_,
+    begin_,
+    until_,
+    while_,
+    repeat_,
+    do_,
+    loop_,
+    plus_loop_,
+    leave_,
+    unloop_,
+    i_,
+    j_,
+    literal_,
+    postpone_,
+    immediate_,
+    bracket_open_,  ///< `[`
+    bracket_close_, ///< `]`
+    compile_comma_, ///< `COMPILE,`
+};
 
-/// One dictionary entry: a folded name plus what it is bound to.
+/// A control-builtin word's binding: which action (@ref control_builtin) it
+/// performs. See that enum's own doc comment for why this carries no VM
+/// entry point the way @ref compiled_colon_word does.
+struct control_word {
+    control_builtin which{};
+
+    friend constexpr auto operator==(control_word const &, control_word const &)
+        -> bool = default;
+};
+// 0d3b390a-1051-4f76-867c-b4f161264827 end
+
+/// The set of things a dictionary entry can be bound to.
+using dictionary_binding =
+    std::variant<primitive, variable_word, constant_word, foreign_word,
+                 compiled_colon_word, control_word>;
+
+/// One dictionary entry: a folded name, what it is bound to, and whether it
+/// is `IMMEDIATE` (step F27, D17/D18).
+///
+/// @ref immediate defaults to false for every @c define_* method except
+/// @ref dictionary::define_control (whose caller -- @ref default_dictionary
+/// -- passes it explicitly per built-in control word, since most of them
+/// must run the moment the text interpreter meets them, even while
+/// compiling); a later definition may still gain it via @ref
+/// dictionary::mark_last_immediate (`IMMEDIATE`, the word, D13's
+/// "execute when interpreting or when immediate" rule is what the
+/// interpreter's own dispatch reads this flag to implement).
 template <int MaxName = 32>
 struct dictionary_entry {
     word_name<MaxName> name{};
     dictionary_binding binding{};
+    bool immediate = false;
 };
 
 /// An arena-backed, linear, newest-first word list.
@@ -188,6 +252,20 @@ class dictionary {
     constexpr auto define_compiled_colon(std::string_view name_text,
                                          compiled_colon_word word) -> status;
 
+    /// Defines @p name_text as a C++-installed control word (step F27, D17).
+    /// @p immediate defaults to false (`]` and `IMMEDIATE` itself install as
+    /// ordinary, non-immediate words -- see @ref dictionary_entry's own doc
+    /// comment); every other control word @ref default_dictionary installs
+    /// passes @c true explicitly.
+    /// Diagnoses dictionary-full rather than overflowing.
+    constexpr auto define_control(std::string_view name_text, control_word word,
+                                  bool immediate = false) -> status;
+
+    /// `IMMEDIATE` (step F27): flags the most recently defined entry (by
+    /// insertion order, regardless of binding kind) as immediate. Diagnoses
+    /// an empty dictionary rather than indexing before the first entry.
+    constexpr auto mark_last_immediate() -> status;
+
     /// Looks up @p name_text, newest definition first (shadowing).
     /// Folds @p name_text to uppercase before comparing. Returns `nullptr`
     /// if no entry matches.
@@ -210,21 +288,22 @@ class dictionary {
 
   private:
     constexpr auto insert(std::string_view name_text,
-                          dictionary_binding binding) -> status;
+                          dictionary_binding binding, bool immediate = false)
+        -> status;
 
     foundation::static_vector<dictionary_entry<MaxName>, MaxWords> entries_{};
 };
 
 template <int MaxWords, int MaxName>
 constexpr auto dictionary<MaxWords, MaxName>::insert(std::string_view name_text,
-                                                     dictionary_binding binding)
-    -> status {
+                                                     dictionary_binding binding,
+                                                     bool immediate) -> status {
     if (entries_.size() >= MaxWords) {
         return foundation::parse_error{foundation::source_pos{},
                                        "dictionary full"};
     }
-    entries_.push_back(
-        dictionary_entry<MaxName>{make_word_name<MaxName>(name_text), binding});
+    entries_.push_back(dictionary_entry<MaxName>{
+        make_word_name<MaxName>(name_text), binding, immediate});
     return std::monostate{};
 }
 
@@ -260,6 +339,22 @@ template <int MaxWords, int MaxName>
 constexpr auto dictionary<MaxWords, MaxName>::define_compiled_colon(
     std::string_view name_text, compiled_colon_word word) -> status {
     return insert(name_text, dictionary_binding{word});
+}
+
+template <int MaxWords, int MaxName>
+constexpr auto dictionary<MaxWords, MaxName>::define_control(
+    std::string_view name_text, control_word word, bool immediate) -> status {
+    return insert(name_text, dictionary_binding{word}, immediate);
+}
+
+template <int MaxWords, int MaxName>
+constexpr auto dictionary<MaxWords, MaxName>::mark_last_immediate() -> status {
+    if (entries_.size() == 0) {
+        return foundation::parse_error{foundation::source_pos{},
+                                       "IMMEDIATE: no definition to mark"};
+    }
+    entries_[entries_.size() - 1].immediate = true;
+    return std::monostate{};
 }
 
 template <int MaxWords, int MaxName>
@@ -299,13 +394,16 @@ constexpr auto dictionary<MaxWords, MaxName>::size() const -> int {
 
 /// Builds a dictionary with every F8/F13/F16 primitive installed under its
 /// Forth name (`+ - * / MOD NEGATE ABS MIN MAX AND OR XOR INVERT LSHIFT
-/// RSHIFT 1- 0= 0< = <> < > <= >= TRUE FALSE DUP DROP SWAP OVER ROT ?DUP NIP
-/// TUCK DEPTH >R R> R@ . .S EMIT CR @ ! +! ALLOT`) -- 46 words, one per @ref
-/// primitive enumerator (`.`, `.S`, `EMIT`, `CR` are step F13's output words,
-/// D10; `1-` is also from that step, see DIV-0007; `@`, `!`, `+!`, `ALLOT`
-/// are step F16's memory words, D10).
+/// RSHIFT 1- 1+ 0= 0< = <> < > <= >= TRUE FALSE DUP DROP SWAP OVER ROT ?DUP
+/// NIP TUCK DEPTH >R R> R@ . .S EMIT CR @ ! +! ALLOT`) -- 47 words, one per
+/// @ref primitive enumerator (`.`, `.S`, `EMIT`, `CR` are step F13's output
+/// words, D10; `1-` is also from that step, see DIV-0007; `1+` is step F17,
+/// see DIV-0010; `@`, `!`, `+!`, `ALLOT` are step F16's memory words, D10) --
+/// plus every step F27 control word (`IF ELSE THEN BEGIN UNTIL WHILE REPEAT
+/// DO LOOP +LOOP LEAVE UNLOOP I J LITERAL POSTPONE IMMEDIATE [ ] COMPILE,`,
+/// D17), 20 more, for 67 entries total.
 ///
-/// @tparam MaxWords Dictionary capacity; must be at least 46 plus whatever
+/// @tparam MaxWords Dictionary capacity; must be at least 67 plus whatever
 ///                  room the caller wants for later colon/variable/constant/
 ///                  foreign definitions.
 /// @tparam MaxName  Maximum name length.
@@ -364,6 +462,51 @@ constexpr auto default_dictionary() -> dictionary<MaxWords, MaxName> {
     for (auto const &[name_text, op] : words) {
         (void)dict.define_primitive(name_text, op);
     }
+
+    // Step F27, D17: the C++-installed control words. Eighteen are
+    // immediate -- they must run the moment the text interpreter meets
+    // them, even while compiling (D13's "execute ... when immediate"),
+    // since their whole job is mutating the code space being compiled right
+    // then. `IMMEDIATE` and `]` are the two exceptions: both have ordinary
+    // execution semantics only ever meant to fire while interpreting
+    // (`STATE == 0`), where every found word already executes regardless of
+    // its own immediate flag, so neither needs one.
+    constexpr std::array<std::pair<std::string_view, control_builtin>, 18>
+        immediate_control_words{{
+            {"IF", control_builtin::if_},
+            {"ELSE", control_builtin::else_},
+            {"THEN", control_builtin::then_},
+            {"BEGIN", control_builtin::begin_},
+            {"UNTIL", control_builtin::until_},
+            {"WHILE", control_builtin::while_},
+            {"REPEAT", control_builtin::repeat_},
+            {"DO", control_builtin::do_},
+            {"LOOP", control_builtin::loop_},
+            {"+LOOP", control_builtin::plus_loop_},
+            {"LEAVE", control_builtin::leave_},
+            {"UNLOOP", control_builtin::unloop_},
+            {"I", control_builtin::i_},
+            {"J", control_builtin::j_},
+            {"LITERAL", control_builtin::literal_},
+            {"POSTPONE", control_builtin::postpone_},
+            {"[", control_builtin::bracket_open_},
+            {"COMPILE,", control_builtin::compile_comma_},
+        }};
+    for (auto const &[name_text, which] : immediate_control_words) {
+        (void)dict.define_control(name_text, control_word{which},
+                                  /* immediate */ true);
+    }
+
+    constexpr std::array<std::pair<std::string_view, control_builtin>, 2>
+        ordinary_control_words{{
+            {"IMMEDIATE", control_builtin::immediate_},
+            {"]", control_builtin::bracket_close_},
+        }};
+    for (auto const &[name_text, which] : ordinary_control_words) {
+        (void)dict.define_control(name_text, control_word{which},
+                                  /* immediate */ false);
+    }
+
     return dict;
 }
 
@@ -378,6 +521,7 @@ static_assert(std::is_trivially_destructible_v<variable_word>);
 static_assert(std::is_trivially_destructible_v<constant_word>);
 static_assert(std::is_trivially_destructible_v<foreign_word>);
 static_assert(std::is_trivially_destructible_v<compiled_colon_word>);
+static_assert(std::is_trivially_destructible_v<control_word>);
 static_assert(std::is_trivially_destructible_v<dictionary_binding>);
 static_assert(std::is_trivially_destructible_v<dictionary_entry<32>>);
 static_assert(std::is_trivially_destructible_v<dictionary<256, 32>>);
