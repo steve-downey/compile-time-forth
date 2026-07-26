@@ -1,4 +1,4 @@
-<div class="abstract" id="org352b236">
+<div class="abstract" id="org7fb335d">
 <p>
 <code>CATCH</code>, <code>THROW</code>, and <code>ABORT</code> land tonight, and <code>ABORT"</code> stops being the hard
 stop it's been since it was written: it's a real <code>THROW -2</code> now, exactly as
@@ -252,7 +252,7 @@ So a definition like this one (shape, not verbatim code I've run):
 
 <nav style="margin-top: 3em; border-top: 1px solid #ccc; padding-top: 1em">
 
-[↑ Series Index](index.md) | [← Part 18 - What >IN Was For](post-18-what-in-was-for.md)
+[↑ Series Index](index.md) | [← Part 18 - What >IN Was For](post-18-what-in-was-for.md) | [Part 20 - Just Edges →](post-20-just-edges.md)
 
 </nav>
 

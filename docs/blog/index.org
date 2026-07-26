@@ -147,6 +147,15 @@ to unwind a return stack holding an arbitrary mix of call frames, loop
 frames, and stray ~>R~ values, and how that answers, without fully closing,
 the teardown gap Part 11 admitted to eight entries back.
 
+** [[file:post-20-just-edges.org][Part 20 — Just Edges]]
+
+A real stack-effect checker returns, as an abstract interpreter over the
+instructions a colon definition actually compiled instead of a tree that no
+longer exists --- and Part 11's loop-teardown gap closes for free, because a
+loop's back edge turns out to need the same agreement any other join does.
+The first version of it was also wrong, caught not by a test I wrote but by
+a conformance suite landing on the same tree the same week.
+
 * Table of Contents
 
 #+toc: headlines 1

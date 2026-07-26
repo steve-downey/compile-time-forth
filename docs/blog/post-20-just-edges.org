@@ -1,0 +1,249 @@
+#+options: ':nil *:t -:t ::t <:t H:3 \n:nil ^:nil arch:headline author:t
+#+options: broken-links:nil c:nil creator:nil d:(not "LOGBOOK") date:t e:t
+#+options: email:nil f:t inline:t num:t p:nil pri:nil prop:nil stat:t tags:t
+#+options: tasks:t tex:t timestamp:t title:t toc:nil todo:t |:t
+#+options: html5-fancy:t
+#+bibliography: references.bib
+#+TITLE: Building a Compile-Time Forth in C++26: Part 20 - Just Edges
+#+AUTHOR: Steve Downey
+#+DATE: 2026-07-26
+
+#+begin_abstract
+Part 15 cut the elaborator and left a plain confession standing where the
+stack-effect checker used to be: nothing checked, a declared effect stored
+and never looked at again. Part 11 admitted a counted loop's own teardown
+never verified the frame it was discarding; Part 19 narrowed that gap without
+closing it. Tonight all three debts come due against the same mechanism: an
+abstract interpreter over the instructions a colon definition actually
+compiled, run at ~;~, that assigns every reachable instruction a level and
+requires every edge into it to agree. A branch's two arms and a loop's back
+edge turn out to be the same thing under that rule, which is why the
+loop-teardown gap closes for free instead of needing its own code. The first
+version of this checker was also wrong, and I didn't find that by testing it
+myself; a conformance suite that landed on this tree the same week rejected
+real, standard Forth, and made me draw a distinction I hadn't thought I
+needed.
+#+end_abstract
+
+#+MACRO: TEASER_END
+{{TEASER_END}}
+#+html: <nav style="margin-bottom: 2em; border-bottom: 1px solid #ccc; padding-bottom: 1em">
+[[file:index.org][↑ Series Index]] | [[file:post-19-the-gap-that-stopped-mattering.org][Part 19 - The Gap That Stopped Mattering ←]]
+#+html: </nav>
+
+
+* A definition that used to compile
+
+This one doesn't any more (shape, not verbatim code I've run):
+
+#+begin_src forth
+: BAD 10 0 DO 5 >R LOOP ;
+#+end_src
+
+It pushes a cell with ~>R~ inside a counted loop and never takes it back
+before ~LOOP~ closes. Part 11 built the loop frame this depends on (a
+~limit~ / ~index~ pair sitting on the return stack, popped by ~LOOP~'s own
+teardown) and admitted, in the same entry, that nothing checked whether
+the two cells ~LOOP~ pops back off are actually its own. Part 19 built
+~THROW~ on top of the same return stack and made the one path that has to
+unwind through an arbitrary mix of frames correct by never looking at what
+it discards, which closed the interesting half of that gap without touching
+the boring half: an ordinary ~LOOP~ still just pops two cells and trusts
+they're the right two. I said so at the time and moved on to other work.
+
+~BAD~ is that untouched half, made concrete. Tonight it stops compiling, and
+it stops for a reason that has nothing to do with loops specifically.
+
+* Every edge, not every construct
+
+The checker Part 6 wrote and Part 15 buried walked the elaborated tree by
+hand: a function for ~IF~, a function for ~DO~, a rule per node kind, each
+one trusting the last that whatever it recursed into had already balanced
+itself correctly. There's no tree to walk any more. What a colon definition
+leaves behind now is a run of instructions in the interpreter's own code
+space, between wherever ~entry_point~ landed and the ~ret~ that ~;~ just
+emitted, and this step's checker works over that range directly.
+
+The first thing it needs is the edges. Every instruction in that range has
+one or two possible successors: a plain instruction falls through to the
+next one, a conditional branch has two targets, an unconditional one has a
+single target somewhere else, a terminal instruction has none. Nothing here
+cares whether an edge came from an ~IF~'s else-arm or a ~LOOP~'s own back
+edge to the top of the body:
+
+#+transclude: [[orgit-file:~/src/compile-time-forth/compile-time-forth::blog/part-20::src/smd/forth/interpreter/effect_lint.hpp::8a1d5c3e-9f27-4b6a-8e2d-1c7f9a3b5e6d]] :lines 2- :src cpp :end "8a1d5c3e-9f27-4b6a-8e2d-1c7f9a3b5e6d end"
+
+That's the whole point, and it took me longer to see than it should have.
+A branch's two arms rejoining at ~THEN~ and a loop's own body rejoining
+itself at the top are the same shape: two edges landing on one instruction,
+which had better agree about what they're each carrying. Once the edges are
+just edges, one worklist can walk all of them the same way, instead of a
+tree-fold needing a special case for every construct that happens to join
+control flow back together.
+
+What each edge carries is a level: a ~(data-stack, return-stack)~ depth
+pair, relative to the definition's own entry. The worklist starts at
+~entry~ with both at zero, follows every edge outward, and whenever two
+edges land on the same instruction, their levels have to match. A node's
+own state only ever moves in one direction, unvisited to settled, known to
+unknown, so the walk terminates even across a loop's own back edge, which
+is the one place a naive recursive fold has nowhere obvious to stop.
+
+* Two stacks, and they don't get the same rule
+
+Here's where the two edges landing on one instruction actually get
+compared, and it's the part of this step I'd write differently if I'd
+understood the whole shape of the problem before I started:
+
+#+transclude: [[orgit-file:~/src/compile-time-forth/compile-time-forth::blog/part-20::src/smd/forth/interpreter/effect_lint.hpp::12d079f3-4f81-41dd-b5bd-377428c31663]] :lines 2- :src cpp :end "12d079f3-4f81-41dd-b5bd-377428c31663 end"
+
+A return-stack disagreement is an unconditional error, full stop, every
+time. A data-stack disagreement checks ~declared_effect_gate~ first: hard
+error if the word declared a ~( ... -- ... )~ effect, otherwise collected
+onto a diagnostics list and the join poisoned to unknown, the same
+treatment ~EXECUTE~ or ~CATCH~ already get for being genuinely unknowable.
+~BAD~ fails here, on the return-stack branch, with nothing conditional
+about it: the loop's back edge disagrees with the forward path on how deep
+~>R~ left the return stack, and there's no declaration that would have
+changed that outcome. That's Part 11's gap, closed: a static rejection at
+~;~, nothing added to the loop's own runtime path.
+
+I did not write that split on the first pass. I wrote one rule, "every join
+has to agree," and applied it to both stacks alike, because from where I
+sat that looked like the same requirement asked twice. It compiled every
+program in this project's own corpus. It also rejected a definition I
+hadn't written and had no reason to distrust.
+
+* The tester that found the mistake
+
+I'd had this checker sitting on a branch for a while by the time I went to
+bring it up to date with everything else that had landed on this tree in
+the meantime, and one of the things waiting for me there was a real
+Forth-2012 conformance suite: John Hayes' public-domain word-set tester,
+already adapted and already exercising this project's own core word set
+against hundreds of assertions. I rebased onto it expecting a clean merge.
+It didn't compile.
+
+The definition that failed is the tester's own housekeeping, not anything
+exotic (shape, not verbatim code from this project):
+
+#+begin_src forth
+: EMPTY-STACK
+   DEPTH START-DEPTH @ < IF DEPTH START-DEPTH @ SWAP DO 0 LOOP THEN
+   ... ;
+#+end_src
+
+It pads the data stack back up to a depth recorded earlier, by looping a
+runtime-determined number of times and pushing one cell per iteration. The
+trip count is a value computed at the moment the word runs, not anything
+visible to a static pass over the instructions, and there is no consistent
+level my worklist can assign across that loop's own back edge. Not because
+the tester got anything wrong. Forth-2012 places no requirement
+at all on a plain ~DO...LOOP~ body's own net data-stack effect, and this is
+a completely ordinary way to use that freedom. My checker rejected it
+anyway, because I'd made every join-consistency failure fatal, unconditionally,
+regardless of whether anyone had written down a contract for my checker to
+be enforcing.
+
+The split shown above is what actually fixes it, and I want to be plain
+about what kind of bug it was. This project's own design already said the
+right thing before I ever wrote a line of this checker: advisory by
+default, promoted to a hard gate only when a definition declares an
+effect. I had the words for the rule already sitting in this project's own
+history and implemented something stricter anyway, because a single
+"every join must agree" check was simpler to write than two, and I didn't
+go looking for the case that would tell them apart until one showed up
+uninvited. The fix isn't a loosened checker. It's the same checker,
+corrected to do what it was supposed to do from the start: an undeclared
+loop whose net effect depends on a runtime value is a fact about what this
+checker can't see, not a fact about the program, and it has no business
+being fatal. ~BAD~ never had that excuse. Forth-2012 requires the return
+stack balanced before ~LOOP~ runs, unconditionally, whatever the trip
+count turns out to be [cite:@forth2012], which is the whole reason the fix
+is a split by stack and not a blanket retreat to "advisory everywhere." A
+blanket retreat would have made ~BAD~ pass again, quietly, and undone the one thing
+this entire step was supposed to close.
+
+* What closes for free
+
+Two other gaps fell out of the same worklist without asking for separate
+handling. Part 6 named a definition whose early ~EXIT~ leaves a different
+depth than its fall-through path, and admitted the old checker had no way
+to see it: it stopped folding the moment it hit ~EXIT~ and never came back
+to compare. A real control-flow graph doesn't have that blind spot: both
+paths, the early exit and the fall-through, are just more nodes this
+checker's own final pass walks, each with its own settled level. A
+declared effect now checks every reachable exit individually rather than
+whichever one the old fold happened to reach last; an undeclared word whose
+exits genuinely disagree gets an honest ~unknown~ instead of a guess.
+
+Part 11's gap is the other one, and I've already shown the code that closes
+it. I'll say it again in plain terms, because it's the reason this entry
+exists: the checker never needed to know anything about loop frames
+specifically. It needed to know that a return-stack level at the top of a
+loop's back edge has to equal the return-stack level the forward path
+already established, and that requirement was already sitting in the
+worklist for every other kind of join. Loops weren't special. I had been
+treating them as if they were since Part 11, because I fixed that entry's
+own bug (~DO~'s two-cell entry cost, ~+LOOP~'s net-one body) one loop
+construct at a time, without ever writing the rule that would have made the
+special-casing unnecessary.
+
+* A number that used to be a lie
+
+One more thing this checker leaves behind, on every word it accepts: how
+deep the data stack ever actually gets along the way, separate from where
+it nets out. A definition can have net effect zero and still need three
+cells of headroom to get there, and until tonight nothing in this project
+recorded that.
+
+#+transclude: [[orgit-file:~/src/compile-time-forth/compile-time-forth::blog/part-20::src/smd/forth/machine/dictionary.hpp::2376475d-afe5-40c2-b91b-3e4e3f62ced5]] :lines 2- :src cpp :end "2376475d-afe5-40c2-b91b-3e4e3f62ced5 end"
+
+I checked this one by hand before trusting the machinery, because a peak
+that isn't the same as the net effect is exactly the kind of thing a
+worklist can quietly get wrong:
+
+#+transclude: [[orgit-file:~/src/compile-time-forth/compile-time-forth::blog/part-20::src/smd/forth/interpreter/interp.test.cpp::69a12328-23de-42ab-8797-4f40f4d5b441]] :lines 2- :src cpp :end "69a12328-23de-42ab-8797-4f40f4d5b441 end"
+
+~required_stack_depth~ has been a ~-1~ placeholder on ~compiled_program~
+since the codegen entry ever gave it a field to sit in. It's a running
+maximum across a whole session's own definitions now, not a single
+whole-program bound: this project shares one growing code space across
+every colon word compiled into it, and there's no longer a single "the
+program" for one number to describe the peak of. That's a coarser claim
+than the field's own name once implied, and I'd rather say so than let the
+name keep promising something the architecture underneath it stopped
+being able to deliver several entries ago.
+
+* What's still only advisory
+
+I want to end on the part of this that isn't a clean win, because it would
+be easy to write the last section and let the reader assume this closes
+the gap completely. It doesn't. An undeclared word with a genuinely broken
+data-stack effect (an actual bug, not a runtime-dependent shape like the
+tester's own padding loop) now installs with a collected diagnostic
+instead of failing to compile. That diagnostic is real: it lands on
+~compiled_program::diagnostics~, and a caller can read the whole session's
+own accumulated list back out. But nothing prints it, nothing surfaces it
+by default, and a program that never asks for it will never see it. A
+diagnostic nobody retrieves is not wrong to call advisory. It's also not
+much different from absent, from where the person running the program is
+standing.
+
+The other loose thread is smaller and more mechanical: every diagnosis
+this checker raises is positioned at the closing ~;~, because
+~machine::instr~ carries no source position of its own to point at
+anything finer, and threading one through every opcode this project emits
+is a change well past what tonight's work was for. The old, deleted
+checker could at least point at the offending node. This one can only say
+which definition; it has no way to point at which instruction inside it.
+Coarser, and worth remembering the next time a diagnosis says less than
+I'd like it to.
+
+#+html: <nav style="margin-top: 3em; border-top: 1px solid #ccc; padding-top: 1em">
+[[file:index.org][↑ Series Index]] | [[file:post-19-the-gap-that-stopped-mattering.org][← Part 19 - The Gap That Stopped Mattering]]
+#+html: </nav>
+
+* References
+
+#+print_bibliography:

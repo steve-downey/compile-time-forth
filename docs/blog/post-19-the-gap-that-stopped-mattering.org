@@ -204,7 +204,7 @@ now does, correctly, by construction --- but it is not the same thing as
 closed, and I'm not writing it as if it were.
 
 #+html: <nav style="margin-top: 3em; border-top: 1px solid #ccc; padding-top: 1em">
-[[file:index.org][↑ Series Index]] | [[file:post-18-what-in-was-for.org][← Part 18 - What >IN Was For]]
+[[file:index.org][↑ Series Index]] | [[file:post-18-what-in-was-for.org][← Part 18 - What >IN Was For]] | [[file:post-20-just-edges.org][Part 20 - Just Edges →]]
 #+html: </nav>
 
 * References
