@@ -583,7 +583,7 @@ apply_primitive(primitive op,
         }
         return std::monostate{};
     }
-    // 29b353a0-fc5d-46fc-98e3-b9a47b8cd691 end
+        // 29b353a0-fc5d-46fc-98e3-b9a47b8cd691 end
     }
     return foundation::parse_error{foundation::source_pos{},
                                    "unknown primitive opcode"};
