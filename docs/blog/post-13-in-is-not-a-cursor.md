@@ -1,4 +1,4 @@
-<div class="abstract" id="org9cc1fe9">
+<div class="abstract" id="org5ebb826">
 <p>
 Part 12 argued that the outer interpreter I refused to build in Part 0 was
 never actually in conflict with anything this project needed, and left it at
@@ -232,7 +232,7 @@ No `:`, no immediate words, no `POSTPONE`. `STATE` is a field that has never hel
 
 <nav style="margin-top: 3em; border-top: 1px solid #ccc; padding-top: 1em">
 
-[↑ Series Index](index.md) | [← Part 12 - The Patch Stream Was Already There](post-12-the-patch-stream-was-already-there.md)
+[↑ Series Index](index.md) | [← Part 12 - The Patch Stream Was Already There](post-12-the-patch-stream-was-already-there.md) | [Part 14 - Correct by Accident →](post-14-correct-by-accident.md)
 
 </nav>
 

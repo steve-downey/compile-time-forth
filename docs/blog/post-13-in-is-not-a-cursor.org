@@ -169,7 +169,7 @@ its own.
 
 
 #+html: <nav style="margin-top: 3em; border-top: 1px solid #ccc; padding-top: 1em">
-[[file:index.org][↑ Series Index]] | [[file:post-12-the-patch-stream-was-already-there.org][← Part 12 - The Patch Stream Was Already There]]
+[[file:index.org][↑ Series Index]] | [[file:post-12-the-patch-stream-was-already-there.org][← Part 12 - The Patch Stream Was Already There]] | [[file:post-14-correct-by-accident.org][Part 14 - Correct by Accident →]]
 #+html: </nav>
 
 * References

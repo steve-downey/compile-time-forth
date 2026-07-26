@@ -106,6 +106,12 @@ The Forth-2012 outer text interpreter, in interpret state only --- and a
 design choice that pays off nowhere in this entry: ~>IN~ is a bare offset
 sitting in the open, not a cursor buried inside the scanner.
 
+** [[file:post-14-correct-by-accident.org][Part 14 — Correct by Accident]]
+
+~:~ and ~;~ land, and with them a session image that outlives the constant
+evaluation that built it --- and a first draft that passed every test for a
+reason that had nothing to do with being right.
+
 * Table of Contents
 
 #+toc: headlines 1

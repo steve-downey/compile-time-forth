@@ -27,6 +27,7 @@ worktree and are supposed to roll forward.
 | Part 11 | The Two Cells the Checker Never Saw | F17 | `474659a` | `blog/part-11` | 5 |
 | Part 12 | The Patch Stream Was Already There | F23 | `49c5f34` | `blog/part-12` | 1 |
 | Part 13 | >IN Is Not a Cursor | F24 | `845bc7f` | `blog/part-13` | 2 |
+| Part 14 | Correct by Accident | F25 | `2851c5b` | `blog/part-14` | 7 |
 
 Pin SHAs are the commits that introduced each post. They are **not** the phase
 merges, for the reason in DISC-1.
