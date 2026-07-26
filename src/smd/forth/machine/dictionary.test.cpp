@@ -4,12 +4,18 @@
 #include <smd/forth/machine/dictionary.hpp>
 #include <smd/forth/machine/dictionary.hpp> // test 2nd include OK
 
+#include <smd/forth/foundation/source_pos.hpp>
+#include <smd/forth/foundation/source_span.hpp>
+
 #include <catch2/catch_test_macros.hpp>
 
 #include <variant>
 
+namespace foundation = smd::forth::foundation;
+
 using smd::forth::machine::addr;
 using smd::forth::machine::colon_word;
+using smd::forth::machine::compiled_colon_word;
 using smd::forth::machine::constant_word;
 using smd::forth::machine::default_dictionary;
 using smd::forth::machine::dictionary;
@@ -151,6 +157,28 @@ TEST_CASE("DictionaryTest - ColonVariableAndForeignBindingsRoundTrip") {
     REQUIRE(foreign_entry != nullptr);
     REQUIRE(std::holds_alternative<foreign_word>(foreign_entry->binding));
     CHECK(std::get<foreign_word>(foreign_entry->binding).index == 2);
+}
+
+// Step F25: compiled_colon_word is the colon compiler's own binding kind --
+// an entry point into interpreter::compile_buffer's code space, not an
+// elaborator-arena core_id (contrast colon_word, above).
+TEST_CASE("DictionaryTest - CompiledColonWordRoundTrips") {
+    dictionary<4> dict;
+    foundation::source_span effect{foundation::source_pos{5, 1, 6},
+                                   foundation::source_pos{17, 1, 18}};
+    CHECK(dict.define_compiled_colon("SQUARED",
+                                     compiled_colon_word{.entry_point = 3,
+                                                         .effect_span = effect,
+                                                         .has_effect = true})
+              .has_value());
+
+    auto const *entry = dict.lookup("SQUARED");
+    REQUIRE(entry != nullptr);
+    REQUIRE(std::holds_alternative<compiled_colon_word>(entry->binding));
+    auto const &word = std::get<compiled_colon_word>(entry->binding);
+    CHECK(word.entry_point == 3);
+    CHECK(word.has_effect);
+    CHECK(word.effect_span == effect);
 }
 
 TEST_CASE("DictionaryTest - FullDictionaryIsDiagnosed") {

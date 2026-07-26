@@ -18,7 +18,9 @@ using smd::forth::elaborator::elaborate;
 using smd::forth::machine::codegen;
 using smd::forth::machine::compiled_program;
 using smd::forth::machine::forth_state;
+using smd::forth::machine::op;
 using smd::forth::machine::run;
+using smd::forth::machine::run_from;
 using smd::forth::reader::read_program;
 
 TEST_CASE("VmTest - HeaderIsIdempotent") { REQUIRE(true); }
@@ -283,6 +285,87 @@ TEST_CASE("VmTest - MemoryWordsMergeCriterion") {
     REQUIRE(state.data().depth() == 2);
     CHECK(state.data().peek(0).value() == 14);
     CHECK(state.data().peek(1).value() == 8);
+}
+
+// -- run_from: the additive entry point (step F25, DIV-0013) ---------------
+//
+// run_from is what interpreter::compile_buffer::call_word (interpreter/
+// compilebuf.hpp) actually calls to interpret a defined word: it starts
+// execution at an arbitrary instruction index against an already-live
+// state, without run's own F16 data-space seeding. These two tests check
+// both halves of that contract directly against vm.hpp's own public API,
+// independent of the interpreter that consumes it.
+
+// SQUARED's own entry point, called directly rather than through the
+// top-level program that calls it (mirroring codegen.test.cpp's
+// EntryPointRecordedBeforeBody, which locates this same index): a return
+// address pointing at squared_program's own trailing halt instruction
+// (its last instruction, codegen.test.cpp's own EveryProgramEndsInHalt)
+// lets run's ordinary `ret` handling stop cleanly, exactly the way
+// compile_buffer's own dedicated halt-pad instruction does for the
+// interpreter's code space.
+static_assert([] {
+    int const squared_index = 47;
+    int const entry = squared_program.entry_points[squared_index];
+    int const halt_index = squared_program.code.size() - 1;
+    if (entry < 0 || squared_program.code[halt_index].code != op::halt) {
+        return false;
+    }
+
+    test_state state{};
+    auto push_ret = state.returns().push(
+        static_cast<smd::forth::machine::cell>(halt_index));
+    auto push_arg = state.data().push(5);
+    if (!push_ret.has_value() || !push_arg.has_value()) {
+        return false;
+    }
+    auto r = run_from(squared_program, state, entry, 1000);
+    return r.has_value() && state.data().depth() == 1 &&
+           state.data().peek(0).value() == 25;
+}());
+
+TEST_CASE("VmTest - RunFromCallsAWordsEntryPointDirectly") {
+    int const squared_index = 47;
+    int const entry = squared_program.entry_points[squared_index];
+    int const halt_index = squared_program.code.size() - 1;
+    REQUIRE(entry >= 0);
+    REQUIRE(squared_program.code[halt_index].code == op::halt);
+
+    test_state state{};
+    REQUIRE(state.returns()
+                .push(static_cast<smd::forth::machine::cell>(halt_index))
+                .has_value());
+    REQUIRE(state.data().push(5).has_value());
+    auto r = run_from(squared_program, state, entry, 1000);
+    REQUIRE(r.has_value());
+    CHECK(state.data().depth() == 1);
+    CHECK(state.data().peek(0).value() == 25);
+}
+
+// memory_words_program declares `VARIABLE X`, so its own data_space_size is
+// 1 (see VmTest - MemoryWordsMergeCriterion, above, which runs it through
+// `run` and succeeds). Calling run_from directly at the same top-level
+// entry point, against a fresh state whose data space nobody has seeded,
+// diagnoses the first store through X as out of bounds instead of silently
+// succeeding -- the concrete evidence that run_from does not repeat run's
+// own F16 seeding step.
+static_assert([] {
+    test_state state{};
+    if (state.data_space().size() != 0) {
+        return false;
+    }
+    auto r = run_from(memory_words_program, state,
+                      memory_words_program.program_entry, 100000);
+    return !r.has_value() && state.data_space().size() == 0;
+}());
+
+TEST_CASE("VmTest - RunFromDoesNotSeedDataSpace") {
+    test_state state{};
+    REQUIRE(state.data_space().size() == 0);
+    auto r = run_from(memory_words_program, state,
+                      memory_words_program.program_entry, 100000);
+    CHECK_FALSE(r.has_value());
+    CHECK(state.data_space().size() == 0);
 }
 
 static_assert([] {

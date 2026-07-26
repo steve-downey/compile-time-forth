@@ -5,6 +5,7 @@
 
 #include <smd/forth/foundation/parse_error.hpp>
 #include <smd/forth/foundation/source_pos.hpp>
+#include <smd/forth/foundation/source_span.hpp>
 #include <smd/forth/foundation/static_vector.hpp>
 #include <smd/forth/machine/cell.hpp>
 #include <smd/forth/machine/data_space.hpp>
@@ -87,6 +88,37 @@ struct colon_word {
     stack_effect effect{}; ///< See @ref stack_effect.
 };
 
+/// A colon definition compiled directly by the F25 colon compiler
+/// (`interpreter::interpret`, D13), one instruction at a time, as the text
+/// interpreter meets `:` ... `;` -- not to be confused with @ref colon_word,
+/// whose `core_id` is an index into the elaborator's arena (a pipeline this
+/// binding does not participate in; see docs/divergences/DIV-0013).
+///
+/// @ref entry_point is recorded *before* the body is compiled (F14's own
+/// discipline, carried forward unchanged): a `RECURSE` inside the body
+/// resolves to this same value.
+struct compiled_colon_word {
+    /// Instruction index, in the interpreter's own code space
+    /// (`interpreter::compile_buffer`), where this word's body begins.
+    int entry_point = -1;
+
+    /// The declared `( ... -- ... )` stack-effect comment immediately after
+    /// the definition's name, if the source had one -- captured verbatim as
+    /// a span into the interpreter's own source text (D20: stored, not
+    /// verified; the checker lands at F30). Meaningless unless @ref
+    /// has_effect is true.
+    foundation::source_span effect_span{};
+
+    /// True iff a `( ... )` comment was actually present immediately after
+    /// the name (@ref effect_span is only meaningful when this is true) --
+    /// Forth-2012 does not require one.
+    bool has_effect = false;
+
+    friend constexpr auto operator==(compiled_colon_word const &,
+                                     compiled_colon_word const &)
+        -> bool = default;
+};
+
 /// A `VARIABLE`- or `CREATE`-defined word's binding: the data-space address
 /// it names.
 ///
@@ -120,8 +152,9 @@ struct foreign_word {
 };
 
 /// The set of things a dictionary entry can be bound to.
-using dictionary_binding = std::variant<primitive, colon_word, variable_word,
-                                        constant_word, foreign_word>;
+using dictionary_binding =
+    std::variant<primitive, colon_word, variable_word, constant_word,
+                 foreign_word, compiled_colon_word>;
 
 /// One dictionary entry: a folded name plus what it is bound to.
 template <int MaxName = 32>
@@ -172,6 +205,12 @@ class dictionary {
     /// Diagnoses dictionary-full rather than overflowing.
     constexpr auto define_foreign(std::string_view name_text, foreign_word word)
         -> status;
+
+    /// Defines @p name_text as a colon word compiled by the F25 colon
+    /// compiler (@ref compiled_colon_word).
+    /// Diagnoses dictionary-full rather than overflowing.
+    constexpr auto define_compiled_colon(std::string_view name_text,
+                                         compiled_colon_word word) -> status;
 
     /// Looks up @p name_text, newest definition first (shadowing).
     /// Folds @p name_text to uppercase before comparing. Returns `nullptr`
@@ -247,6 +286,12 @@ template <int MaxWords, int MaxName>
 constexpr auto
 dictionary<MaxWords, MaxName>::define_foreign(std::string_view name_text,
                                               foreign_word word) -> status {
+    return insert(name_text, dictionary_binding{word});
+}
+
+template <int MaxWords, int MaxName>
+constexpr auto dictionary<MaxWords, MaxName>::define_compiled_colon(
+    std::string_view name_text, compiled_colon_word word) -> status {
     return insert(name_text, dictionary_binding{word});
 }
 
@@ -367,6 +412,7 @@ static_assert(std::is_trivially_destructible_v<colon_word>);
 static_assert(std::is_trivially_destructible_v<variable_word>);
 static_assert(std::is_trivially_destructible_v<constant_word>);
 static_assert(std::is_trivially_destructible_v<foreign_word>);
+static_assert(std::is_trivially_destructible_v<compiled_colon_word>);
 static_assert(std::is_trivially_destructible_v<dictionary_binding>);
 static_assert(std::is_trivially_destructible_v<dictionary_entry<32>>);
 static_assert(std::is_trivially_destructible_v<dictionary<256, 32>>);

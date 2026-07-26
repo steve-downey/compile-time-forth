@@ -6,10 +6,14 @@
 #include <smd/forth/foundation/parse_error.hpp>
 #include <smd/forth/foundation/result.hpp>
 #include <smd/forth/foundation/source_pos.hpp>
+#include <smd/forth/foundation/source_span.hpp>
+#include <smd/forth/interpreter/compilebuf.hpp>
 #include <smd/forth/interpreter/input_source.hpp>
 #include <smd/forth/machine/cell.hpp>
 #include <smd/forth/machine/dictionary.hpp>
 #include <smd/forth/machine/forth_state.hpp>
+#include <smd/forth/machine/instruction.hpp>
+#include <smd/forth/parser/cursor.hpp>
 #include <smd/forth/reader/forth_chars.hpp>
 
 #include <string_view>
@@ -19,19 +23,32 @@
 namespace smd::forth::interpreter {
 
 // Step F24 (docs/forth-plan-2.md): the Forth-2012 section 3.4 outer text
-// interpreter, interpret state only (D13). There is no `:` yet (that is
-// F25), so STATE never actually leaves 0 in this step -- the field exists
-// now, and is tested to exist and default correctly, because forth_state
-// growing STATE/BASE/SOURCE/>IN together is the point of D13, not something
-// to phase in word by word.
+// interpreter, interpret state only (D13). F24 itself never left STATE 0 --
+// there was no `:` yet -- but the field already existed, tested to exist and
+// default correctly, because forth_state growing STATE/BASE/SOURCE/>IN
+// together is the point of D13, not something to phase in word by word.
 //
 // D19 places "combinators below the word, owning scanning and
-// classification" under parser<F>; this step's own number-per-BASE
-// classification (is_number_token_in_base/token_to_cell_in_base below)
-// follows that placement, generalizing reader::is_number_token/
-// token_to_cell (forth_chars.hpp, fixed to decimal per D8's original scope)
-// rather than editing them -- see docs/compiler_architecture.org's Phase 1
-// section for the D19 token-layer location decision this step recorded.
+// classification" under parser<F>; F24's own number-per-BASE classification
+// (is_number_token_in_base/token_to_cell_in_base below) follows that
+// placement, generalizing reader::is_number_token/token_to_cell
+// (forth_chars.hpp, fixed to decimal per D8's original scope) rather than
+// editing them -- see docs/compiler_architecture.org's Phase 1 section for
+// the D19 token-layer location decision that step recorded.
+//
+// Step F25 is what actually writes STATE: `interpret` below now compiles as
+// well as interprets. `:`, `;`, `EXIT`, and `RECURSE` are recognized by
+// direct name comparison before any dictionary lookup, exactly the way this
+// project's own elaborator already recognizes `I`/`J`/`LEAVE`/`UNLOOP`
+// (elaborate.hpp) -- generalized immediate-word dispatch through the
+// dictionary itself is F27's own job, not this step's. Compiling a colon
+// definition appends directly into a compile_buffer (interpreter/
+// compilebuf.hpp, D16's retained compiled_program as the toolkit's own
+// artifact shape) as each token is met, one instruction at a time; there is
+// no elaborated tree anywhere in this path. Interpreting an
+// already-compiled word (D14) calls into that same code space via
+// compile_buffer::call_word, against the identical live @p st this loop
+// itself is mutating -- one semantics, not a second evaluator.
 
 /// The interpreter's own Forth machine state: @ref machine::forth_state (the
 /// stacks, data space, and output buffer) plus the three fields D13 adds on
@@ -92,12 +109,12 @@ class forth_state {
     /// diagnosed "unknown word" at the interpreter loop, not UB.
     constexpr auto set_base(int value) -> void;
 
-    /// `STATE`: 0 while interpreting (the only value this step ever
-    /// produces), nonzero while compiling (F25).
+    /// `STATE`: 0 while interpreting, nonzero while compiling (`:` sets it,
+    /// `;` clears it -- F25).
     [[nodiscard]] constexpr auto state() const -> int;
-    /// Sets `STATE`. Unused by this step's own @ref interpret, which never
-    /// leaves interpret state; present because D13 puts `STATE` in
-    /// forth_state now, not as a later retrofit.
+    /// Sets `STATE`. Written by @ref interpret itself as `:`/`;` are met
+    /// (F25); present since F24 because D13 puts `STATE` in forth_state
+    /// from the start, not as a later retrofit.
     constexpr auto set_state(int value) -> void;
 
   private:
@@ -266,57 +283,174 @@ static_assert(token_to_cell_in_base("-FF", 16) == -255);
     return std::monostate{};
 }
 
+/// The result of @ref scan_colon_header: a `:` definition's folded name,
+/// plus its declared `( ... -- ... )` stack-effect comment span if one was
+/// present (D20: captured, not verified until F30).
+template <int MaxName>
+struct colon_header {
+    machine::word_name<MaxName> name{};
+    foundation::source_span effect{};
+    bool has_effect = false;
+};
+
+/// Scans the name following `:` and, if one is immediately present, a
+/// declared `( ... -- ... )` stack-effect comment -- the header-opening half
+/// of `:`, split out of @ref interpret only to keep that function's own loop
+/// body readable.
+///
+/// @p name_cur must already be positioned at (or before, across only plain
+/// whitespace/comments) the name itself -- @ref interpret passes its own
+/// post-`:`-token cursor, which @ref reader::scan_word's trailing skip has
+/// already advanced past any intertoken space before the name.
+///
+/// Unlike an ordinary @ref reader::scan_word call, this does not use @ref
+/// reader::forth_lexeme's trailing skip to find the name's own end: a
+/// `( ... )` comment immediately after the name must still be visible to
+/// capture here, not already silently consumed as ordinary intertoken space
+/// the way it would be for any other token.
+template <int MaxName>
+[[nodiscard]] constexpr auto scan_colon_header(parser::cursor name_cur)
+    -> parser::parse_result<colon_header<MaxName>> {
+    auto name_scanned = reader::scan_word<MaxName>(name_cur);
+    if (!name_scanned.has_value()) {
+        // Unreachable in practice, mirroring interpret's own identical
+        // defensive comment: scan_word's some<> only ever fails on empty
+        // input, and an empty name is diagnosed explicitly just below
+        // instead.
+        return name_scanned.error();
+    }
+    auto const &folded_name = name_scanned.value().value;
+    if (folded_name.empty()) {
+        return foundation::parse_error{name_cur.position(),
+                                       "expected a name after :"};
+    }
+
+    // Recover the cursor immediately after the name's own characters, by
+    // replaying bump() folded_name.size() times from name_cur -- the same
+    // "replay to recover a position" technique input_source::cursor_at_in
+    // already uses -- rather than trusting scan_word's own rest cursor,
+    // which has already skipped past any trailing comment as ordinary
+    // intertoken space (this function's own top comment).
+    auto after_name = name_cur;
+    for (int i = 0; i < folded_name.size() && !after_name.empty(); ++i) {
+        after_name = after_name.bump();
+    }
+
+    auto after_ws = parser::skip_intertoken_space(after_name);
+    if (!after_ws.empty() && after_ws.peek() == '(') {
+        auto comment = reader::scan_paren_comment(after_ws);
+        if (comment.has_value()) {
+            return parser::parse_state<colon_header<MaxName>>{
+                colon_header<MaxName>{.name = folded_name,
+                                      .effect = comment.value().value,
+                                      .has_effect = true},
+                comment.value().rest};
+        }
+        // An unterminated '(' right after the name: fall through and leave
+        // the cursor at the name's own end -- the very next token scan will
+        // fail on the dangling '(' in context, exactly like
+        // reader::skip_forth_space's own defensive choice for an
+        // unterminated comment anywhere else.
+    }
+    return parser::parse_state<colon_header<MaxName>>{
+        colon_header<MaxName>{.name = folded_name}, after_name};
+}
+
 // aa1d6f83-9b3c-4e2a-8d5f-3c7b1e9a4f62
-/// The Forth-2012 section 3.4 outer text interpreter, interpret state only
-/// (D13): scans one word at a time from @p st's own @ref input_source,
-/// looks it up in @p dict (newest-first, so redefinition shadows), and
-/// either runs it (a primitive, via @ref machine::apply_primitive), pushes
-/// it (a number per @p st's own `BASE`), or diagnoses it (an unknown word,
-/// positioned at the word's own start) -- repeating until @p st's source is
-/// exhausted or the first diagnosed error, whichever comes first.
+/// The Forth-2012 section 3.4 outer text interpreter (D13): scans one word
+/// at a time from @p st's own @ref input_source and, per @p st's own
+/// `STATE`, either interprets it or compiles it into @p buf, repeating
+/// until @p st's source is exhausted or the first diagnosed error, whichever
+/// comes first.
+///
+/// **Interpreting** (`STATE == 0`): a dictionary hit runs (a @ref
+/// machine::primitive, via @ref machine::apply_primitive) or calls (a @ref
+/// machine::compiled_colon_word, via @ref call_word -- D14's "interpreting a
+/// defined word runs its code on the VM against the live forth_state, one
+/// semantics"); a miss is classified as a number per @p st's own `BASE` and
+/// pushed, or diagnosed as an unknown word. `;`, `EXIT`, and `RECURSE` are
+/// compile-only (D13, Forth-2012): diagnosed here rather than acted on.
+///
+/// **Compiling** (`STATE == 1`, entered by `:`): a dictionary hit emits
+/// (@ref machine::op::prim for a primitive, @ref machine::op::call for a
+/// @ref machine::compiled_colon_word) rather than running; a miss is
+/// classified as a number and emitted as @ref machine::op::push. `;` emits
+/// @ref machine::op::ret, installs the finished @ref
+/// machine::compiled_colon_word into @p dict, and clears `STATE`. `EXIT`
+/// emits @ref machine::op::ret without closing the definition. `RECURSE`
+/// emits a self-@ref machine::op::call to the entry point @ref
+/// scan_colon_header's own caller (`:` itself, below) recorded *before* the
+/// body was compiled -- F14's discipline, carried forward unchanged, is what
+/// makes this resolve without any back-patching.
 ///
 /// `\` line comments and `( ... )` comments are ordinary intertoken space to
 /// this loop (@ref reader::skip_forth_space, invoked here via @ref
-/// reader::scan_word's own leading skip): they are consumed without ever
-/// becoming a token. There is no `:` yet (F25), so every dictionary hit this
-/// step can actually reach is a @ref machine::primitive; a non-primitive
-/// binding (impossible from @ref machine::default_dictionary today, but not
-/// impossible for a caller-supplied @p dict) is diagnosed rather than
-/// silently skipped, per D7.
+/// reader::scan_word's own leading skip) in every position except
+/// immediately after a `:` definition's own name, where @ref
+/// scan_colon_header instead captures a `( ... )` comment as the declared
+/// effect (D20: stored, unverified until F30).
 ///
-/// Every stack/data-space misuse a primitive's own @ref
-/// machine::apply_primitive can diagnose (stack underflow/overflow,
-/// division by zero, an out-of-bounds `@`/`!`, ...) is returned here
-/// unchanged -- the same @ref foundation::parse_error value @ref
-/// machine::apply_primitive itself would have produced, not a re-diagnosed
-/// or repositioned one, since the primitive's own diagnosis already carries
-/// whatever position information it is ever going to carry (D7's machine
-/// substrate has no notion of source position of its own).
+/// Every stack/data-space/code-space misuse a primitive's own @ref
+/// machine::apply_primitive, or @ref compile_buffer::emit, can diagnose is
+/// returned here unchanged -- the same @ref foundation::parse_error value
+/// either would have produced directly, not a re-diagnosed or repositioned
+/// one.
 ///
-/// @tparam MaxDepth  @p st's data stack capacity, in cells.
-/// @tparam MaxRDepth @p st's return stack capacity, in cells.
-/// @tparam MaxData   @p st's data space capacity, in cells.
-/// @tparam MaxOut    @p st's output buffer capacity, in characters.
-/// @tparam MaxWords  @p dict's capacity, in entries.
-/// @tparam MaxName   Maximum word-name/token length, in characters; shared
-///                    between @p st and @p dict (see @ref forth_state).
-/// @param  st   The interpreter state to run against; mutated in place --
-///              its stacks, output buffer, and `>IN` all advance as the loop
-///              runs, even on the run that ends in a diagnosed error.
-/// @param  dict The dictionary to resolve words against.
-/// @param  fuel The interpreter loop's own step budget (@ref
-///              consume_interp_fuel): decremented once per token processed;
-///              exhaustion is a diagnosed error, never a hang.
+/// @tparam MaxDepth    @p st's data stack capacity, in cells.
+/// @tparam MaxRDepth   @p st's return stack capacity, in cells.
+/// @tparam MaxData     @p st's data space capacity, in cells.
+/// @tparam MaxOut      @p st's output buffer capacity, in characters.
+/// @tparam MaxWords    @p dict's capacity, in entries -- independent of
+///                     @p buf's own @c MaxBufWords (@ref compile_buffer's
+///                     word-table capacity is unused by this step: every
+///                     @ref machine::compiled_colon_word carries its own
+///                     entry point directly, see compilebuf.hpp), so a small
+///                     custom @p dict may pair with a generously sized
+///                     @p buf, or vice versa, without their capacities
+///                     having to match.
+/// @tparam MaxCode     @p buf's instruction-array capacity.
+/// @tparam MaxBufWords @p buf's own (unused by this step) word-table
+///                     capacity.
+/// @tparam MaxName     Maximum word-name/token length, in characters; shared
+///                     between @p st and @p dict (see @ref forth_state).
+/// @param  st      The interpreter state to run against; mutated in place --
+///                 its stacks, output buffer, `STATE`, and `>IN` all advance
+///                 as the loop runs, even on the run that ends in a
+///                 diagnosed error.
+/// @param  dict    The dictionary to resolve words against, and to install
+///                 every finished colon definition into.
+/// @param  buf     The code space every `:` ... `;` pair compiles into.
+/// @param  fuel    The interpreter loop's own step budget (@ref
+///                 consume_interp_fuel): decremented once per token
+///                 processed; exhaustion is a diagnosed error, never a hang.
+/// @param  vm_fuel The VM's own step budget (D22, a distinct budget from
+///                 @p fuel), passed to @ref call_word each time interpreting
+///                 a defined word actually runs one.
 template <int MaxDepth, int MaxRDepth, int MaxData, int MaxOut, int MaxWords,
-          int MaxName = 32>
+          int MaxCode, int MaxBufWords, int MaxName = 32>
 constexpr auto
 interpret(forth_state<MaxDepth, MaxRDepth, MaxData, MaxOut, MaxName> &st,
-          machine::dictionary<MaxWords, MaxName> const &dict, int fuel = 100000)
-    -> machine::status {
+          machine::dictionary<MaxWords, MaxName> &dict,
+          compile_buffer<MaxCode, MaxBufWords> &buf, int fuel = 100000,
+          int vm_fuel = 100000) -> machine::status {
+    // Bookkeeping for the definition currently being compiled, if any --
+    // local to this call frame, not part of forth_state itself (DIV-0012:
+    // keep the seam thin, add nothing that makes F26's later fold of
+    // SOURCE/BASE/STATE into machine::forth_state harder). Meaningful only
+    // while st.state() != 0.
+    machine::word_name<MaxName> compiling_name{};
+    int compiling_entry = -1;
+    foundation::source_span compiling_effect{};
+    bool compiling_has_effect = false;
+
     for (;;) {
         auto pre = st.source().cursor_at_in();
         auto token_start = reader::skip_forth_space(pre);
         if (token_start.empty()) {
+            if (st.state() != 0) {
+                return foundation::parse_error{token_start.position(),
+                                               "unterminated colon definition"};
+            }
             // Nothing left but whitespace/comments: a clean end of source,
             // not an error.
             return std::monostate{};
@@ -342,26 +476,156 @@ interpret(forth_state<MaxDepth, MaxRDepth, MaxData, MaxOut, MaxName> &st,
         std::string_view text{token.begin(),
                               static_cast<std::size_t>(token.size())};
 
-        auto const *entry = dict.lookup(text);
-        if (entry != nullptr) {
-            auto const *op = std::get_if<machine::primitive>(&entry->binding);
-            if (op == nullptr) {
+        if (st.state() == 0) {
+            // -- Interpreting -----------------------------------------
+
+            if (text == ":") {
+                auto header =
+                    scan_colon_header<MaxName>(st.source().cursor_at_in());
+                if (!header.has_value()) {
+                    return header.error();
+                }
+                compiling_name = header.value().value.name;
+                compiling_effect = header.value().value.effect;
+                compiling_has_effect = header.value().value.has_effect;
+                st.source().set_in(header.value().rest.position().offset);
+                compiling_entry = buf.here();
+                st.set_state(1);
+                continue;
+            }
+            if (text == ";") {
                 return foundation::parse_error{
                     token_start.position(),
-                    "word is not executable yet (F24: primitives only)"};
+                    "\";\" is compile-only, used while interpreting"};
             }
-            auto r = machine::apply_primitive(*op, st.machine());
+            if (text == "EXIT") {
+                return foundation::parse_error{
+                    token_start.position(),
+                    "EXIT is compile-only, used while interpreting"};
+            }
+            if (text == "RECURSE") {
+                return foundation::parse_error{
+                    token_start.position(),
+                    "RECURSE is compile-only, used while interpreting"};
+            }
+
+            auto const *entry = dict.lookup(text);
+            if (entry != nullptr) {
+                if (auto const *op =
+                        std::get_if<machine::primitive>(&entry->binding)) {
+                    auto r = machine::apply_primitive(*op, st.machine());
+                    if (!r.has_value()) {
+                        return r;
+                    }
+                    continue;
+                }
+                if (auto const *cw = std::get_if<machine::compiled_colon_word>(
+                        &entry->binding)) {
+                    auto r =
+                        call_word(buf, st.machine(), cw->entry_point, vm_fuel);
+                    if (!r.has_value()) {
+                        return r;
+                    }
+                    continue;
+                }
+                return foundation::parse_error{
+                    token_start.position(),
+                    "word is not executable yet (F25: primitives and colon "
+                    "words only)"};
+            }
+
+            if (is_number_token_in_base(text, st.base())) {
+                auto r = st.machine().data().push(
+                    token_to_cell_in_base(text, st.base()));
+                if (!r.has_value()) {
+                    return r;
+                }
+                continue;
+            }
+
+            return foundation::parse_error{token_start.position(),
+                                           "unknown word"};
+        }
+
+        // -- Compiling -------------------------------------------------
+
+        if (text == ":") {
+            return foundation::parse_error{token_start.position(),
+                                           "nested : is not allowed"};
+        }
+        if (text == ";") {
+            auto ret_r = buf.emit(machine::op::ret, machine::cell{0},
+                                  token_start.position());
+            if (!ret_r.has_value()) {
+                return ret_r.error();
+            }
+            std::string_view name_text{
+                compiling_name.begin(),
+                static_cast<std::size_t>(compiling_name.size())};
+            auto def_r = dict.define_compiled_colon(
+                name_text, machine::compiled_colon_word{
+                               .entry_point = compiling_entry,
+                               .effect_span = compiling_effect,
+                               .has_effect = compiling_has_effect});
+            if (!def_r.has_value()) {
+                return def_r;
+            }
+            compiling_entry = -1;
+            st.set_state(0);
+            continue;
+        }
+        if (text == "EXIT") {
+            auto r = buf.emit(machine::op::ret, machine::cell{0},
+                              token_start.position());
             if (!r.has_value()) {
-                return r;
+                return r.error();
+            }
+            continue;
+        }
+        if (text == "RECURSE") {
+            auto r = buf.emit(machine::op::call,
+                              static_cast<machine::cell>(compiling_entry),
+                              token_start.position());
+            if (!r.has_value()) {
+                return r.error();
             }
             continue;
         }
 
+        auto const *entry = dict.lookup(text);
+        if (entry != nullptr) {
+            if (auto const *op =
+                    std::get_if<machine::primitive>(&entry->binding)) {
+                auto r =
+                    buf.emit(machine::op::prim, static_cast<machine::cell>(*op),
+                             token_start.position());
+                if (!r.has_value()) {
+                    return r.error();
+                }
+                continue;
+            }
+            if (auto const *cw = std::get_if<machine::compiled_colon_word>(
+                    &entry->binding)) {
+                auto r = buf.emit(machine::op::call,
+                                  static_cast<machine::cell>(cw->entry_point),
+                                  token_start.position());
+                if (!r.has_value()) {
+                    return r.error();
+                }
+                continue;
+            }
+            return foundation::parse_error{
+                token_start.position(),
+                "word is not compilable yet (F25: primitives and colon "
+                "words only)"};
+        }
+
         if (is_number_token_in_base(text, st.base())) {
-            auto r = st.machine().data().push(
-                token_to_cell_in_base(text, st.base()));
+            auto r = buf.emit(machine::op::push,
+                              token_to_cell_in_base(text, st.base()),
+                              token_start.position());
             if (!r.has_value()) {
-                return r;
+                return r.error();
             }
             continue;
         }
