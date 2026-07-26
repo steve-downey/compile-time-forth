@@ -458,6 +458,26 @@ enum class primitive {
               ///< that token's own body returns normally (never reached at
               ///< all if a THROW inside it unwound past this frame instead).
     // 6a1e9c4f-8b3d-4e2a-9f6c-1d8b3a7e5f2c end
+
+    // 7d2f4a91-6c3b-4e8a-9f1d-2b6e8c4a7f3d
+    // Step F32 (docs/forth-plan-2.md), D21: the address-unit words.
+    // DIV-0009 declared this project's data space cell-granular (one
+    // address unit is one cell) and left `CELLS`/`CHARS` unimplemented
+    // because nothing yet asked for them; F32 is the revisit D21 names.
+    // `CELL+`/`CHAR+` need no new primitive at all -- both dictionary
+    // names below map directly onto the existing @ref one_plus enumerator,
+    // and `C@`/`C!` map directly onto @ref fetch/@ref store, since a
+    // one-cell-per-char system reads/writes a "character" exactly like a
+    // cell. `CELLS`/`CHARS` have no existing primitive to alias (nothing
+    // already expresses "leave the top cell exactly as it is"), so this
+    // one enumerator gives them one: a true identity, still popping and
+    // re-pushing its one argument (rather than never touching the stack
+    // at all) so an empty-stack call is still diagnosed as underflow like
+    // every other primitive (D7), not silently accepted.
+    identity, ///< `CELLS`/`CHARS` ( n -- n ) D21: one address unit is one
+              ///< cell, so converting a cell count or char count to an
+              ///< address-unit count is the identity function.
+    // 7d2f4a91-6c3b-4e8a-9f1d-2b6e8c4a7f3d end
 };
 
 /// Applies a pure-stack, output, or memory @ref primitive to @p state.
@@ -949,6 +969,14 @@ apply_primitive(primitive op,
         return push_cell(0);
     }
         // 3c8f6a2d-1b7e-4d9a-8c3f-6b1e9a4d7c2f end
+    // 8e1c5f47-2a9d-4b6e-8c3f-5d7a1e9b4c2f
+    case primitive::identity:
+        // D21: `CELLS`/`CHARS` ( n -- n ). Pops and re-pushes its one
+        // argument, unchanged, rather than never touching the stack, so an
+        // empty-stack call is diagnosed as underflow like every other
+        // primitive (D7).
+        return unary([](cell a) { return a; });
+        // 8e1c5f47-2a9d-4b6e-8c3f-5d7a1e9b4c2f end
     }
     return foundation::parse_error{foundation::source_pos{},
                                    "unknown primitive opcode"};

@@ -38,7 +38,7 @@
 - [x] Step F29: parsing words and strings
 - [ ] Step F30: effect lint
 - [x] Step F31: CATCH and THROW
-- [ ] Step F32: conformance
+- [x] Step F32: conformance
 - [ ] Step F33: sender backend
 - [ ] Step F34: foreign function interface
 - [ ] Step F35: bootstrap prelude (stretch)

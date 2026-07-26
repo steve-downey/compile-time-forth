@@ -37,17 +37,16 @@ add_subdirectory(vendor/execution)
 # Create the library target and named header set for beman.optional
 add_library(compile-time-forth.forth STATIC "")
 
-# As of Step F15, every component under src/smd/forth/ is header-only (no
-# component owns a .cpp of its own -- forth.cpp, the library's last
-# remaining compiled source, was the F0-era forth::forth() placeholder,
-# deleted outright per docs/forth-plan.md Step F15). A STATIC library
-# target with zero compiled sources cannot infer its own linker language
-# from its (nonexistent) sources; state it explicitly rather than
-# reintroducing a dummy .cpp or reclassifying the target as INTERFACE
-# (AGENTS.md's own CMake rules reserve INTERFACE libraries for "truly
-# header-only code," but this target's whole point is to remain a stable,
-# concrete home for a real compiled source the moment one exists again,
-# e.g. F18's sender/receiver backend or F19's foreign-function support).
+# From Step F15 through F31, every component under src/smd/forth/ was
+# header-only (no component owned a .cpp of its own -- forth.cpp, the
+# library's last remaining compiled source, was the F0-era forth::forth()
+# placeholder, deleted outright per docs/forth-plan.md Step F15). Step F32
+# (conformance) adds the first real compiled source since then --
+# src/smd/forth/conformance/gforth_diff.cpp, the gforth differential
+# harness's own subprocess-invoking implementation (D23) -- so this is no
+# longer a zero-source target; LINKER_LANGUAGE is kept explicit regardless
+# (harmless once real sources exist, and it is one less thing to revisit if
+# a future step's own source list ever empties out again).
 set_target_properties(compile-time-forth.forth PROPERTIES LINKER_LANGUAGE CXX)
 
 target_sources(
