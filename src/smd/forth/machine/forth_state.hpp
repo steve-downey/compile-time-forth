@@ -121,6 +121,21 @@ class forth_state {
     /// Sets `STATE`.
     constexpr auto set_state(int value) -> void;
 
+    /// Step F31 (docs/forth-plan-2.md), D11: the return-stack depth *at
+    /// which* the innermost active `CATCH` handler's own 3-cell frame begins
+    /// (`vm.hpp`'s own `op::catch_mark`/`perform_throw`), or `-1` if no
+    /// `CATCH` is currently active (the default). Not itself a stack slot --
+    /// a scalar register alongside the stacks, exactly like `BASE`/`STATE` --
+    /// so `THROW` never has to scan the return stack to find its target: it
+    /// reads this value directly, truncates to it, and restores it from the
+    /// frame it just consumed (D24: "a design that makes the handler's
+    /// extent explicit and findable" rather than one requiring a scan).
+    [[nodiscard]] constexpr auto handler_depth() const -> int;
+    /// Sets the handler-depth register (see @ref handler_depth). Only
+    /// `vm.hpp`'s own `op::catch_mark`/`perform_throw` and the `catch_ok`
+    /// primitive ever call this.
+    constexpr auto set_handler_depth(int value) -> void;
+
   private:
     data_stack<MaxDepth> data_{};
     return_stack<MaxRDepth> returns_{};
@@ -129,6 +144,7 @@ class forth_state {
     input_source source_{};
     int base_{10};
     int state_{0};
+    int handler_depth_{-1};
 };
 
 template <int MaxDepth, int MaxRDepth, int MaxData, int MaxOut>
@@ -260,6 +276,20 @@ constexpr auto
 forth_state<MaxDepth, MaxRDepth, MaxData, MaxOut>::set_state(int value)
     -> void {
     state_ = value;
+}
+
+template <int MaxDepth, int MaxRDepth, int MaxData, int MaxOut>
+constexpr auto
+forth_state<MaxDepth, MaxRDepth, MaxData, MaxOut>::handler_depth() const
+    -> int {
+    return handler_depth_;
+}
+
+template <int MaxDepth, int MaxRDepth, int MaxData, int MaxOut>
+constexpr auto
+forth_state<MaxDepth, MaxRDepth, MaxData, MaxOut>::set_handler_depth(int value)
+    -> void {
+    handler_depth_ = value;
 }
 
 namespace detail {
@@ -400,11 +430,34 @@ enum class primitive {
                  ///< case, which compiles the message text ahead of a call
                  ///< to this primitive): if @c flag is nonzero, prints the
                  ///< @c u characters at @c c-addr (exactly like @ref type_)
-                 ///< and then diagnoses -- a hard stop of the whole
-                 ///< interpretation, not yet the `THROW -2` Forth-2012
-                 ///< actually calls for (DIV-0017: `THROW`/`CATCH` do not
-                 ///< exist until F31). If @c flag is zero, does nothing.
+                 ///< and then fails with a distinguished "condition met"
+                 ///< diagnosis that `vm.hpp`'s own `op::prim` dispatch always
+                 ///< recognizes and routes through `perform_throw(-2, ...)`
+                 ///< (step F31, DIV-0018/DIV-0017's own revisit: `ABORT"` is
+                 ///< `THROW -2`, per Forth-2012, whether or not a `CATCH` is
+                 ///< active -- caught if one is, an uncaught diagnosed
+                 ///< `THROW` carrying `-2` if not). If @c flag is zero, does
+                 ///< nothing.
     // 4beb6ab5-f28e-4b2f-8a21-3d4ba8575f55 end
+
+    // 6a1e9c4f-8b3d-4e2a-9f6c-1d8b3a7e5f2c
+    // Step F31 (docs/forth-plan-2.md), D11/D18: CATCH's own "normal
+    // completion" epilogue. See vm.hpp's own op::catch_mark for the other
+    // half of CATCH's compiled shape (it cannot itself be a primitive: it
+    // must jump to the popped execution token, which apply_primitive has no
+    // way to do).
+    catch_ok, ///< ( -- 0 ) Pops CATCH's own 3-cell handler frame off the
+              ///< return stack (prev-handler, saved data-stack depth,
+              ///< resume ip -- the last two unused on this, the *normal*
+              ///< completion path; see vm.hpp's own perform_throw for the
+              ///< path that does use them), restores the handler-depth
+              ///< register from the frame's own prev-handler field, and
+              ///< pushes 0 -- CATCH's own "no exception" result. Reached
+              ///< only as the return address CATCH's own op::catch_mark
+              ///< pushed before jumping to the caught execution token, once
+              ///< that token's own body returns normally (never reached at
+              ///< all if a THROW inside it unwound past this frame instead).
+    // 6a1e9c4f-8b3d-4e2a-9f6c-1d8b3a7e5f2c end
 };
 
 /// Applies a pure-stack, output, or memory @ref primitive to @p state.
@@ -874,12 +927,28 @@ apply_primitive(primitive op,
                 return r;
             }
         }
-        return foundation::parse_error{
-            foundation::source_pos{},
-            "ABORT\" condition met (F31's THROW/CATCH will replace this "
-            "hard stop)"};
+        return foundation::parse_error{foundation::source_pos{},
+                                       "ABORT\" condition met"};
     }
         // 13c745cb-5824-451b-8765-cbed0d5626b3 end
+    // 3c8f6a2d-1b7e-4d9a-8c3f-6b1e9a4d7c2f
+    case primitive::catch_ok: {
+        auto resume_ip = state.returns().pop();
+        if (!resume_ip.has_value()) {
+            return resume_ip.error();
+        }
+        auto saved_data_depth = state.returns().pop();
+        if (!saved_data_depth.has_value()) {
+            return saved_data_depth.error();
+        }
+        auto prev_handler = state.returns().pop();
+        if (!prev_handler.has_value()) {
+            return prev_handler.error();
+        }
+        state.set_handler_depth(static_cast<int>(prev_handler.value()));
+        return push_cell(0);
+    }
+        // 3c8f6a2d-1b7e-4d9a-8c3f-6b1e9a4d7c2f end
     }
     return foundation::parse_error{foundation::source_pos{},
                                    "unknown primitive opcode"};
@@ -1051,10 +1120,13 @@ static_assert([] {
 }());
 
 static_assert([] {
-    // ABORT"'s own runtime primitive (DIV-0017: a hard-stop diagnosis, not
-    // yet the Forth-2012 `THROW -2`, since THROW/CATCH land at F31): a zero
-    // flag drops the message silently; a nonzero flag prints it, then
-    // diagnoses.
+    // ABORT"'s own runtime primitive (step F31, DIV-0017's revisit/
+    // DIV-0018): a zero flag drops the message silently; a nonzero flag
+    // prints it, then fails with the specific "condition met" diagnosis
+    // vm.hpp's own op::prim dispatch always recognizes and turns into a real
+    // `THROW -2` (caught, or an uncaught diagnosed THROW carrying -2) --
+    // apply_primitive itself, tested directly here, only needs to signal
+    // that recognizable condition, not perform the unwind itself.
     forth_state<8, 8, 8, 32> st{};
     auto a = st.data_space().allot(4);
     if (!a.has_value()) {
@@ -1087,7 +1159,30 @@ static_assert([] {
         return false;
     }
     auto loud = apply_primitive(primitive::abort_quote, st);
-    return !loud.has_value() && st.output().size() == 4;
+    return !loud.has_value() && st.output().size() == 4 &&
+           std::string_view{loud.error().message} == "ABORT\" condition met";
+}());
+
+// Merge criterion (static_assert, immediately-invoked-lambda pattern), step
+// F31's own catch_ok primitive: pops CATCH's own 3-cell handler frame
+// (prev-handler, saved data depth, resume ip -- the last two unused here),
+// restores handler_depth from the first, and pushes 0.
+
+static_assert([] {
+    forth_state<8, 8, 8, 32> st{};
+    st.set_handler_depth(3);
+    if (!st.returns().push(7).has_value() ||  // prev-handler
+        !st.returns().push(2).has_value() ||  // saved data depth (unused)
+        !st.returns().push(99).has_value()) { // resume ip (unused)
+        return false;
+    }
+    auto r = apply_primitive(primitive::catch_ok, st);
+    if (!r.has_value() || st.returns().depth() != 0 ||
+        st.handler_depth() != 7) {
+        return false;
+    }
+    auto flag = st.data().pop();
+    return flag.has_value() && flag.value() == 0;
 }());
 
 } // namespace smd::forth::machine

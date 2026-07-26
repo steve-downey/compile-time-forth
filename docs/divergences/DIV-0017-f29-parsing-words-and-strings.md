@@ -1,6 +1,9 @@
 # DIV-0017: Parsing-word data placement, comment reexpression, and ABORT"'s interim runtime behavior
 
-- **Status:** accepted-permanent, except `ABORT"`'s own interim hard-stop behavior (see Revisit condition)
+- **Status:** accepted-permanent. `ABORT"`'s own interim hard-stop behavior (item 4, and its own
+  Revisit condition below) is resolved at step F31: `abort_quote` now routes through a real
+  `THROW -2` unconditionally (`vm.hpp`'s own `is_abort_quote_condition`/`perform_throw`); see
+  DIV-0018 for the full record.
 - **Date:** 2026-07-26
 - **Step:** F29 (parsing words and strings), docs/forth-plan-2.md
 - **Authority diverged from:** Forth-2012 (`ABORT"`'s own runtime semantics, narrowed scope);
@@ -129,8 +132,9 @@ leading-whitespace imprecision) are accepted-permanent: none is a scope cut made
 save time, and revisiting any of them would trade a real simplicity for a benefit no
 merge criterion currently needs.
 
-`ABORT"`'s own hard-stop behavior is the one open item, by construction (F31 is
-already scheduled to build `CATCH`/`THROW`). When F31 lands, `abort_quote` should
-`THROW -2` (the exact value not yet used anywhere in this project) after printing its
-message, unwinding to the nearest `CATCH` rather than propagating all the way out of
-`interpret()` unconditionally the way it does now. Revisit at F31.
+`ABORT"`'s own hard-stop behavior was the one open item, by construction (F31 was
+already scheduled to build `CATCH`/`THROW`). **Resolved at F31**: `abort_quote` now
+fails with a distinguished "condition met" diagnosis that `vm.hpp`'s own `run_from`
+(`op::prim` case) always routes through `THROW -2` after the message has printed,
+unwinding to the nearest `CATCH` if one is active, or producing an uncaught
+diagnosed `THROW` carrying `-2` if none is -- see DIV-0018 for the complete design.

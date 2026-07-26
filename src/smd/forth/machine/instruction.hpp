@@ -21,21 +21,18 @@ namespace smd::forth::machine {
 // 5b9e9c1a-6b0e-4b7a-9f3a-7a5b7c9d2e1f
 /// One stack-machine opcode.
 ///
-/// Only the opcodes this step's own codegen (`codegen.hpp`) actually emits
-/// and this step's own VM (`vm.hpp`) actually executes have real semantics
-/// yet: `push`, `prim`, `call`, `ret`, `branch`, `branch0`, `push_xt`,
-/// `halt`. The remaining seven enumerators reserve opcode space for later
-/// steps per the plan's own instruction-set shape, so the enum itself never
-/// has to change once those steps land: `do_setup`, `loop_step`,
-/// `plus_loop_step`, `push_index` (`I`/`J`), `leave`, and `unloop` are all
-/// `DO ... LOOP` machinery (step F17's own deliverable -- F14's codegen
-/// diagnoses `core_do_loop` as "not implemented" rather than emitting any of
-/// these, mirroring F13's identical choice for the direct evaluator); and
-/// `catch_mark`/`throw_op` are step F31's (`CATCH`/`THROW`). The VM
-/// diagnoses any of these seven if it ever encounters one in a compiled
-/// program, rather than treating an unimplemented opcode as undefined
-/// behavior (D7) -- codegen simply never emits them yet, so this path is
-/// defensive, not currently reachable from `codegen(compiled_unit)`.
+/// Every enumerator now has real semantics, given by `vm.hpp`'s own
+/// `run_from`: `push`, `prim`, `call`, `ret`, `branch`, `branch0`, `push_xt`,
+/// `halt` (step F14); `do_setup`, `loop_step`, `plus_loop_step`, `push_index`
+/// (`I`/`J`), `leave`, `unloop` (step F17's own `DO ... LOOP` machinery);
+/// `execute`, `create_word`, `does_enter` (step F28, D18/D10); and
+/// `catch_mark`/`throw_op` (step F31, D11 -- `CATCH`/`THROW`; see `vm.hpp`'s
+/// own `perform_throw` for the design). `run_from`'s own fetch-execute loop
+/// still diagnoses any opcode it cannot dispatch on, rather than treating
+/// one as undefined behavior (D7), but that path is defensive only:
+/// `interp.hpp`'s own `compile_entry`/`apply_control_word` are the sole
+/// producers of `instr` values in this project, and both only ever emit
+/// opcodes from this same enum.
 ///
 /// `execute`, `create_word`, and `does_enter` are step F28's own additions
 /// (D18, D10): see each enumerator's own doc comment; `interp.hpp`'s
@@ -99,8 +96,18 @@ enum class op : std::uint8_t {
                     ///< execution right here, per Forth-2012. Diagnoses if
                     ///< @ref run_from was not given a dictionary, or if the
                     ///< most recent entry was not `CREATE`d.
-    catch_mark,     ///< Reserved for step F31 (`CATCH`): not emitted yet.
-    throw_op,       ///< Reserved for step F31 (`THROW`): not emitted yet.
+    catch_mark,     ///< `CATCH` (step F31, D11): pops an execution token,
+                    ///< pushes a 3-cell handler frame onto the return stack,
+                    ///< then jumps to the token exactly like @ref execute
+                    ///< would. @ref instr::operand is the resume instruction
+                    ///< index a caught @ref throw_op restores to. See
+                    ///< `vm.hpp`'s own `perform_throw` for the full design.
+    throw_op,       ///< `THROW` (step F31, D11): pops @c n; a nonzero @c n
+                    ///< unwinds to the innermost active @ref catch_mark
+                    ///< frame (restoring both stacks to that frame's own
+                    ///< recorded depth and pushing @c n), or diagnoses an
+                    ///< uncaught `THROW` carrying @c n if none is active;
+                    ///< @c n `== 0` is a no-op (Forth-2012).
     halt,           ///< Stop the VM's fetch-execute loop successfully.
 };
 

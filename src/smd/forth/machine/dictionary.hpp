@@ -243,9 +243,24 @@ enum class control_builtin : std::uint8_t {
     abort_quote_,  ///< `ABORT"` -- compile-only: parses a `"`-delimited
                    ///< message and compiles a call to the `abort_quote`
                    ///< primitive (`machine/forth_state.hpp`) that prints it
-                   ///< and diagnoses if the runtime flag is nonzero
-                   ///< (DIV-0017: a hard stop, not yet Forth-2012's
-                   ///< `THROW -2` -- `THROW`/`CATCH` land at F31).
+                   ///< and fails with a distinguished condition; step F31's
+                   ///< own VM dispatch (`vm.hpp`) always routes that
+                   ///< condition through `THROW -2` (DIV-0017's revisit,
+                   ///< DIV-0018).
+
+    // Step F31 (docs/forth-plan-2.md), D11/D18: CATCH and THROW. Neither is
+    // immediate or compile-only -- both have ordinary execution semantics
+    // that work identically interpreting or compiled, exactly like
+    // `EXECUTE` (D14). See interp.hpp's own apply_control_word/compile_entry
+    // for what each does; machine/ only carries the tag, as ever.
+    catch_, ///< `CATCH` ( xt -- 0 | n ) Runs the token under a handler;
+            ///< pushes 0 on normal completion, or the thrown code on a
+            ///< caught `THROW`.
+    throw_, ///< `THROW` ( n -- ) A nonzero @c n unwinds to the innermost
+            ///< active `CATCH`, restoring both stacks to that `CATCH`'s own
+            ///< recorded depth and pushing @c n; zero is a no-op
+            ///< (Forth-2012).
+    abort_, ///< `ABORT` ( -- ) `-1 THROW` (Forth-2012).
 };
 
 /// A control-builtin word's binding: which action (@ref control_builtin) it
@@ -534,10 +549,12 @@ constexpr auto dictionary<MaxWords, MaxName>::size() const -> int {
 /// step F27 control word (`IF ELSE THEN BEGIN UNTIL WHILE REPEAT DO LOOP
 /// +LOOP LEAVE UNLOOP I J LITERAL POSTPONE IMMEDIATE [ ] COMPILE,`, D17), 20,
 /// every step F28 execution-token/defining-word control word (`' [' EXECUTE
-/// CREATE DOES> VALUE TO DEFER IS`, D18), 9 more, and every step F29 parsing
+/// CREATE DOES> VALUE TO DEFER IS`, D18), 9 more, every step F29 parsing
 /// control word (`( \ S" ." [CHAR] ABORT"`, D19/D21 -- each must consume its
 /// own following source text at the moment it is met, so each is immediate;
-/// see @ref control_builtin's own doc comment), 6 more, for 89 entries
+/// see @ref control_builtin's own doc comment), 6 more, and step F31's
+/// `CATCH THROW ABORT` (D11/D18 -- none immediate: each works identically
+/// interpreting or compiled, exactly like `EXECUTE`), 3 more, for 92 entries
 /// total.
 ///
 /// @tparam MaxWords Dictionary capacity; must be at least 89 plus whatever
@@ -671,7 +688,15 @@ constexpr auto default_dictionary() -> dictionary<MaxWords, MaxName> {
     // does_enter`/`op::create_word`, machine/instruction.hpp), so meeting
     // them while compiling appends that opcode instead of running them, per
     // the same D13 rule.
-    constexpr std::array<std::pair<std::string_view, control_builtin>, 9>
+    //
+    // Step F31, D11/D18 adds `CATCH THROW ABORT`: none is immediate either,
+    // since all three have real compiled forms too (`op::catch_mark`/`prim
+    // catch_ok`, `op::throw_op`, and `op::push -1`/`op::throw_op`
+    // respectively -- interp.hpp's own compile_entry) *and* ordinary
+    // interpreting-time execution semantics (interp.hpp's own
+    // apply_control_word), exactly the same "works identically either way"
+    // shape `EXECUTE` already has.
+    constexpr std::array<std::pair<std::string_view, control_builtin>, 12>
         ordinary_control_words{{
             {"IMMEDIATE", control_builtin::immediate_},
             {"]", control_builtin::bracket_close_},
@@ -682,6 +707,9 @@ constexpr auto default_dictionary() -> dictionary<MaxWords, MaxName> {
             {"VALUE", control_builtin::value_},
             {"DEFER", control_builtin::defer_},
             {"IS", control_builtin::is_},
+            {"CATCH", control_builtin::catch_},
+            {"THROW", control_builtin::throw_},
+            {"ABORT", control_builtin::abort_},
         }};
     for (auto const &[name_text, which] : ordinary_control_words) {
         (void)dict.define_control(name_text, control_word{which},

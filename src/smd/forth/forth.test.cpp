@@ -276,3 +276,29 @@ TEST_CASE("ForthTest - StringRoundTripMergeCriterion") {
     CHECK(std::string_view{out.begin(), static_cast<std::size_t>(out.size())} ==
           "HELLO WORLD");
 }
+
+// Step F31 (docs/forth-plan-2.md): CATCH and THROW, through the public
+// one-shot API -- interp.hpp's own catch_/throw_/abort_ control words work
+// unchanged whether interpret() is called directly (interp.test.cpp's own
+// BoomSafeTryMergeCriterion) or through compiled_forth<Source> here, exactly
+// like every other step's own criterion above. BOOM always throws 42; SAFE
+// always completes normally, leaving 99; TRY reports which happened.
+static_assert([] {
+    auto out = compiled_forth<
+        ": BOOM 42 THROW ; "
+        ": SAFE 99 ; "
+        ": TRY CATCH DUP IF .\" CAUGHT \" . ELSE DROP .\" OK \" . THEN ; "
+        "' BOOM TRY ' SAFE TRY">.output();
+    return std::string_view{out.begin(), static_cast<std::size_t>(
+                                             out.size())} == "CAUGHT 42 OK 99 ";
+}());
+
+TEST_CASE("ForthTest - BoomSafeTryMergeCriterion") {
+    auto out = compiled_forth<
+        ": BOOM 42 THROW ; "
+        ": SAFE 99 ; "
+        ": TRY CATCH DUP IF .\" CAUGHT \" . ELSE DROP .\" OK \" . THEN ; "
+        "' BOOM TRY ' SAFE TRY">.output();
+    CHECK(std::string_view{out.begin(), static_cast<std::size_t>(out.size())} ==
+          "CAUGHT 42 OK 99 ");
+}

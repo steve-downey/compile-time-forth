@@ -79,6 +79,10 @@ static_assert(primitive_data_effect(primitive::allot) == known(1, 0));
 // Step F28: `,` is likewise not input-dependent.
 static_assert(primitive_data_effect(primitive::comma) == known(1, 0));
 
+// Step F31: catch_ok pushes exactly one flag, consuming nothing from the
+// data stack (its own bookkeeping cells all live on the return stack).
+static_assert(primitive_data_effect(primitive::catch_ok) == known(0, 1));
+
 static_assert(primitive_return_delta(primitive::to_r) == 1);
 static_assert(primitive_return_delta(primitive::r_from) == -1);
 static_assert(primitive_return_delta(primitive::r_fetch) == 0);

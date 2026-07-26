@@ -213,6 +213,11 @@ constexpr auto primitive_data_effect(machine::primitive op) -> effect {
         // exactly the kind of thing D20 defers to F30, not something this
         // per-primitive *data*-stack-shape table decides.
         return known(3, 0);
+    case P::catch_ok:
+        // Step F31: CATCH's own "normal completion" epilogue ( -- 0 ).
+        // Consumes nothing from the *data* stack (its own 3 popped cells are
+        // all on the return stack); pushes exactly one flag.
+        return known(0, 1);
     }
     // Defensive-only: every enumerator is listed above; reachable only if a
     // future step adds a primitive without updating this table.

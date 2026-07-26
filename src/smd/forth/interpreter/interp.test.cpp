@@ -1321,9 +1321,9 @@ TEST_CASE("InterpTest - BracketCharIsCompileOnly") {
           std::string_view::npos);
 }
 
-// ABORT" (DIV-0017): compile-only, and a diagnosed hard stop -- not yet
-// Forth-2012's own `THROW -2` (CATCH/THROW land at F31) -- when the runtime
-// flag is nonzero; a silent no-op when it is zero.
+// ABORT" (DIV-0017's revisit, DIV-0018): compile-only, and `THROW -2`
+// (uncaught here, so a diagnosed error, carrying -2) when the runtime flag
+// is nonzero; a silent no-op when it is zero.
 TEST_CASE("InterpTest - AbortQuoteIsCompileOnly") {
     forth_state<64, 64, 1024, 256> st{"ABORT\" boom\""};
     auto dict = default_dictionary<>();
@@ -1355,5 +1355,230 @@ TEST_CASE("InterpTest - AbortQuoteTrueFlagPrintsMessageThenDiagnoses") {
     REQUIRE_FALSE(r.has_value());
     CHECK(output_of(st) == "boom");
     // The abort happened before "1 2 +" ran.
+    CHECK(st.data().depth() == 0);
+    // Step F31: uncaught here (no CATCH anywhere in this program), so this
+    // is now genuinely an uncaught `THROW -2` -- the code rides along in
+    // where.offset (vm.hpp's own perform_throw).
+    CHECK(r.error().where.offset == -2);
+}
+
+// ===========================================================================
+// Step F31 (docs/forth-plan-2.md): CATCH and THROW.
+//
+// R1's own F18a step (retired unexecuted) never wrote BOOM/SAFE/TRY as code;
+// docs/forth-plan-2.md's own F31 section describes them as "the conventional
+// shapes -- a word that throws, a word that catches and recovers, and a
+// wrapper that reports which happened." BOOM always throws 42; SAFE always
+// completes normally, leaving 99; TRY runs either xt under CATCH and reports
+// which happened, printing the value either way -- DUP before IF so the
+// flag survives being tested, since IF itself pops whatever it tests.
+// ===========================================================================
+
+inline constexpr std::string_view boom_safe_try_program =
+    ": BOOM 42 THROW ; "
+    ": SAFE 99 ; "
+    ": TRY CATCH DUP IF .\" CAUGHT \" . ELSE DROP .\" OK \" . THEN ; "
+    "' BOOM TRY ' SAFE TRY";
+
+// `' BOOM TRY` prints "CAUGHT 42 "; `' SAFE TRY` prints "OK 99 ": both
+// worlds, compile time (this static_assert) and runtime (the TEST_CASE
+// below) -- D14's "the same value agrees with itself."
+static_assert([] {
+    forth_state<64, 64, 1024, 256> st{boom_safe_try_program};
+    auto dict = default_dictionary<>();
+    compile_buffer<> buf;
+    auto r = interpret(st, dict, buf);
+    return r.has_value() && output_of(st) == "CAUGHT 42 OK 99 " &&
+           st.data().depth() == 0;
+}());
+
+TEST_CASE("InterpTest - BoomSafeTryMergeCriterion") {
+    forth_state<64, 64, 1024, 256> st{boom_safe_try_program};
+    auto dict = default_dictionary<>();
+    compile_buffer<> buf;
+    auto r = interpret(st, dict, buf);
+    REQUIRE(r.has_value());
+    CHECK(output_of(st) == "CAUGHT 42 OK 99 ");
+    CHECK(st.data().depth() == 0);
+}
+
+// `xt CATCH` while interpreting, not compiled into any colon word -- CATCH
+// works identically either way (D14), exactly like EXECUTE.
+TEST_CASE("InterpTest - CatchWorksWhileInterpreting") {
+    forth_state<64, 64, 1024, 256> st{": BOOM 42 THROW ;  ' BOOM CATCH"};
+    auto dict = default_dictionary<>();
+    compile_buffer<> buf;
+    auto r = interpret(st, dict, buf);
+    REQUIRE(r.has_value());
+    REQUIRE(st.data().depth() == 1);
+    CHECK(st.data().peek().value() == 42);
+}
+
+TEST_CASE("InterpTest - CatchOfSafeWordWhileInterpreting") {
+    forth_state<64, 64, 1024, 256> st{": SAFE 99 ;  ' SAFE CATCH"};
+    auto dict = default_dictionary<>();
+    compile_buffer<> buf;
+    auto r = interpret(st, dict, buf);
+    REQUIRE(r.has_value());
+    REQUIRE(st.data().depth() == 2);
+    CHECK(st.data().peek(1).value() == 99);
+    CHECK(st.data().peek(0).value() == 0);
+}
+
+// Depth-restoration test: whatever the thrown word pushed *after* CATCH
+// began (1, 2, 3 here) is discarded; whatever was on the stack *before*
+// CATCH ran (5, 6 here) survives untouched, with the thrown code on top.
+TEST_CASE("InterpTest - CatchRestoresDataStackDepth") {
+    forth_state<64, 64, 1024, 256> st{
+        ": MESSY 1 2 3 999 THROW ;  5 6 ' MESSY CATCH"};
+    auto dict = default_dictionary<>();
+    compile_buffer<> buf;
+    auto r = interpret(st, dict, buf);
+    REQUIRE(r.has_value());
+    REQUIRE(st.data().depth() == 3);
+    CHECK(st.data().peek(2).value() == 5);
+    CHECK(st.data().peek(1).value() == 6);
+    CHECK(st.data().peek(0).value() == 999);
+}
+
+// Nested CATCH: INNER's own throw is caught by OUTER's own inner CATCH and
+// handled there; OUTER's own later throw escapes past that (already
+// completed) inner handler straight to OUTERTRY's own outer one -- proving
+// handler-depth restoration chains correctly across nested scopes, not just
+// within one.
+TEST_CASE("InterpTest - NestedCatchEscapesToTheRightHandler") {
+    forth_state<64, 64, 1024, 256> st{
+        ": INNER 1 THROW ; "
+        ": OUTER ['] INNER CATCH DUP IF .\" INNER-CAUGHT \" . ELSE DROP "
+        ".\" INNER-OK \" THEN 2 THROW ; "
+        ": OUTERTRY ['] OUTER CATCH DUP IF .\" OUTER-CAUGHT \" . ELSE DROP "
+        ".\" OUTER-OK \" THEN ; "
+        "OUTERTRY"};
+    auto dict = default_dictionary<>();
+    compile_buffer<> buf;
+    auto r = interpret(st, dict, buf);
+    REQUIRE(r.has_value());
+    CHECK(output_of(st) == "INNER-CAUGHT 1 OUTER-CAUGHT 2 ");
+    CHECK(st.data().depth() == 0);
+    CHECK(st.returns().depth() == 0);
+}
+
+// Interaction battery (Part 11's own recorded, unverified return-stack
+// teardown gap, F17): a call frame (GUARD calling DEEP), a `>R` value, and a
+// DO-loop frame all sit above CATCH's own handler frame when THROW fires
+// inside the loop body -- THROW must unwind through all three in one
+// truncate, without knowing or caring what any of them are (vm.hpp's own
+// perform_throw). FIND5B runs afterward, using DO/LEAVE normally, proving
+// ordinary DO-loop teardown is unaffected and the return stack is genuinely
+// back to depth 0, not merely "shifted but not yet crashed."
+TEST_CASE("InterpTest - CatchUnwindsThroughToRDoLoopAndCallFrames") {
+    forth_state<64, 64, 1024, 256> st{
+        ": DEEP 42 >R 10 0 DO 5 THROW LOOP R> DROP ; "
+        ": GUARD ['] DEEP CATCH DUP IF .\" CAUGHT \" . ELSE DROP .\" OK \" "
+        "THEN ; "
+        ": FIND5B 10 0 DO I 5 = IF I LEAVE THEN LOOP ; "
+        "GUARD FIND5B"};
+    auto dict = default_dictionary<>();
+    compile_buffer<> buf;
+    auto r = interpret(st, dict, buf);
+    REQUIRE(r.has_value());
+    CHECK(output_of(st) == "CAUGHT 5 ");
+    REQUIRE(st.data().depth() == 1);
+    CHECK(st.data().peek().value() == 5);
+    // The return stack is exactly back to where it started: no leftover
+    // cells from the >R, the DO-loop frame, or CATCH's own handler frame.
+    CHECK(st.returns().depth() == 0);
+}
+
+// A machine fault (division by zero) mapped to its standard THROW code
+// (-10) and caught, exactly like an explicit THROW would be (D7).
+TEST_CASE("InterpTest - DivisionByZeroCaughtByCatch") {
+    forth_state<64, 64, 1024, 256> st{
+        ": DIVZERO 1 0 / ; "
+        ": GUARDDIV ['] DIVZERO CATCH DUP IF .\" CAUGHT \" . ELSE DROP "
+        ".\" OK \" THEN ; "
+        "GUARDDIV"};
+    auto dict = default_dictionary<>();
+    compile_buffer<> buf;
+    auto r = interpret(st, dict, buf);
+    REQUIRE(r.has_value());
+    CHECK(output_of(st) == "CAUGHT -10 ");
+    CHECK(st.data().depth() == 0);
+}
+
+// An uncaught machine fault keeps its original, specific diagnostic message
+// verbatim -- the fault-to-THROW-code mapping only ever applies when a
+// handler is active (DIV-0018), so this is unchanged from every division-by
+// -zero test that predates CATCH/THROW.
+TEST_CASE("InterpTest - UncaughtDivisionByZeroKeepsItsOwnMessage") {
+    forth_state<64, 64, 1024, 256> st{"1 0 /"};
+    auto dict = default_dictionary<>();
+    compile_buffer<> buf;
+    auto r = interpret(st, dict, buf);
+    REQUIRE_FALSE(r.has_value());
+    CHECK(std::string_view{r.error().message} == "division by zero");
+}
+
+// ABORT" caught by an enclosing CATCH: the message still prints (ABORT"'s
+// own runtime primitive is unchanged), and the code it now genuinely throws
+// (-2) reaches the handler, exactly like an explicit `-2 THROW` would --
+// RUN's own trailing `999` never runs, since THROW is a one-shot, upward,
+// nonlocal exit (D11).
+TEST_CASE("InterpTest - AbortQuoteCaughtByCatch") {
+    forth_state<64, 64, 1024, 256> st{
+        ": CHECK ABORT\" boom\" ; "
+        ": RUN -1 CHECK 999 ; "
+        ": GUARDABORT ['] RUN CATCH DUP IF .\" CAUGHT \" . ELSE DROP .\" OK \" "
+        "THEN ; "
+        "GUARDABORT"};
+    auto dict = default_dictionary<>();
+    compile_buffer<> buf;
+    auto r = interpret(st, dict, buf);
+    REQUIRE(r.has_value());
+    CHECK(output_of(st) == "boomCAUGHT -2 ");
+    CHECK(st.data().depth() == 0);
+}
+
+// ABORT is `-1 THROW` (Forth-2012), caught here like any other THROW.
+TEST_CASE("InterpTest - AbortIsMinusOneThrow") {
+    forth_state<64, 64, 1024, 256> st{": MAYBE ABORT ;  ' MAYBE CATCH"};
+    auto dict = default_dictionary<>();
+    compile_buffer<> buf;
+    auto r = interpret(st, dict, buf);
+    REQUIRE(r.has_value());
+    REQUIRE(st.data().depth() == 1);
+    CHECK(st.data().peek().value() == -1);
+}
+
+// ABORT while interpreting, uncaught: a diagnosed THROW carrying -1.
+TEST_CASE("InterpTest - UncaughtAbortWhileInterpreting") {
+    forth_state<64, 64, 1024, 256> st{"ABORT"};
+    auto dict = default_dictionary<>();
+    compile_buffer<> buf;
+    auto r = interpret(st, dict, buf);
+    REQUIRE_FALSE(r.has_value());
+    CHECK(r.error().where.offset == -1);
+}
+
+// `0 THROW` is a no-op (Forth-2012): execution continues normally.
+TEST_CASE("InterpTest - ThrowZeroIsANoOp") {
+    forth_state<64, 64, 1024, 256> st{"1 2 0 THROW +"};
+    auto dict = default_dictionary<>();
+    compile_buffer<> buf;
+    auto r = interpret(st, dict, buf);
+    REQUIRE(r.has_value());
+    REQUIRE(st.data().depth() == 1);
+    CHECK(st.data().peek().value() == 3);
+}
+
+// An uncaught THROW, typed directly at the top level (not compiled into any
+// colon word): diagnosed, carrying n.
+TEST_CASE("InterpTest - UncaughtThrowWhileInterpreting") {
+    forth_state<64, 64, 1024, 256> st{"5 THROW"};
+    auto dict = default_dictionary<>();
+    compile_buffer<> buf;
+    auto r = interpret(st, dict, buf);
+    REQUIRE_FALSE(r.has_value());
+    CHECK(r.error().where.offset == 5);
     CHECK(st.data().depth() == 0);
 }

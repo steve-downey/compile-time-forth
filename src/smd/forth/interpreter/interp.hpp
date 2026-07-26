@@ -422,6 +422,50 @@ compile_entry(machine::dictionary_entry<MaxName> const &entry,
             }
             return std::monostate{};
         }
+        if (ctl->which == control_builtin::catch_) {
+            // `CATCH` (step F31, D11/D18): two instructions, both fixed
+            // length, so the resume ip (this frame's own `RESUME`, one past
+            // both) is known immediately -- no back-patching needed. `op::
+            // catch_mark` pops the execution token already on the data
+            // stack, pushes the 3-cell handler frame, and jumps to it;
+            // `prim catch_ok` is the normal-completion epilogue it returns
+            // to (see machine/vm.hpp's own op::catch_mark and machine/
+            // forth_state.hpp's own catch_ok primitive).
+            int const mark_idx = buf.here();
+            auto r1 = buf.emit(machine::op::catch_mark,
+                               static_cast<machine::cell>(mark_idx + 2), pos);
+            if (!r1.has_value()) {
+                return r1.error();
+            }
+            auto r2 = buf.emit(
+                machine::op::prim,
+                static_cast<machine::cell>(machine::primitive::catch_ok), pos);
+            if (!r2.has_value()) {
+                return r2.error();
+            }
+            return std::monostate{};
+        }
+        if (ctl->which == control_builtin::throw_) {
+            // `THROW` (step F31, D11): a bare op::throw_op; n is already on
+            // the data stack.
+            auto r = buf.emit(machine::op::throw_op, machine::cell{0}, pos);
+            if (!r.has_value()) {
+                return r.error();
+            }
+            return std::monostate{};
+        }
+        if (ctl->which == control_builtin::abort_) {
+            // `ABORT` (step F31, D11): `-1 THROW`, per Forth-2012.
+            auto r1 = buf.emit(machine::op::push, machine::cell{-1}, pos);
+            if (!r1.has_value()) {
+                return r1.error();
+            }
+            auto r2 = buf.emit(machine::op::throw_op, machine::cell{0}, pos);
+            if (!r2.has_value()) {
+                return r2.error();
+            }
+            return std::monostate{};
+        }
     }
     return foundation::parse_error{pos, "word has no compiled form"};
 }
@@ -1335,11 +1379,11 @@ template <int MaxDepth, int MaxRDepth, int MaxData, int MaxOut, int MaxWords,
         // exactly like `s_quote_` above, stores it, and compiles a
         // push-address/push-length/`abort_quote` sequence -- the runtime
         // primitive (`machine/forth_state.hpp`) that prints the message and
-        // diagnoses if the flag already on the stack at that point is
-        // nonzero. DIV-0017: this is a hard stop of the whole
-        // interpretation, not yet Forth-2012's own `THROW -2` -- `THROW`/
-        // `CATCH` do not exist until F31, and a diagnosed error now is the
-        // documented interim, not a silent no-op.
+        // fails with a distinguished condition. Step F31's own VM dispatch
+        // (`vm.hpp`'s `run_from`, `op::prim` case) always routes that
+        // condition through `THROW -2` (DIV-0017's revisit, DIV-0018): a
+        // `CATCH` around a caller of this word catches it; with none active,
+        // it is an uncaught diagnosed `THROW` carrying `-2`.
         if (st.state() == 0) {
             return compile_only();
         }
@@ -1378,6 +1422,126 @@ template <int MaxDepth, int MaxRDepth, int MaxData, int MaxOut, int MaxWords,
         return std::monostate{};
     }
         // f73e653b-0bfe-4315-b0e9-d7ff2b4c044c end
+    // 8f2d7a4c-6b1e-4c9a-8d3f-2b7e5c9a1f6d
+    case control_builtin::catch_: {
+        // `CATCH` (step F31, D11/D18): interpreting-time behavior appends
+        // the identical two-instruction shape @ref compile_entry's own
+        // `catch_` case compiles (`op::catch_mark` + `prim catch_ok`) to
+        // @p buf at its own current position, guarded by a leading
+        // unconditional branch around it -- the same discipline @ref
+        // resolve_execution_token uses, since @p buf may be positioned
+        // *inside* a still-open colon definition's own body (`CATCH` used
+        // inside a `[ ... ]` bracket while compiling something else) -- then
+        // runs it via @ref machine::run_from, starting at the `catch_mark`
+        // instruction itself so the *same* iterative VM loop that runs a
+        // compiled `CATCH` runs this one too (D14: one semantics either
+        // way). The execution token `CATCH` pops is left on @p st's own data
+        // stack by whatever ran just before this word (`'`/`[']` et al.);
+        // this case never touches it directly. Resume ip is @p buf's own
+        // `halt_pad` (0), reached two different ways: a caught `THROW`
+        // jumps there directly (perform_throw); normal completion instead
+        // *falls into* the third, explicit `branch halt_pad` below (`prim
+        // catch_ok`'s own success path is an ordinary `++ip`, landing on
+        // whatever instruction physically follows it -- unlike the compiled
+        // case, where that is real code belonging to the rest of the
+        // definition, here nothing else was ever emitted, so this branch is
+        // what makes falling through land somewhere valid instead of
+        // walking off the end of @p buf's own code array). Either way
+        // @ref machine::run_from then fetches `halt_pad`'s own @ref
+        // machine::op::halt and returns cleanly.
+        auto skip = buf.emit(op::branch, cell{-1}, pos);
+        if (!skip.has_value()) {
+            return skip.error();
+        }
+        int const mark_idx = buf.here();
+        auto r1 =
+            buf.emit(op::catch_mark, static_cast<cell>(buf.halt_pad()), pos);
+        if (!r1.has_value()) {
+            return r1.error();
+        }
+        auto r2 = buf.emit(
+            op::prim, static_cast<cell>(machine::primitive::catch_ok), pos);
+        if (!r2.has_value()) {
+            return r2.error();
+        }
+        auto r3 = buf.emit(op::branch, static_cast<cell>(buf.halt_pad()), pos);
+        if (!r3.has_value()) {
+            return r3.error();
+        }
+        auto p = patch(skip.value(), static_cast<cell>(buf.here()));
+        if (!p.has_value()) {
+            return p;
+        }
+        return machine::run_from(buf.program(), st, mark_idx, vm_fuel, &dict);
+    }
+    case control_builtin::throw_: {
+        // `THROW` (step F31, D11): n is already on @p st's own data stack.
+        // Same guarded-append-and-run shape as `catch_` above, and the same
+        // reason for the trailing `branch halt_pad`: THROW's own `n == 0`
+        // no-op case (Forth-2012) falls through via an ordinary `++ip`
+        // exactly like `catch_ok`'s own success path does, so it needs the
+        // identical landing instruction to avoid walking off the end of
+        // @p buf's own code array. Shared with `abort_` below via
+        // @c run_throw.
+        auto run_throw = [&]() -> machine::status {
+            auto skip = buf.emit(op::branch, cell{-1}, pos);
+            if (!skip.has_value()) {
+                return skip.error();
+            }
+            int const throw_idx = buf.here();
+            auto r = buf.emit(op::throw_op, cell{0}, pos);
+            if (!r.has_value()) {
+                return r.error();
+            }
+            auto r2 =
+                buf.emit(op::branch, static_cast<cell>(buf.halt_pad()), pos);
+            if (!r2.has_value()) {
+                return r2.error();
+            }
+            auto p = patch(skip.value(), static_cast<cell>(buf.here()));
+            if (!p.has_value()) {
+                return p;
+            }
+            return machine::run_from(buf.program(), st, throw_idx, vm_fuel,
+                                     &dict);
+        };
+        return run_throw();
+    }
+    case control_builtin::abort_: {
+        // `ABORT` (step F31, D11): `-1 THROW`, per Forth-2012 -- push -1,
+        // then the identical guarded append-and-run `op::throw_op` shape
+        // `throw_` above uses (duplicated rather than factored out to a
+        // shared lambda across cases: each is a short, self-contained body,
+        // and the two cases differ only in whether a value must be pushed
+        // first).
+        auto push_r = st.data().push(cell{-1});
+        if (!push_r.has_value()) {
+            return push_r;
+        }
+        auto skip = buf.emit(op::branch, cell{-1}, pos);
+        if (!skip.has_value()) {
+            return skip.error();
+        }
+        int const throw_idx = buf.here();
+        auto r = buf.emit(op::throw_op, cell{0}, pos);
+        if (!r.has_value()) {
+            return r.error();
+        }
+        // -1 is always nonzero, so op::throw_op always calls perform_throw
+        // here (never THROW's own n == 0 fallthrough) -- this landing
+        // instruction is precautionary symmetry with throw_'s own case, not
+        // a path this specific call can actually reach.
+        auto r2 = buf.emit(op::branch, static_cast<cell>(buf.halt_pad()), pos);
+        if (!r2.has_value()) {
+            return r2.error();
+        }
+        auto p = patch(skip.value(), static_cast<cell>(buf.here()));
+        if (!p.has_value()) {
+            return p;
+        }
+        return machine::run_from(buf.program(), st, throw_idx, vm_fuel, &dict);
+    }
+        // 8f2d7a4c-6b1e-4c9a-8d3f-2b7e5c9a1f6d end
     }
     return foundation::parse_error{pos, "unknown control word"};
 }
