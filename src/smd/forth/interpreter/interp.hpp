@@ -596,6 +596,7 @@ template <int MaxDepth, int MaxRDepth, int MaxData, int MaxOut, int MaxWords,
     };
 
     switch (which) {
+    // e1452910-f0ef-482d-a77b-c8dc081445db
     case control_builtin::if_:
     case control_builtin::while_: {
         if (st.state() == 0) {
@@ -637,6 +638,7 @@ template <int MaxDepth, int MaxRDepth, int MaxData, int MaxOut, int MaxWords,
         return patch(static_cast<int>(orig.value()),
                      static_cast<cell>(buf.here()));
     }
+    // e1452910-f0ef-482d-a77b-c8dc081445db end
     case control_builtin::begin_: {
         if (st.state() == 0) {
             return compile_only();
@@ -676,6 +678,7 @@ template <int MaxDepth, int MaxRDepth, int MaxData, int MaxOut, int MaxWords,
         return patch(static_cast<int>(orig.value()),
                      static_cast<cell>(buf.here()));
     }
+    // ea0ed94a-2b2c-4cfa-9a0d-d27eea165a14
     case control_builtin::do_: {
         if (st.state() == 0) {
             return compile_only();
@@ -736,6 +739,7 @@ template <int MaxDepth, int MaxRDepth, int MaxData, int MaxOut, int MaxWords,
         }
         return std::monostate{};
     }
+    // ea0ed94a-2b2c-4cfa-9a0d-d27eea165a14 end
     case control_builtin::unloop_: {
         if (st.state() == 0) {
             return compile_only();
@@ -865,6 +869,7 @@ template <int MaxDepth, int MaxRDepth, int MaxData, int MaxOut, int MaxWords,
 /// machine::variable_word/@ref machine::constant_word each push their own
 /// address/value, and a @ref machine::control_word dispatches to @ref
 /// apply_control_word.
+// c2d6b26d-5166-4b73-aadd-bf66be9d933c
 template <int MaxDepth, int MaxRDepth, int MaxData, int MaxOut, int MaxWords,
           int MaxCode, int MaxBufWords, int MaxName>
 [[nodiscard]] constexpr auto
@@ -895,6 +900,7 @@ execute_entry(machine::dictionary_entry<MaxName> const &entry,
         pos, "word is not executable yet (F25: primitives and colon "
              "words only)"};
 }
+// c2d6b26d-5166-4b73-aadd-bf66be9d933c end
 
 // aa1d6f83-9b3c-4e2a-8d5f-3c7b1e9a4f62
 /// The Forth-2012 section 3.4 outer text interpreter (D13): scans one word
