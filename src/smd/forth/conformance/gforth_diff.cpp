@@ -56,8 +56,7 @@ auto parse_dot_s_output(std::string_view text)
     if (close == std::string_view::npos) {
         return std::nullopt;
     }
-    std::string_view const count_text =
-        text.substr(open + 1, close - open - 1);
+    std::string_view const count_text = text.substr(open + 1, close - open - 1);
     if (count_text.empty()) {
         return std::nullopt;
     }

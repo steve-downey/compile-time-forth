@@ -40,22 +40,22 @@ namespace {
 
 using smd::forth::compiled_forth;
 
-constexpr auto strings_suite = compiled_forth<
-    SMD_FORTH_TTESTER_SOURCE
-    ": SAY S\" HI\" TYPE ; "
-    ": GREET .\" YO\" ; "
-    ": FIRSTCHAR [CHAR] A ; "
-    ": CHECK ABORT\" BOOM\" ; "
-    ": RUNCHECK -1 CHECK 999 ; "
-    "T{ S\" HELLO\" NIP -> 5 }T "
-    "T{ 32 WORD HELLO COUNT NIP -> 5 }T "
-    "T{ 41 PARSE HELLO) NIP -> 5 }T "
-    "T{ CHAR B -> 66 }T "
-    "T{ FIRSTCHAR -> 65 }T "
-    "T{ 0 CHECK -> }T "
-    "T{ ' RUNCHECK CATCH -> -2 }T "
-    "T{ SAY -> }T "
-    "T{ GREET -> }T">;
+constexpr auto strings_suite =
+    compiled_forth<SMD_FORTH_TTESTER_SOURCE
+                   ": SAY S\" HI\" TYPE ; "
+                   ": GREET .\" YO\" ; "
+                   ": FIRSTCHAR [CHAR] A ; "
+                   ": CHECK ABORT\" BOOM\" ; "
+                   ": RUNCHECK -1 CHECK 999 ; "
+                   "T{ S\" HELLO\" NIP -> 5 }T "
+                   "T{ 32 WORD HELLO COUNT NIP -> 5 }T "
+                   "T{ 41 PARSE HELLO) NIP -> 5 }T "
+                   "T{ CHAR B -> 66 }T "
+                   "T{ FIRSTCHAR -> 65 }T "
+                   "T{ 0 CHECK -> }T "
+                   "T{ ' RUNCHECK CATCH -> -2 }T "
+                   "T{ SAY -> }T "
+                   "T{ GREET -> }T">;
 
 constexpr auto text_of(auto const &out) -> std::string_view {
     return std::string_view{out.begin(), static_cast<std::size_t>(out.size())};
@@ -69,9 +69,12 @@ constexpr auto no_ttester_failure(std::string_view text) -> bool {
 } // namespace
 
 static_assert(no_ttester_failure(text_of(strings_suite.output())));
-static_assert(text_of(strings_suite.output()).find("HI") != std::string_view::npos);
-static_assert(text_of(strings_suite.output()).find("YO") != std::string_view::npos);
-static_assert(text_of(strings_suite.output()).find("BOOM") != std::string_view::npos);
+static_assert(text_of(strings_suite.output()).find("HI") !=
+              std::string_view::npos);
+static_assert(text_of(strings_suite.output()).find("YO") !=
+              std::string_view::npos);
+static_assert(text_of(strings_suite.output()).find("BOOM") !=
+              std::string_view::npos);
 
 TEST_CASE("CoreSuiteStringsTest - AllAssertionsPassAndExpectedTextPrinted") {
     // `out` must be a named, scope-lived object: `.output()` returns

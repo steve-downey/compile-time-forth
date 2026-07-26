@@ -68,6 +68,18 @@ plumbing this step's own scope (conformance testing) does not extend to building
 
 Closed once a future step gives `COMPILE,` a real, non-immediate, runtime-reachable compiled form
 and a passing test demonstrates the textbook `['] TARGET COMPILE,`-inside-an-immediate-helper
-idiom. Not currently named by any step in docs/forth-plan-2.md; the next most plausible owner is
-F36 (consolidation) or whichever step next touches the colon compiler's own execution-token
-surface.
+idiom.
+
+**Orchestrator assignment: F36 owns this.** The record originally left the owner open ("not
+currently named by any step"), which is how a filed bug quietly becomes a permanent one. This is
+not an error-quality nicety — `COMPILE,` is a shipped word whose standard usage pattern cannot be
+reached, verified against real gforth — so it belongs with the other correctness debts F36 is
+carrying rather than with its documentation work. F36's list, as of this step:
+
+- this record (`COMPILE,`'s immediate flag),
+- DIV-0014's unknown-word negative-compile translation unit,
+- DIV-0024 (`CATCH` cannot regrow the data stack below its saved depth), if no earlier step closes it,
+- DIV-0021 (`EVALUATE`), if still deferred by then.
+
+If F36 finds any of these too large to absorb, it must say so and propose a step rather than
+letting the record lapse a second time.

@@ -30,10 +30,9 @@ namespace {
 using smd::forth::compiled_forth;
 
 constexpr auto ttester_self_check =
-    compiled_forth<SMD_FORTH_TTESTER_SOURCE
-                   "T{ 1 1 + -> 2 }T "
-                   "T{ 2 3 SWAP -> 3 2 }T "
-                   "T{ 5 DUP * -> 25 }T">;
+    compiled_forth<SMD_FORTH_TTESTER_SOURCE "T{ 1 1 + -> 2 }T "
+                                            "T{ 2 3 SWAP -> 3 2 }T "
+                                            "T{ 5 DUP * -> 25 }T">;
 
 } // namespace
 
@@ -77,9 +76,8 @@ TEST_CASE("TtesterCorpusTest - EmptyStackRecoversAfterAFailure") {
     // to keep reporting every failure in a shard rather than stopping at
     // the first.
     auto built = smd::forth::interpreter::build_session<256, 160, 512, 512>(
-        std::string_view{SMD_FORTH_TTESTER_SOURCE
-                         "T{ 2 2 + -> 5 }T "
-                         "T{ 3 4 + -> 7 }T"});
+        std::string_view{SMD_FORTH_TTESTER_SOURCE "T{ 2 2 + -> 5 }T "
+                                                  "T{ 3 4 + -> 7 }T"});
     REQUIRE(built.has_value());
     auto const &out = built.value().output;
     std::string_view text{out.begin(), static_cast<std::size_t>(out.size())};

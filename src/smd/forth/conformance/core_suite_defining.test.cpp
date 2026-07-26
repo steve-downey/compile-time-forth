@@ -34,30 +34,29 @@ namespace {
 
 using smd::forth::compiled_forth;
 
-constexpr auto defining_suite = compiled_forth<
-    SMD_FORTH_TTESTER_SOURCE
-    ": DBL DUP + ; "
-    ": CALLDBL ['] DBL EXECUTE ; "
-    "DEFER DEFOP "
-    "' DBL IS DEFOP "
-    "5 VALUE VAL1 "
-    ": CONSTANT2 CREATE , DOES> @ ; "
-    "42 CONSTANT2 LIFE "
-    ": SAFEW 99 ; "
-    ": BOOMW 42 THROW ; "
-    ": MAYBEABORT ABORT ; "
-    "T{ 5 ' DBL EXECUTE -> 10 }T "
-    "T{ 5 CALLDBL -> 10 }T "
-    "T{ 5 DEFOP -> 10 }T "
-    "T{ VAL1 -> 5 }T "
-    "10 TO VAL1 "
-    "T{ VAL1 -> 10 }T "
-    "T{ LIFE -> 42 }T "
-    "T{ ' SAFEW CATCH -> 99 0 }T "
-    "T{ ' BOOMW CATCH -> 42 }T "
-    "T{ 5 6 ' BOOMW CATCH -> 5 6 42 }T "
-    "T{ ' MAYBEABORT CATCH -> -1 }T "
-    "T{ 1 2 0 THROW + -> 3 }T">;
+constexpr auto defining_suite =
+    compiled_forth<SMD_FORTH_TTESTER_SOURCE ": DBL DUP + ; "
+                                            ": CALLDBL ['] DBL EXECUTE ; "
+                                            "DEFER DEFOP "
+                                            "' DBL IS DEFOP "
+                                            "5 VALUE VAL1 "
+                                            ": CONSTANT2 CREATE , DOES> @ ; "
+                                            "42 CONSTANT2 LIFE "
+                                            ": SAFEW 99 ; "
+                                            ": BOOMW 42 THROW ; "
+                                            ": MAYBEABORT ABORT ; "
+                                            "T{ 5 ' DBL EXECUTE -> 10 }T "
+                                            "T{ 5 CALLDBL -> 10 }T "
+                                            "T{ 5 DEFOP -> 10 }T "
+                                            "T{ VAL1 -> 5 }T "
+                                            "10 TO VAL1 "
+                                            "T{ VAL1 -> 10 }T "
+                                            "T{ LIFE -> 42 }T "
+                                            "T{ ' SAFEW CATCH -> 99 0 }T "
+                                            "T{ ' BOOMW CATCH -> 42 }T "
+                                            "T{ 5 6 ' BOOMW CATCH -> 5 6 42 }T "
+                                            "T{ ' MAYBEABORT CATCH -> -1 }T "
+                                            "T{ 1 2 0 THROW + -> 3 }T">;
 
 } // namespace
 

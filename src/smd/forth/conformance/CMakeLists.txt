@@ -3,14 +3,11 @@
 
 target_sources(
     compile-time-forth.forth
-    PRIVATE
-        gforth_diff.cpp
+    PRIVATE gforth_diff.cpp
     PUBLIC
         FILE_SET forth_conformance_headers
             TYPE HEADERS
-            FILES
-                gforth_diff.hpp
-                ttester_corpus.hpp
+            FILES gforth_diff.hpp ttester_corpus.hpp
 )
 
 # gforth found on PATH at configure time gates the differential-harness test
@@ -19,9 +16,15 @@ target_sources(
 # CMake STATUS message, not a quietly-vanished test.
 find_program(FORTH_GFORTH_EXECUTABLE gforth)
 if(FORTH_GFORTH_EXECUTABLE)
-    message(STATUS "gforth found at ${FORTH_GFORTH_EXECUTABLE}: differential harness test enabled")
+    message(
+        STATUS
+        "gforth found at ${FORTH_GFORTH_EXECUTABLE}: differential harness test enabled"
+    )
 else()
-    message(STATUS "gforth NOT found on PATH: GforthDiffTest's own live-gforth battery will report itself skipped at test time (gforth_version() returns nullopt), not silently vanish")
+    message(
+        STATUS
+        "gforth NOT found on PATH: GforthDiffTest's own live-gforth battery will report itself skipped at test time (gforth_version() returns nullopt), not silently vanish"
+    )
 endif()
 
 if(FORTH_ENABLE_TESTING)
