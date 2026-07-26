@@ -1,0 +1,211 @@
+#+options: ':nil *:t -:t ::t <:t H:3 \n:nil ^:nil arch:headline author:t
+#+options: broken-links:nil c:nil creator:nil d:(not "LOGBOOK") date:t e:t
+#+options: email:nil f:t inline:t num:t p:nil pri:nil prop:nil stat:t tags:t
+#+options: tasks:t tex:t timestamp:t title:t toc:nil todo:t |:t
+#+options: html5-fancy:t
+#+bibliography: references.bib
+#+TITLE: Building a Compile-Time Forth in C++26: Part 16 - Nothing to Point At
+#+AUTHOR: Steve Downey
+#+DATE: 2026-07-26
+
+#+begin_abstract
+Part 15 ended with the tree gone and nothing to show for it yet: ~IF~,
+~BEGIN~, and ~DO~ were unknown words, and every program this project has
+been carrying since Part 7 to prove control flow works was stuck behind
+that gap. Tonight closes it. ~IF ELSE THEN~, ~BEGIN UNTIL~, ~BEGIN WHILE
+REPEAT~, and the whole ~DO LOOP~ family are real dictionary entries now,
+immediate on the orig/dest discipline Forth-2012 names, patching their own
+branches the moment the outer interpreter reaches them. Part 12 argued this
+would work without changing anything about the patch stream underneath it.
+That argument gets tested tonight, and it holds. What doesn't survive
+untouched is my first idea for catching an unclosed ~IF~ at ~;~ --- it was
+wrong, one of my own tests said so, and what replaced it is smaller than I
+wanted.
+#+end_abstract
+
+#+MACRO: TEASER_END
+{{TEASER_END}}
+#+html: <nav style="margin-bottom: 2em; border-bottom: 1px solid #ccc; padding-bottom: 1em">
+[[file:index.org][↑ Series Index]] | [[file:post-15-the-cut.org][Part 15 - The Cut ←]]
+#+html: </nav>
+
+
+* The words, as the standard actually describes them
+
+Forth-2012 doesn't define ~IF~ as syntax. It defines it as an ordinary
+dictionary entry with one property most words don't have: it runs the
+instant the outer interpreter meets it, whether or not that interpreter is
+currently compiling. That property has a name, ~IMMEDIATE~, and it's what
+lets ~IF~'s own action be "emit a branch and remember where," instead of
+something a parser has to know about in advance.
+
+#+transclude: [[orgit-file:~/src/compile-time-forth/compile-time-forth::blog/part-16::src/smd/forth/machine/dictionary.hpp::0d3b390a-1051-4f76-867c-b4f161264827]] :lines 2- :src cpp :end "0d3b390a-1051-4f76-867c-b4f161264827 end"
+
+Twenty of those tags, one dictionary entry each, all immediate from the
+moment they're installed. The dispatch on the tag --- what ~IF~ or ~DO~
+actually *does* --- lives one layer up, in the interpreter, because that's
+where the thing being mutated lives: a control word's job is to reach into
+the code space currently under construction and change it, and the VM
+never sees that code space, only finished instructions.
+
+Here is ~IF~/~ELSE~/~THEN~ doing exactly that:
+
+#+transclude: [[orgit-file:~/src/compile-time-forth/compile-time-forth::blog/part-16::src/smd/forth/interpreter/interp.hpp::e1452910-f0ef-482d-a77b-c8dc081445db]] :lines 2- :src cpp :end "e1452910-f0ef-482d-a77b-c8dc081445db end"
+
+~IF~ emits a branch with a sentinel operand --- ~-1~, which can never be a
+real instruction index --- and pushes the branch's own position onto the
+data stack. ~THEN~ pops that position back off and overwrites the sentinel
+with wherever the code space happens to be now. The data stack is doing
+Forth-2012's own "orig/dest" bookkeeping here, not holding program data;
+that's the standard's own permission, not a shortcut I invented to avoid
+building a second stack.
+
+~DO~/~LOOP~/~+LOOP~/~LEAVE~ are the same discipline with one more moving
+part, because a loop needs to patch every early exit inside it, not just
+one branch:
+
+#+transclude: [[orgit-file:~/src/compile-time-forth/compile-time-forth::blog/part-16::src/smd/forth/interpreter/interp.hpp::ea0ed94a-2b2c-4cfa-9a0d-d27eea165a14]] :lines 2- :src cpp :end "ea0ed94a-2b2c-4cfa-9a0d-d27eea165a14 end"
+
+~LEAVE~ still writes its own ~-1~ and walks away without knowing yet where
+the loop ends --- exactly the sentinel scan Part 12 pointed at as evidence
+that this project already had a patch stream before it had an outer
+interpreter. What's different tonight is only the boundary of the scan.
+Under the old tree walker, the scan ran over a node range the tree itself
+delimited. Here, ~LOOP~ scans from ~DO~'s own remembered position to
+wherever the code space is now --- a slice of the *instruction array*
+instead of a slice of a tree --- and patches every ~LEAVE~ it finds still
+carrying its sentinel. An inner loop's own ~LOOP~ already resolved its own
+~LEAVE~s first, so the bound never reaches past where it should. Same
+scan, same sentinel, a different thing measuring where to stop.
+
+Part 12 predicted this, in words: "move the same emit-and-patch code one
+layer up, so ~IF~ calls it when the text interpreter reaches ~IF~ rather
+than when a codegen pass reaches an ~IF~ node, and nothing about the patch
+stream changes." I believed that when I wrote it. Tonight is where I got to
+find out whether it was true, and the loop opcodes, the two termination
+rules for ~LOOP~ and ~+LOOP~, and the ~LEAVE~ scan itself all carried over
+without a single change to their own logic. What changed was who calls
+them and what bounds them. That's a smaller victory than it sounds like
+stated flatly, and it's also exactly the victory that was on offer.
+
+* One rule, not five special cases
+
+Every entry in this dictionary before tonight got compiled or executed by
+a chain of direct-name comparisons: is this token ~:~? Is it ~;~? ~EXIT~?
+~RECURSE~? ~VARIABLE~? Each one its own branch in ~interpret~'s own loop,
+because each one needed different treatment and there was no shared rule
+underneath them yet. D13's actual rule --- execute a word when interpreting,
+or when it's immediate; otherwise compile it --- was true of all of them
+the whole time, and I wasn't using it.
+
+#+transclude: [[orgit-file:~/src/compile-time-forth/compile-time-forth::blog/part-16::src/smd/forth/interpreter/interp.hpp::c2d6b26d-5166-4b73-aadd-bf66be9d933c]] :lines 2- :src cpp :end "c2d6b26d-5166-4b73-aadd-bf66be9d933c end"
+
+~execute_entry~ pairs with a twin, ~compile_entry~, that appends the same
+four cases' compiled form instead of running them. ~interpret~'s own loop
+is two lines now: call ~execute_entry~ unconditionally while interpreting,
+and while compiling, call ~execute_entry~ for an immediate entry or
+~compile_entry~ for an ordinary one. Every primitive, every colon word,
+every variable and constant, and now every control word, goes through the
+same two functions. Fewer special cases came out of this step than went
+in, which is not the direction special-case counts usually move.
+
+* A control word has nothing to point at
+
+Every other kind of entry in this dictionary compiles into something with
+an address: a primitive inlines as one instruction, a colon word has real
+instructions sitting in the code space waiting to be called. A control
+word has neither, because its entire output *is* a mutation of the code
+space being built, not an addition to it that could be called later. There
+is no instruction ~call THEN~ could mean, because by the time ~THEN~ has
+run, the branch it patched is already sitting there finished.
+
+That has a real consequence, not a hypothetical one: ~POSTPONE~ of a
+control word works, but only under one condition.
+
+#+begin_src forth
+\ (shape, not verbatim)
+: ENDIF POSTPONE THEN ; IMMEDIATE
+: ABS2 DUP 0< IF NEGATE ENDIF ;
+-7 ABS2
+#+end_src
+
+That leaves ~7~ on the stack, and ~ENDIF~ is not a colon word that happens
+to produce ~THEN~'s effect --- it's a dictionary entry carrying the literal
+tag ~then_~, indistinguishable from ~THEN~ itself for every purpose
+afterward. ~POSTPONE~ gets there by refusing to compile anything: seeing
+that its target has no compiled form, it just records the tag and lets
+~;~ install the word being closed as a plain alias. That only works when
+the postponed control word is the *entire* body of the definition.
+~: BAD POSTPONE THEN DROP ;~ is diagnosed, not silently miscompiled,
+because mixing an alias with ordinary compiled code would need a single
+representation that covers both, and a control word still doesn't have
+one. I want that named as a real limitation, sitting there open, not
+something I've talked myself into believing is fine.
+
+* The check that had to come back out
+
+The obvious way to catch an unclosed ~IF~ or ~BEGIN~ at ~;~ is to compare
+the data stack's depth when ~;~ runs against its depth when the matching
+~:~ started. The orig/dest markers live on that stack; a leftover one
+means something never got resolved. I wrote exactly that check first,
+because it's the check anyone would reach for, and it's wrong.
+
+#+begin_src forth
+\ (shape, not verbatim)
+: DOUBLE-IT 21 ; IMMEDIATE
+: USES-IT DOUBLE-IT ;
+#+end_src
+
+~DOUBLE-IT~ is immediate, so meeting it while compiling ~USES-IT~ runs it
+right then, not later. Running it pushes a real ~21~ onto the data stack,
+during ~USES-IT~'s own compilation, and that ~21~ is legitimately sitting
+there when ~USES-IT~'s own ~;~ runs --- nothing is unresolved, an immediate
+word just did what immediate words do. A depth comparison can't tell that
+apart from a genuinely dangling ~IF~. Neither can it tell apart the value a
+~[ ... ] LITERAL~ bracketed computation leaves for ~LITERAL~ to pick up,
+which is the same shape of "real data, deliberately left on the stack,
+during compilation" for a completely different reason.
+
+I didn't catch this by staring at the design. I caught it because a test I
+had already written --- one asserting that an immediate word executes at
+compile time rather than compiling a call to itself, which is the entire
+point of ~IMMEDIATE~ existing --- started failing against my own draft. The
+check I'd added was rejecting a program that was correct.
+
+What replaced it is smaller on purpose. A private counter, incremented by
+~DO~ and decremented by ~LOOP~/~+LOOP~, that never touches the data stack
+at all, catches an unresolved ~DO~ at ~;~. ~THEN~ and ~REPEAT~ with no
+matching ~IF~ or ~BEGIN~ get no dedicated check whatsoever --- they're
+caught later and less precisely, when they try to pop an orig that isn't
+there and the data stack tells them, correctly, that it's empty. That's a
+real stack-underflow diagnosis doing double duty as a control-flow
+diagnosis, one layer down from where I originally wanted it. Less precise
+than the check I deleted, and it never rejects a program that was actually
+fine, which the check I deleted did. I'll take the trade.
+
+* What's still open
+
+Nothing about stack effects changed tonight. There is still no checking of
+any kind for whether a word does what its own declared effect comment
+says it does --- the comment after a colon header gets captured, verbatim,
+off the source text, and checked against nothing at all. ~: BAD ( -- )
+DROP ;~ still compiles clean and still underflows the first time anything
+calls it. That gap was open the evening Part 15 landed and it's open
+tonight too; nothing in this entry touches it.
+
+The corpus this project has been accumulating since Part 7 --- ~ABS~,
+~COUNTDOWN~, the budget-exhaustion program that used to be called ~SPIN~,
+~SUMTO~, ~FIND5~, ~TENS~, the ~+LOOP~ program, the one that does ~UNLOOP
+EXIT~ out of a loop, both memory-word programs --- runs verbatim now,
+compile time and runtime both, through the interpreter directly and
+through the public one-shot API. That was the whole reason it got kept
+around instead of deleted with the tests that used to hold it. It finally
+did the job.
+
+#+html: <nav style="margin-top: 3em; border-top: 1px solid #ccc; padding-top: 1em">
+[[file:index.org][↑ Series Index]] | [[file:post-15-the-cut.org][← Part 15 - The Cut]]
+#+html: </nav>
+
+* References
+
+#+print_bibliography:

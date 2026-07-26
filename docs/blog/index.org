@@ -119,6 +119,13 @@ batch codegen, close to 6300 lines --- and retargeting the public API onto
 a session built once. What it costs: Part 7's oracle, the two evaluators
 that had to agree, and nothing yet stands fully in its place.
 
+** [[file:post-16-nothing-to-point-at.org][Part 16 — Nothing to Point At]]
+
+~IF ELSE THEN~, ~BEGIN UNTIL~, and the whole ~DO LOOP~ family land as
+immediate words on Forth-2012's own orig/dest discipline --- and a depth
+check that looked obviously right gets caught wrong by one of my own tests
+before it ever reached anyone else's code.
+
 * Table of Contents
 
 #+toc: headlines 1

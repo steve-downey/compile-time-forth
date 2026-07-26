@@ -1,4 +1,4 @@
-<div class="abstract" id="orgf113d92">
+<div class="abstract" id="orgac8d72d">
 <p>
 Part 12 argued that the tree was the only thing this project ever built that
 actually conflicted with a stateful outer interpreter, and it closed with a
@@ -212,7 +212,7 @@ Nothing in this entry taught the interpreter a new word. There is still no `IF`,
 
 <nav style="margin-top: 3em; border-top: 1px solid #ccc; padding-top: 1em">
 
-[↑ Series Index](index.md) | [← Part 14 - Correct by Accident](post-14-correct-by-accident.md)
+[↑ Series Index](index.md) | [← Part 14 - Correct by Accident](post-14-correct-by-accident.md) | [Part 16 - Nothing to Point At →](post-16-nothing-to-point-at.md)
 
 </nav>
 
