@@ -1,0 +1,134 @@
+<div class="abstract" id="org4691d8e">
+<p>
+Part 0 refused to build Forth's outer interpreter &#x2014; no <code>IMMEDIATE</code>, no
+<code>POSTPONE</code>, no <code>STATE</code> &#x2014; on the grounds that laying down control structure
+imperatively produces a stream of patches, not a tree, and this project's
+foundation is trees built by structural recursion. I went back to that
+argument this entry, meaning to write down why it still holds, and it doesn't:
+codegen has been back-patching branches since the compiled program first ran,
+and <code>LEAVE</code> has been scanning for <code>-1</code> sentinels since the counted loops
+landed. The patch stream was never the thing in conflict with the outer
+interpreter. The tree was, and only the tree. I'm adopting the outer
+interpreter as the architecture, and no code changed today &#x2014; this entry is
+the argument for why it has to.
+</p>
+
+</div>
+
+{{TEASER\_END}}
+
+<nav style="margin-bottom: 2em; border-bottom: 1px solid #ccc; padding-bottom: 1em">
+
+[↑ Series Index](index.md) | [Part 11 - The Two Cells the Checker Never Saw ←](post-11-counted-loops.md)
+
+</nav>
+
+
+# The refusal, reread
+
+Part 0 drew a line and named it on purpose: no `IMMEDIATE`, no `POSTPONE`, no `[` and `]`, no `STATE`, no user-defined parsing words, anywhere in this project. Classical Forth doesn't have a grammar; it has an outer interpreter, a stateful loop that reads a word and either runs it or compiles it depending on a flag the words themselves can flip, with `IF` laying down a branch by hand at the moment it runs. I called that orthogonal to the bet this series is about &#x2014; Forth's control words compiled into senders &#x2014; and said it would "dominate the reader and the elaborator and teach me nothing about compiling control flow into completion signals." Then I gave a second reason, and this is the one I want to reread:
+
+> It also fights the other foundational choice: every tree here is a flat arena built by structural recursion, and an outer loop that lays down control structure imperatively does not produce a tree, it produces a stream of patches.
+
+Eleven entries later I have a codebase to check that sentence against, and it doesn't hold up. Not the bet part &#x2014; that part gets stronger, not weaker. The tree part.
+
+
+# The patch stream was already there
+
+Here is what a stream of patches looks like in this project already, with no outer interpreter anywhere near it. `DO ... LOOP` compiles its body, then walks back over the instructions it just emitted and rewrites every `-1` it finds in a `LEAVE` operand into the address just past the loop, because `LEAVE` had to emit **something** before that address existed:
+
+```cpp
+} else if constexpr (std::is_same_v<T, elaborator::core_do_loop<
+                                               MaxNodes, MaxBody>>) {
+        // `limit start DO <body> LOOP/+LOOP` (F17):
+        //
+        //     do_setup                  ; frame <- (limit start)
+        //   start: <body>
+        //     loop_step | plus_loop_step  operand=start
+        //   exit: ...                   ; LEAVE branches here
+        //
+        // do_setup pops (limit start) into a return-stack frame;
+        // loop_step/plus_loop_step advance the index and either branch
+        // back to `start` or fall through (tearing the frame down) to
+        // `exit`. Every LEAVE emitted inside <body> is back-patched to
+        // `exit` here.
+        auto setup_r = emit(out, op::do_setup, cell{0}, alt.pos);
+        if (!setup_r.has_value()) {
+            return setup_r.error();
+        }
+        int const loop_start = out.code.size();
+        auto body_r = codegen_emit_body(unit, alt.body, out);
+        if (!body_r.has_value()) {
+            return body_r;
+        }
+        auto step_r = emit(
+            out, alt.is_plus_loop ? op::plus_loop_step : op::loop_step,
+            static_cast<cell>(loop_start), alt.pos);
+        if (!step_r.has_value()) {
+            return step_r.error();
+        }
+        int const loop_exit = out.code.size();
+        // Back-patch this loop's own LEAVE branches (still at the -1
+        // sentinel; any inner loop's leaves were already patched).
+        for (int k = loop_start; k < loop_exit; ++k) {
+            if (out.code[k].code == op::leave &&
+                out.code[k].operand == cell{-1}) {
+                out.code[k].operand = static_cast<cell>(loop_exit);
+            }
+        }
+        return std::monostate{};
+```
+
+`branch0` gets the identical treatment one arm up in the same function, for `IF` / `THEN`: emit the branch with a placeholder operand, remember where it is, keep walking, and patch it once the real target is known. Neither of these facts is new to this entry &#x2014; the back-patch has been there since the tree first got flattened to an instruction array, and the `LEAVE` scan since counted loops landed two entries ago. What's new is what they mean, read against Part 0's objection. A sentinel written now and overwritten later, because the value it needs doesn't exist yet, is a patch. A pass over already-emitted instructions that finds every sentinel belonging to one construct and fixes it up is exactly what a "stream of patches" is. This codebase has one. It has had one since Part 8.
+
+Which means the sentence I quoted describes the codegen module accurately and draws the wrong conclusion from the description. A stream of patches was never a problem this project avoided by building a tree first and flattening it afterward. It's what flattening **produces**, tree or no tree. `IF`, `THEN`, and `LEAVE` patching their own branch targets are already, structurally, what those words do as immediate words in a classical Forth &#x2014; they just currently do it from inside a function that walks a syntax tree instead of from inside the words themselves. Move the same emit-and-patch code one layer up, so `IF` calls it when the text interpreter reaches `IF` rather than when `codegen_emit_body` reaches an `core_if` node, and nothing about the patch stream changes. What disappears is the tree in between &#x2014; the intermediate form that had to exist so something could walk it later. The instruction array, the back-patching, the dictionary, the machine: none of that was ever what an outer interpreter threatens. Only the tree was, and the tree turns out to be scaffolding the patch-emitting code didn't need in the first place.
+
+
+# The bet, read more literally
+
+Part 0's other objection was that a stateful outer interpreter has nothing to do with the sender bet &#x2014; beside the point, neither helping nor hurting it. I don't think that's true either, and the argument for why is more direct than I expected going in.
+
+Threaded code &#x2014; a call, a return address pushed, a jump to the next word's address &#x2014; is continuation-passing style with the continuation defunctionalized onto the return stack: instead of a closure representing "what to do next," there's a data structure (a stack of addresses) and a dispatcher (the fetch-execute loop) that knows how to resume from it (Reynolds, John C., 1972). CPS is not an implementation trick; it's a complete intermediate language, in the same sense that SSA is, and the two are inter-translatable &#x2014; a fact worth stating plainly because it means neither is more "real" than the other, just differently shaped for different transformations (Appel, Andrew W., 1998). Lowering that same threaded code to senders is refunctionalization: taking the defunctionalized representation &#x2014; the return stack plus the dispatch loop &#x2014; back to an explicit continuation, a sender's completion channel standing in for "what runs next." Two directions along the same correspondence, not two unrelated designs.
+
+That makes the outer interpreter the thing that puts the compiling words directly in charge of emitting the threaded code the sender lowering will eventually consume, instead of a tree-walking pass standing between them. Relocating emission from a tree walker into the words that compile `IF` and `LOOP` moves this project toward the bet. It was never neutral to it.
+
+
+# What survives, and what doesn't
+
+I owe an accounting, since a good deal of what's built stands or falls on this reversal, and it deserves a plain list of what's kept, not an implied one.
+
+Carried over essentially whole: `foundation` &#x2014; the `result` type, the `static_vector`, the arena handle discipline the parser combinators are registered against. The machine substrate from Part 5: cells, two bounds-checked stacks, the dictionary's append-only storage. The instruction set and the VM's fetch-execute loop from Parts 8, 10, and 11, including the `DO`-frame discipline on the return stack and the two termination rules for `LOOP` and `+LOOP`. `compiled_program` as a trivially copyable literal that runs the same at compile time and at ordinary runtime &#x2014; the property the whole series has been circling since Part 8. The one-shot API's contract that a malformed program is a hard compile error. Fuel, unconditionally. And the lexical layer's edges, hard-won a long way back: `-1` is a number, `1-` is a word, case folding happens at read time.
+
+Relocated rather than kept or cut: the parser combinators drop from "front end" to sub-word services &#x2014; scanning a maximal run of non-whitespace, converting a number under the current `BASE`, skipping a comment, reading a string payload. That is, as it happens, exactly the layer at which Part 4 found they actually held: recursive grammar productions were the thing a finite combinator type couldn't express, and an outer interpreter has none of those left to ask the combinators to be. Stack-effect checking relocates too, from a pass over the elaborated tree to a check run at `;`, over the instruction range a definition just emitted, instead of over the tree that used to describe it before it was emitted.
+
+Deleted, plainly: the syntax tree and its arena, the hand-written grammar productions for `IF` and `BEGIN` and `DO`, the elaboration phase that resolved words against the dictionary before anything ran, and the direct evaluator. None of it survives past the step that removes it, and none of it is load-bearing for the bet &#x2014; it was the Scheme project's inheritance, useful for getting a machine and a VM built quickly, and severable now that it's done that job.
+
+
+# Losing the oracle
+
+The direct evaluator is the loss that costs the most to say goodbye to, because Part 7 made a whole entry out of having it: two independent evaluators, a tree walker and a compiled machine, that had to agree on every program or one of them was wrong. That structure doesn't exist in a true Forth, and not because I'm choosing to drop a safety net. There's no second evaluator to disagree with in the first place. Interpreting a word that has already been defined runs the very same compiled code that calling it from another definition runs &#x2014; one code path, one meaning, checked at compile-and-execute time instead of compiled twice into two different representations that might drift apart.
+
+That's a real gap where a check used to be, and I want it on the record not smoothed over. The oracle role doesn't vanish; it moves outward. The same `compiled_program` agreeing with itself, compile time against runtime, is one leg of it. gforth, run against the same programs and diffed on stack and output, is meant to be another. The Forth-2012 core word set, as a battery of tests instead of a single program I happened to think of, is the third. None of those three exist yet in this codebase. I'm naming them as the direction, not reporting them as done.
+
+
+# The artifact widens
+
+`compiled_forth<Source>` keeps its name and its keying on the source text itself, and it keeps the property that made Part 8 worth an entry: one value that runs the same way at compile time and at ordinary runtime. What changes is what that value has to hold. A compiled tree was enough when the thing being produced was "the code for this one program." An outer interpreter means the thing running inside the constant evaluator is a whole session &#x2014; every immediate word executing during compilation is still running inside that same evaluation &#x2014; and what comes out the other end has to be a session image: code space, the dictionary as it stood when the session ended, however much of the data space got claimed, and whatever the session wrote to output along the way. Still one value, still trivially copyable, still good at both times. Just wider than a program now; wide enough to be a whole compiled system.
+
+
+# What I haven't done
+
+Nothing in this entry changed a line of code that runs. The tree is still there this evening, and so is the direct evaluator, and so is the grammar. I have not proven that an abstract interpretation over an emitted instruction range can recover what the tree-pass checker could see, and I have not built a single immediate word. What I have is an argument for why the thing I refused to build in Part 0 was never actually incompatible with anything this project needed, and a plan for taking the refusal back. Whether the interpreter holds up once it exists is a later entry's problem, and I'd rather leave it unresolved here than pretend today settled it.
+
+<nav style="margin-top: 3em; border-top: 1px solid #ccc; padding-top: 1em">
+
+[↑ Series Index](index.md) | [← Part 11 - The Two Cells the Checker Never Saw](post-11-counted-loops.md)
+
+</nav>
+
+
+# References
+
+Appel, Andrew W. (1998). *SSA is Functional Programming*.
+
+Reynolds, John C. (1972). *Definitional Interpreters for Higher-Order Programming Languages*.

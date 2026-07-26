@@ -93,6 +93,13 @@ Forth-2012's ~CELLS~/~CELL+~ words to say otherwise.
 all --- and the static checker turns out to have been wrong about ~DO~'s own
 cost since two entries back, in a way only a nested loop could ever expose.
 
+** [[file:post-12-the-patch-stream-was-already-there.org][Part 12 — The Patch Stream Was Already There]]
+
+Part 0's refusal of Forth's outer interpreter doesn't survive a reread: the
+back-patching it worried about was already the project's own target
+representation. No code changed this entry --- only the argument for what has
+to change next.
+
 * Table of Contents
 
 #+toc: headlines 1

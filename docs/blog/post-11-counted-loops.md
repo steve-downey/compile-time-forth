@@ -1,4 +1,4 @@
-<div class="abstract" id="orgb88e062">
+<div class="abstract" id="org7b4527a">
 <p>
 <code>DO LOOP +LOOP I J LEAVE UNLOOP</code> are real now, through both backends, with a
 counted loop's parameters living in a two-cell frame on the return stack. The
@@ -364,7 +364,7 @@ One thing I noticed while writing the frame teardown and didn't chase down: none
 
 <nav style="margin-top: 3em; border-top: 1px solid #ccc; padding-top: 1em">
 
-[↑ Series Index](index.md) | [← Part 10 - The Address Was Always a Cell](post-10-memory-words.md)
+[↑ Series Index](index.md) | [← Part 10 - The Address Was Always a Cell](post-10-memory-words.md) | [Next: Part 12 - The Patch Stream Was Already There →](post-12-the-patch-stream-was-already-there.md)
 
 </nav>
 

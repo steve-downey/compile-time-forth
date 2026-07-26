@@ -274,7 +274,7 @@ case I've covered.
 
 
 #+html: <nav style="margin-top: 3em; border-top: 1px solid #ccc; padding-top: 1em">
-[[file:index.org][↑ Series Index]] | [[file:post-10-memory-words.org][← Part 10 - The Address Was Always a Cell]]
+[[file:index.org][↑ Series Index]] | [[file:post-10-memory-words.org][← Part 10 - The Address Was Always a Cell]] | [[file:post-12-the-patch-stream-was-already-there.org][Next: Part 12 - The Patch Stream Was Already There →]]
 #+html: </nav>
 
 * References

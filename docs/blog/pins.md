@@ -25,6 +25,7 @@ worktree and are supposed to roll forward.
 | Part 9 | The One-Shot API | F15 | `8db705c` | `blog/part-09` | 2 |
 | Part 10 | The Address Was Always a Cell | F16 | `185fc9a` | `blog/part-10` | 4 |
 | Part 11 | The Two Cells the Checker Never Saw | F17 | `474659a` | `blog/part-11` | 5 |
+| Part 12 | The Patch Stream Was Already There | F23 | `49c5f34` | `blog/part-12` | 1 |
 
 Pin SHAs are the commits that introduced each post. They are **not** the phase
 merges, for the reason in DISC-1.
