@@ -29,6 +29,14 @@ worktree and are supposed to roll forward.
 Pin SHAs are the commits that introduced each post. They are **not** the phase
 merges, for the reason in DISC-1.
 
+The tags exist locally and are **not pushed**: `AGENTS.md` does not let an agent
+push without being asked. Push them before this branch reaches anyone else, or
+the pinned links resolve only on this machine:
+
+```sh
+git push origin --tags 'blog/*'
+```
+
 ## How the pins were chosen
 
 Per the plan's P4, three methods, all run:
