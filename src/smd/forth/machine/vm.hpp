@@ -48,9 +48,29 @@ constexpr auto consume_vm_fuel(int &fuel) -> status {
     return std::monostate{};
 }
 
-// 3b356d6c-c4c1-4676-b16a-48e975b5d46b
-/// Runs @p program against @p state, starting at @p program.program_entry
-/// and executing until @ref op::halt or a diagnosed error.
+// e2a7c9f4-5d1b-4e8a-9c3f-7b2d6a4e1f8c
+/// Runs @p program against @p state, starting at @p entry (an arbitrary
+/// instruction index inside @p program -- not necessarily @p
+/// program.program_entry) and executing until @ref op::halt or a diagnosed
+/// error, *without* seeding @p state's own data space first: see @ref run,
+/// which does seed it and is the entry point ordinary callers want.
+///
+/// Step F25 (docs/forth-plan-2.md) adds this entry point for the colon
+/// compiler's own interpreter loop (`interpreter::compile_buffer::
+/// call_word`), which calls into an already-compiled word's body against a
+/// *live*, already-running @p state, potentially many times in a single
+/// session (once per top-level reference to a previously defined word).
+/// @ref run's own data-space seeding step is correct exactly once, before a
+/// whole compiled_program's own top-level execution starts (F16, D10); it
+/// would be wrong to repeat on every single interpreted word call, since
+/// each call would `allot` @p program.data_space_size more cells,
+/// unconditionally, growing the live data space without bound. @ref run is
+/// now implemented in terms of this function -- it seeds, then delegates to
+/// `run_from(program, state, program.program_entry, fuel)` -- so its own
+/// signature and every observable behavior are unchanged (D16: the VM loop
+/// is retained, not frozen; only the existing opcodes' semantics and @ref
+/// run's own existing entry-point behavior must not change, and neither
+/// has).
 ///
 /// Every opcode @ref op currently gives real semantics to (@ref op::push,
 /// @ref op::push_xt, @ref op::prim, @ref op::call, @ref op::ret, @ref
@@ -59,13 +79,6 @@ constexpr auto consume_vm_fuel(int &fuel) -> status {
 /// comment lists them) are diagnosed if ever encountered rather than
 /// invoking undefined behavior (D7) -- unreachable in practice, since this
 /// step's own @ref codegen never emits any of them.
-///
-/// Before the fetch-execute loop starts, @p state's own data space is seeded
-/// from @p program.data_space_size (F16, D10) -- see this function's own
-/// leading comment -- so `@`/`!`/`+!` against a `VARIABLE`/`CREATE` address
-/// codegen already inlined as a push literal, and any address a later
-/// runtime `ALLOT` extends past it, are both valid from the first
-/// instruction onward.
 ///
 /// @tparam MaxCode      @p program's instruction-array capacity.
 /// @tparam MaxWords     @p program's word-table capacity.
@@ -76,33 +89,22 @@ constexpr auto consume_vm_fuel(int &fuel) -> status {
 ///                      comment).
 /// @tparam MaxData      @p state's data-space capacity.
 /// @tparam MaxOut       @p state's output-buffer capacity.
-/// @param  program A successfully compiled program (@ref codegen).
+/// @param  program A successfully compiled program (@ref codegen), or any
+///                  other @ref compiled_program whose @c code array @p entry
+///                  indexes into.
 /// @param  state   The machine state to run against; mutated in place.
+/// @param  entry   The instruction index to start execution at.
 /// @param  fuel    The execution step budget: decremented once per
 ///                 instruction fetched (@ref consume_vm_fuel); exhaustion is
 ///                 a diagnosed error, never a hang, even for a
 ///                 nonterminating loop.
 template <int MaxCode, int MaxWords, int StackDepth, int RStackDepth,
           int MaxData, int MaxOut>
-constexpr auto run(compiled_program<MaxCode, MaxWords> const &program,
-                   forth_state<StackDepth, RStackDepth, MaxData, MaxOut> &state,
-                   int fuel = 100000) -> status {
-    // f1514ad1-894c-4812-9ccc-2bdecd54a986
-    // F16: seed state's own data space with program.data_space_size -- the
-    // high-water mark the source compiled_unit's data space reached during
-    // elaboration (every VARIABLE/CREATE allotment) -- so the addresses
-    // codegen already inlined as push literals are valid for @/!/+! from the
-    // first instruction onward. Reuses allot itself (discarding the
-    // returned address) rather than adding a second way to advance the
-    // high-water mark, exactly like eval_direct.hpp's eval_program does for
-    // the direct evaluator.
-    auto data_init = state.data_space().allot(program.data_space_size);
-    if (!data_init.has_value()) {
-        return data_init.error();
-    }
-    // f1514ad1-894c-4812-9ccc-2bdecd54a986 end
-
-    int ip = program.program_entry;
+constexpr auto
+run_from(compiled_program<MaxCode, MaxWords> const &program,
+         forth_state<StackDepth, RStackDepth, MaxData, MaxOut> &state,
+         int entry, int fuel = 100000) -> status {
+    int ip = entry;
 
     for (;;) {
         if (ip < 0 || ip >= program.code.size()) {
@@ -296,6 +298,51 @@ constexpr auto run(compiled_program<MaxCode, MaxWords> const &program,
                 "F18a"};
         }
     }
+}
+// e2a7c9f4-5d1b-4e8a-9c3f-7b2d6a4e1f8c end
+
+// 3b356d6c-c4c1-4676-b16a-48e975b5d46b
+/// Runs @p program against @p state, starting at @p program.program_entry
+/// and executing until @ref op::halt or a diagnosed error -- the entry point
+/// ordinary callers want (a whole compiled program's own top-level run).
+///
+/// Before delegating to @ref run_from, @p state's own data space is seeded
+/// from @p program.data_space_size (F16, D10) -- see this function's own
+/// leading comment -- so `@`/`!`/`+!` against a `VARIABLE`/`CREATE` address
+/// codegen already inlined as a push literal, and any address a later
+/// runtime `ALLOT` extends past it, are both valid from the first
+/// instruction onward.
+///
+/// @tparam MaxCode      @p program's instruction-array capacity.
+/// @tparam MaxWords     @p program's word-table capacity.
+/// @tparam StackDepth   @p state's data stack capacity.
+/// @tparam RStackDepth  @p state's return stack capacity.
+/// @tparam MaxData      @p state's data-space capacity.
+/// @tparam MaxOut       @p state's output-buffer capacity.
+/// @param  program A successfully compiled program (@ref codegen).
+/// @param  state   The machine state to run against; mutated in place.
+/// @param  fuel    The execution step budget; see @ref run_from.
+template <int MaxCode, int MaxWords, int StackDepth, int RStackDepth,
+          int MaxData, int MaxOut>
+constexpr auto run(compiled_program<MaxCode, MaxWords> const &program,
+                   forth_state<StackDepth, RStackDepth, MaxData, MaxOut> &state,
+                   int fuel = 100000) -> status {
+    // f1514ad1-894c-4812-9ccc-2bdecd54a986
+    // F16: seed state's own data space with program.data_space_size -- the
+    // high-water mark the source compiled_unit's data space reached during
+    // elaboration (every VARIABLE/CREATE allotment) -- so the addresses
+    // codegen already inlined as push literals are valid for @/!/+! from the
+    // first instruction onward. Reuses allot itself (discarding the
+    // returned address) rather than adding a second way to advance the
+    // high-water mark, exactly like eval_direct.hpp's eval_program does for
+    // the direct evaluator.
+    auto data_init = state.data_space().allot(program.data_space_size);
+    if (!data_init.has_value()) {
+        return data_init.error();
+    }
+    // f1514ad1-894c-4812-9ccc-2bdecd54a986 end
+
+    return run_from(program, state, program.program_entry, fuel);
 }
 // 3b356d6c-c4c1-4676-b16a-48e975b5d46b end
 

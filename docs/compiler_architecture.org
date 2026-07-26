@@ -196,8 +196,12 @@ Back-patching is reserved for what actually needs it: a control structure's own 
 
 #+transclude: [[file:../src/smd/forth/machine/codegen.hpp::ba7eecbe-a745-4d25-bf90-ffa3615efc19]] :lines 2- :src cpp :end "ba7eecbe-a745-4d25-bf90-ffa3615efc19 end"
 
-The VM's own =run= loop is the pay-off of compiling =EXIT= to a literal =ret= instruction rather than threading an =eval_signal= through nested C++ call frames the way F13's evaluator has to: the return stack (=forth_state::returns()=, already shared between calls and, later, loop parameters, per ordinary Forth convention) already holds exactly the call chain a =ret= needs to unwind, so "pop a return address, jump to it" is the whole of =EXIT='s runtime behavior — no propagation logic of its own is needed anywhere else in the loop.
+The VM's own fetch-execute loop is the pay-off of compiling =EXIT= to a literal =ret= instruction rather than threading an =eval_signal= through nested C++ call frames the way F13's evaluator has to: the return stack (=forth_state::returns()=, already shared between calls and, later, loop parameters, per ordinary Forth convention) already holds exactly the call chain a =ret= needs to unwind, so "pop a return address, jump to it" is the whole of =EXIT='s runtime behavior — no propagation logic of its own is needed anywhere else in the loop.
 A plain decrementing =int= "fuel" counter, consumed once per instruction fetched, bounds execution exactly the way F13's own per-core-node fuel bounds a nonterminating =BEGIN ... UNTIL=; budget exhaustion is a diagnosed error at the VM level too, not a hang.
+As of F14 the loop and its own seeding-then-run entry point were one function, =run=; step F25 (Phase 8, below) split the loop itself out into =run_from= — an entry point that starts at an arbitrary instruction index against an already-live state, without F16's data-space seeding — and reduced =run= to a thin wrapper that seeds, then delegates.
+=run='s own signature and every observable behavior for an ordinary top-level call are unchanged by that split; the loop below (=run_from=) is byte-for-byte the loop F14 originally wrote, just no longer nested inside =run= itself.
+
+#+transclude: [[file:../src/smd/forth/machine/vm.hpp::e2a7c9f4-5d1b-4e8a-9c3f-7b2d6a4e1f8c]] :lines 2- :src cpp :end "e2a7c9f4-5d1b-4e8a-9c3f-7b2d6a4e1f8c end"
 
 #+transclude: [[file:../src/smd/forth/machine/vm.hpp::3b356d6c-c4c1-4676-b16a-48e975b5d46b]] :lines 2- :src cpp :end "3b356d6c-c4c1-4676-b16a-48e975b5d46b end"
 
@@ -282,4 +286,46 @@ An unknown word's diagnosis, by contrast, is always positioned: at the scanned t
 
 F24's own merge criterion, verbatim: =1 2 + .= run through =interpret= leaves output ="3 "= and an empty data stack; =BASE= defaults to 10 and setting it to 16 makes =FF .= print =255 = (=interp.test.cpp='s =HexBaseHandling=); an unknown word's diagnosed error carries the position of the word itself, not the source's start (=UnknownWordCarriesPosition=); a stack underflow reached through =interpret= is ===-equal, error value for error value, to calling =machine::apply_primitive= directly for the same misuse (=UnderflowMatchesApplyPrimitiveDirectly=).
 The F5 number/word tests — =-1= is a number, =1-= is a word — move here intact, now exercised through the full interpreter loop rather than only the token-layer classifier (=NegativeOneIsANumberOneMinusIsAWord=).
+
+* Phase 8: The Colon Compiler and the Session Image (step F25, docs/forth-plan-2.md)
+
+Step F25 is what first writes =STATE= to a nonzero value: =interpret= (=interp.hpp=) now compiles as well as interprets, and D15's session image gets a first, real (if not yet publicly wired) type.
+Nothing from Phase 7 or earlier is deleted this step — the R1 pipeline and F24's own interpret-state-only behavior both still build and pass; F26 ("the cut") is still the step that removes them.
+
+=machine::emit= (F14's =codegen.hpp=) relocates to its own header, =machine/emit.hpp=, byte for byte — D16's "the emission utilities ... survive as the compiling words' toolkit" instruction, read literally: =codegen.hpp= now includes =emit.hpp= and calls the same function, unchanged, so the R1 pipeline's own behavior does not move at all.
+
+#+transclude: [[file:../src/smd/forth/machine/emit.hpp::c2f6a5d1-3b9e-4a7c-8d2f-6e1b9c4a7f3d]] :lines 2- :src cpp :end "c2f6a5d1-3b9e-4a7c-8d2f-6e1b9c4a7f3d end"
+
+=machine::dictionary= gains a sixth binding alternative, =compiled_colon_word= (=dictionary.hpp=): an entry point into the interpreter's own code space, plus the captured (unverified until F30, D20) declared-effect span.
+This is deliberately *not* a reuse of the existing =colon_word= binding, whose =core_id= is an index into the elaborator's arena — a pipeline the colon compiler does not participate in and that F26 deletes outright; see DIV-0013 for the reasoning and for why =colon_word= itself is untouched (every R1 consumer — =elaborate.hpp=, =eval_direct.hpp=, =codegen.hpp=, =stack_effect.hpp= — keeps resolving it exactly as before).
+Adding a sixth alternative to the closed =dictionary_binding= variant is safe for the one exhaustive =std::visit= over it (=elaborate.hpp='s =elaborate_word_ref=): its own visitor has a catch-all "not yet callable" arm that a =compiled_colon_word= simply falls into, unreachable in practice since nothing feeds one into an R1-pipeline dictionary.
+
+=interpreter::compile_buffer= (=interpreter/compilebuf.hpp=) is the incrementally-appendable code space D15 calls for: a thin wrapper around =machine::compiled_program= (retained per D16, not a second code representation) that grows one instruction at a time via =machine::emit=, as `:` ... `;` pairs are met.
+Instruction 0 is reserved at construction as a permanent =halt= landing pad.
+
+#+transclude: [[file:../src/smd/forth/interpreter/compilebuf.hpp::f7a3c9e1-6d4b-4a2f-8c1e-9b5d7a3f2e6c]] :lines 2- :src cpp :end "f7a3c9e1-6d4b-4a2f-8c1e-9b5d7a3f2e6c end"
+
+=call_word= is D14's own "interpreting a defined word runs its code on the VM against the live forth_state" made concrete: it pushes the halt pad's own index as a return address, then calls =machine::run_from= (=vm.hpp=, this step's one addition to that header — see Phase 5, above, and DIV-0013) at the word's own entry point, against the already-live state.
+=run_from= is the genuine additive VM entry point D14/DIV-0013 call for: it runs =run='s own fetch-execute loop starting from an arbitrary instruction index, without =run='s own F16 data-space seeding step — the seeding is a batch, whole-program concern, correct once per top-level run and wrong to repeat on every single interpreted word call (each repeat would =allot= more cells, unconditionally, without bound).
+=run= itself is now implemented in terms of =run_from= (seed, then delegate to =run_from(program, state, program.program_entry, fuel)=); its own signature and every observable behavior for an ordinary top-level call are unchanged, so the R1 pipeline and every one of its own tests are unaffected.
+An earlier draft of this step instead pointed =compile_buffer='s own =compiled_program::program_entry= at the word being called and reused =machine::run= completely unmodified, relying on =compile_buffer= never setting =data_space_size= above its default (0) to make =run='s own seed step a no-op; DIV-0013 records why that shape was rejected on review (mutating shared, conceptually-const program state to fake an entry point, correct only by an incidental invariant rather than by construction) in favor of =run_from=.
+
+=interpret= itself now branches on =st.state()=: interpreting (0) runs a primitive or calls a =compiled_colon_word= (both against the same live =st=, D14 — there is no second evaluator); compiling (1, entered by `:`) emits =op::prim=/=op::call=/=op::push= into the =compile_buffer= instead of running/pushing.
+`:`, `;`, `EXIT`, and `RECURSE` are recognized by direct name comparison before any dictionary lookup — the same technique the elaborator already uses for `I`/`J`/`LEAVE`/`UNLOOP` — since generalized immediate-word dispatch through the dictionary itself is F27's own job.
+`:` records the entry point (=compile_buffer::here()=) *before* compiling the body, so `RECURSE` (a self-`call` to that same entry point) resolves without any back-patching — F14's discipline, carried forward unchanged.
+A declared `( ... -- ... )` effect comment immediately after the name is captured as a =foundation::source_span= (=scan_colon_header=, D20: stored, unverified until F30) rather than silently vanishing as ordinary intertoken space the way any other comment does — capturing it needs its own name scan that skips =reader::scan_word='s usual trailing comment-swallow, since the comment must still be visible afterward to capture.
+
+#+transclude: [[file:../src/smd/forth/interpreter/interp.hpp::aa1d6f83-9b3c-4e2a-8d5f-3c7b1e9a4f62]] :lines 2- :src cpp :end "aa1d6f83-9b3c-4e2a-8d5f-3c7b1e9a4f62 end"
+
+=interpreter::session= (=interpreter/session.hpp=) is D15's session image: a =compile_buffer=, a =machine::dictionary=, the data-space high-water mark, and captured output — a plain, trivially destructible aggregate, so a session built inside one constexpr evaluation is a literal value usable unmodified at ordinary runtime.
+=build_session= is the one boundary a session is ever built across (D15: "a session cannot span constant-expression evaluations"); =call_defined_word= is how a built session's own top-level definition is run again, by name, against a fresh live state seeded via =seed_from_session= (F16's seeding discipline generalized from one batch =compiled_program= to a whole session).
+=forth.hpp='s =compiled_forth<Source>= is *not* retargeted to build one of these — that is F26's job, once the R1 pipeline it currently builds is gone.
+
+#+transclude: [[file:../src/smd/forth/interpreter/session.hpp::b4d8e2a6-7c1f-4e3a-9d5b-2a8f6c1e4d9b]] :lines 2- :src cpp :end "b4d8e2a6-7c1f-4e3a-9d5b-2a8f6c1e4d9b end"
+
+#+transclude: [[file:../src/smd/forth/interpreter/session.hpp::c6e9f1b3-8a2d-4c7e-9f1a-3b6d8e2c5a7f]] :lines 2- :src cpp :end "c6e9f1b3-8a2d-4c7e-9f1a-3b6d8e2c5a7f end"
+
+F25's own merge criteria, verbatim: =: SQUARED DUP * ;  4 SQUARED= leaves =[16]= via =interpret= (=interp.test.cpp='s =SquaredMergeCriterion=); =: QUAD SQUARED SQUARED ; 3 QUAD= leaves =[81]=, one colon word calling another (=QuadMergeCriterion=); =;= and =EXIT= while interpreting are diagnosed rather than silently accepted or mistaken for unknown words (=SemicolonWhileInterpretingIsDiagnosed=, =ExitWhileInterpretingIsDiagnosed=); a session image round-trips — built once at namespace-scope constexpr initialization, then run again from that exact same (trivially copyable) object both inside a =static_assert= and inside a Catch2 =TEST_CASE= (=session.test.cpp='s =RoundTripsAtRuntimeFromTheSameConstexprObject=, mirroring F14's own compile-time/runtime agreement proof pattern, D14a).
+
+See DIV-0013 (=docs/divergences/DIV-0013-colon-compiler-binding-and-invocation.md=) for the two design choices this step had to make that the plan left open: the =compiled_colon_word= binding shape, and how interpreting a defined word invokes the VM without either duplicating its fetch-execute loop or re-seeding the live data space on every call.
 There is no =:= yet: every dictionary hit this step can actually reach is a =machine::primitive=, and a non-primitive binding (unreachable from =machine::default_dictionary= today, reachable in principle from a caller-supplied dictionary) is diagnosed rather than silently skipped, per D7.

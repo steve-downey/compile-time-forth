@@ -11,6 +11,7 @@ target_sources(
                 codegen.hpp
                 data_space.hpp
                 dictionary.hpp
+                emit.hpp
                 eval_direct.hpp
                 forth_state.hpp
                 instruction.hpp
@@ -28,6 +29,7 @@ if(FORTH_ENABLE_TESTING)
             codegen.test.cpp
             data_space.test.cpp
             dictionary.test.cpp
+            emit.test.cpp
             eval_direct.test.cpp
             forth_state.test.cpp
             instruction.test.cpp

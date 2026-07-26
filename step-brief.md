@@ -1,123 +1,118 @@
-# step-brief.md — Step F25: the colon compiler and the session image
+# step-brief.md — Step F26: the cut
 
 Forward-only brief for the next clean agent. Bounded; not a log. Prior-step
 narrative lives in `git log`; architecture lives in
 `docs/compiler_architecture.org` — consult it only where pointed, by anchor.
 Your orchestrator pastes your own step section from `docs/forth-plan-2.md`
 plus the decision records it cites; this brief does not attempt to restate
-that section from memory, only to hand you what F24 learned building the
-interpreter that your own pasted section will not tell you.
+that section from memory, only to hand you what F25 learned building the
+colon compiler that your own pasted section will not tell you.
 
-## Goal (from the checklist title and F24's own forward pointer; verify against your pasted step section)
+## What F25 built, by anchor
 
-`checklist.md` names this step "colon compiler and session image." F24's own
-step text (docs/forth-plan-2.md §6) previewed it as: D15's eventual artifact
-is a session image — code space, dictionary, data-space seed, and output, a
-trivially copyable literal built in one constant-expression evaluation and
-runnable again at runtime — and that lands at F25/F26. F24 explicitly did
-not build this; `compiled_forth<Source>` (`forth.hpp`) is untouched and still
-the R1 one-shot API. Confirm the precise merge criterion against your own
-pasted section rather than this paraphrase.
+`docs/compiler_architecture.org`'s new **Phase 8** section (after Phase 7)
+covers this in prose, transcluding the new files in full. Read it before
+opening any of the source below wholesale.
 
-## What F24 built, by anchor
+- `machine::emit` relocated verbatim from `codegen.hpp` to `machine/emit.hpp`
+  (anchor `c2f6a5d1-3b9e-4a7c-8d2f-6e1b9c4a7f3d`); `codegen.hpp` now includes
+  it. A pure relocation — no behavior changed.
+- `machine::dictionary_binding` (`machine/dictionary.hpp`) gained a sixth
+  alternative, `compiled_colon_word { int entry_point; source_span
+  effect_span; bool has_effect; }` — **not** a reuse of the existing
+  `colon_word` (whose `core_id` is an elaborator-arena index; still used,
+  unchanged, by `elaborate.hpp`/`eval_direct.hpp`/`codegen.hpp`/
+  `stack_effect.hpp`). See DIV-0013 for why a new alternative was added
+  instead of repurposing `colon_word`, and for the one exhaustive
+  `std::visit` this touches (`elaborate.hpp::elaborate_word_ref`'s own
+  catch-all arm absorbs it harmlessly).
+- `interpreter::compile_buffer` (`interpreter/compilebuf.hpp`, anchor
+  `f7a3c9e1-6d4b-4a2f-8c1e-9b5d7a3f2e6c` covers `call_word`) — the
+  incrementally-appendable code space, wrapping `machine::compiled_program`
+  directly. Instruction 0 is a permanent reserved `halt` landing pad
+  (`halt_pad()`, always 0) — load-bearing; do not overwrite it if you ever
+  append to a `compile_buffer`'s own `.program()` directly instead of
+  through `.emit()`.
+- `call_word` (same file) is how interpreting a defined word runs the VM
+  (D14): pushes `halt_pad()` as a return address, points the buffer's own
+  `compiled_program::program_entry` at the callee, calls `machine::run`
+  **completely unmodified**. `vm.hpp` has zero lines changed by F25 — see
+  DIV-0013 for why a `run_at`-style loop extraction was drafted and then
+  reverted (it would have silently invalidated Phase 5's existing prose,
+  which transcludes `vm.hpp::run`'s current anchor verbatim).
+- `interpreter::session` (`interpreter/session.hpp`, anchors
+  `b4d8e2a6-7c1f-4e3a-9d5b-2a8f6c1e4d9b` covers `call_defined_word`,
+  `c6e9f1b3-8a2d-4c7e-9f1a-3b6d8e2c5a7f` covers `build_session`) — D15's
+  session image: a `compile_buffer`, a `machine::dictionary`, the
+  data-space high-water mark, and captured output. `build_session(text,
+  fuel)` is the one boundary a session is built across.
+  **`forth.hpp`'s `compiled_forth<Source>` is NOT retargeted onto this —
+  that is your own step's job.**
+- `interpret` (`interp.hpp`, anchor `aa1d6f83-9b3c-4e2a-8d5f-3c7b1e9a4f62`)
+  now branches on `st.state()` and writes it: `:`/`;`/`EXIT`/`RECURSE` are
+  recognized by direct name comparison before dictionary lookup (same
+  technique the elaborator already uses for `I`/`J`/`LEAVE`/`UNLOOP`) —
+  generalized immediate-word dispatch through the dictionary is F27's job,
+  not done here.
 
-`docs/compiler_architecture.org`'s new **Phase 7** section (after Phase 6)
-covers all of this in prose, transcluding both files in full:
+## Gotchas F26 needs and cannot get from its own pasted section
 
-- `smd::forth::interpreter::forth_state<MaxDepth, MaxRDepth, MaxData, MaxOut,
-  MaxName>` (`src/smd/forth/interpreter/interp.hpp`, anchor
-  `aa1d6f83-9b3c-4e2a-8d5f-3c7b1e9a4f62` covers `interpret` itself) —
-  **composes** a `machine::forth_state` (accessor: `.machine()`) with a new
-  `input_source` (`.source()`), `BASE` (`.base()`/`.set_base()`, default 10),
-  and `STATE` (`.state()`/`.set_state()`, default 0). See DIV-0012 for why
-  this is composition, not an in-place edit of `machine::forth_state` —
-  every existing R1-pipeline consumer of that narrower type is unaffected.
-  **This shape is temporary; do not treat it as settled.** D13 says
-  `SOURCE`/`>IN`/`BASE`/`STATE` *are* machine state, and F26 is scheduled to
-  fold them down into `machine::forth_state` once the R1 consumers that
-  forced the wrapper are deleted — otherwise F29's parsing words cannot be
-  primitives (`apply_primitive` only ever sees the narrow type) and D18's
-  uniform XT/`EXECUTE` cannot reach the input stream. Read DIV-0012's
-  orchestrator amendment before designing anything around `.machine()`.
-  Build F25 against the composed shape as it stands — do not do F26's fold
-  early — but keep the seam thin and add nothing that makes the fold harder.
-- `input_source` (`src/smd/forth/interpreter/input_source.hpp`, anchor
-  `6a8b2e4f-1c9d-4a3e-8f5b-2d7c9e1a4b6f`) — `SOURCE`/`>IN` as a
-  `std::string_view` plus a plain `int` offset, per D19: `>IN` is real
-  machine state, not a cursor hidden in the scanner. `cursor_at_in()`
-  rebuilds a `parser::cursor` by replaying from the start of the text.
-- `interpret(state, dict, fuel)` — the outer loop, interpret state only: no
-  `:`, so every dictionary hit it can reach is a `machine::primitive`,
-  executed through the unchanged `machine::apply_primitive`. A non-primitive
-  binding is diagnosed (`"word is not executable yet (F24: primitives
-  only)"`), not silently skipped — **this is the branch F25 replaces** with
-  real `colon_word` execution once `:` can produce one.
-- Number classification per `BASE`: `is_number_token_in_base`/
-  `token_to_cell_in_base` (same file), agreeing with the decimal-only
-  `reader::is_number_token`/`token_to_cell` at base 10, generalized to
-  2..36. `BASE` is plumbed and tested directly (`set_base`/`base()`); no
-  `HEX`/`DECIMAL` word exists yet — add one only if your own step section
-  asks for it.
-- `consume_interp_fuel` — D22 fuel for the outer loop itself, once per token,
-  independent of `machine::consume_vm_fuel`/`machine::consume_fuel`.
-
-## Gotchas F25 needs and cannot get from its own pasted section
-
-- **`machine::dictionary`'s existing `colon_word` binding (`dictionary.hpp`)
-  is an R1 type and is very likely the wrong shape for you.** Its one field,
-  `core_id`, is a handle into the elaborator's arena
-  (`elaborator::compiled_unit`) — machinery step F26 deletes. A true-Forth
-  colon definition compiles directly as immediate words run (D13/D24:
-  threaded code, defunctionalized CPS, the return stack as the
-  continuation), with no elaborator arena to hold a `core_id` into. Whether
-  you repurpose `colon_word`, add a new binding variant, or change what
-  `core_id` means is your call — but do not assume the existing struct
-  already fits; it was built for a pipeline this pivot retired.
-- **There is no code space yet.** `machine::instruction.hpp`/`codegen.hpp`/
-  `vm.hpp`'s `compiled_program<MaxCode, MaxWords>` is a fixed, pre-sized
-  array produced by one batch `codegen` call over an already-complete
-  elaborated tree. A colon compiler that compiles words one `:`/`;` pair at
-  a time as the interpreter meets them needs an incrementally-appendable
-  code space, most likely living on `interpreter::forth_state` itself
-  (D15's "code space" is part of the session image). Whether that reuses
-  `instr`/`op` from `instruction.hpp` or needs its own representation is
-  yours to decide.
-- **`interpret`'s unknown-word and non-primitive-binding branches are your
-  extension points**, not `apply_primitive`. Do not add compiling behavior
-  inside `apply_primitive` (`machine/forth_state.hpp`) — that function is
-  the pure-primitive substrate F8/F13/F16 already finished and other steps
-  depend on its exact 47-opcode shape (`dictionary_test.cpp` asserts
-  `dict.size() == 47`).
-- **`STATE` is already a field, always 0 coming out of F24.** You do not
-  need to add it to `interpreter::forth_state`; you need to make `interpret`
-  (or a colon-compiler entry point layered over it) actually write and read
-  it.
-- **Fuel**: reuse `consume_interp_fuel`'s shape (per-something-processed,
-  positioned diagnosis) rather than inventing a fourth fuel mechanism if
-  compiling needs its own budget accounting.
+- **F25's own `interpret` has no control flow at all** — no `IF`/`ELSE`/
+  `THEN`, no `BEGIN`/`UNTIL`/`WHILE`, no `DO`/`LOOP`. Those words are simply
+  unknown to it (diagnosed as "unknown word"); F27 ("immediacy and control
+  flow") is what adds them. **If you retarget `compiled_forth<Source>` onto
+  `build_session` this step, every existing `forth.test.cpp`/`hello.cpp`/
+  `godbolt_forth.cpp` program that uses control flow will stop compiling**
+  until F27 lands, since a `Source` that fails is a hard compile error
+  (D15's own contract, unchanged). Decide deliberately whether "the cut"
+  retargets the public API this step or leaves `compiled_forth` on a stub/
+  interim shape until F27 — F25's own step-brief was told not to guess this
+  for you, and neither should you guess it silently; if the plan text you
+  are pasted does not resolve this, it is a real open question to raise,
+  not paper over.
+- **`interpreter::forth_state` is still a composed wrapper**, not a fold-in
+  (DIV-0012). DIV-0012's own revisit condition names this step as where
+  both halves close: relocate `reader/forth_chars.hpp` (D19's own
+  recommendation is under `parser/`), and fold `input_source`/`BASE`/
+  `STATE` down into `machine::forth_state` directly, once `reader/` and the
+  elaborator are deleted and the layering objection that justified
+  composing rather than growing disappears. Read DIV-0012's own
+  "Orchestrator amendment" section before starting — it explains why this
+  matters for F28 (D18's uniform XT) and F29 (parsing words as primitives)
+  specifically, not just as tidiness.
+- **`compile_buffer`'s own `MaxWords` template parameter is decoupled from
+  `machine::dictionary`'s.** `interpret`'s own template parameter list uses
+  `MaxWords` for the dictionary and a separate `MaxBufWords` for the code
+  buffer's (currently unused) word table — they do not have to match. If
+  you fold `compile_buffer`/`session` capacities together elsewhere, keep
+  this decoupling or re-verify nothing depended on it (a small custom test
+  dictionary paired with a normal-sized code buffer is exactly the case
+  this was needed for; `interp.test.cpp`'s
+  `RedefinitionShadowsButDoesNotErase` exercises it).
+- **`machine::default_dictionary` needs at least 47 slots.** Any
+  `MaxWords`/session capacity you choose for a real program must exceed 47
+  (primitives) plus however many colon words the program itself defines —
+  `default_dictionary`'s own `(void)dict.define_primitive(...)` calls
+  discard overflow silently rather than propagating it, so an
+  under-sized dictionary fails *later*, confusingly, at the first user
+  definition rather than at `default_dictionary()` itself.
 
 ## Standing constraints
 
 - `TOOLCHAIN=gcc-16` for `make compile|test`; `make lint` runs clean, all
-  hooks — a lint failure is real. **Run `make lint` as the very last thing
-  before you commit, and commit whatever it reformats.** F24 ran it before a
-  final edit and committed a tree that failed clang-format; the orchestrator
-  caught it at the merge gate. clang-format is pinned to v21.1.2 by
-  `.pre-commit-config.yaml` and is stricter than a system clang-format.
-- Nothing is deleted until F26: the R1 pipeline (reader/elaborator/
-  eval_direct/codegen/vm, all reachable via `forth.hpp`'s `compiled_forth`)
-  must keep building and keep passing its own tests. F24 touched none of it.
+  hooks. **Run `make lint` as the very last thing before you commit, and
+  commit whatever it reformats.**
 - Every compiled structure stays flat, trivially destructible, and
   capacity-parameterized; heap-backed `fix`/`Box` types are barred (D3).
 - Compile-time tests use the immediately-invoked-lambda `static_assert`
   pattern; every public constexpr API gets one.
 - Do not pick your own DIV number; the orchestrator allocates it at
-  dispatch. F24 used DIV-0012.
+  dispatch. F25 used DIV-0013.
 
 ## Before handoff
 
 `make TOOLCHAIN=gcc-16 compile`, `... test` green; `make lint` green;
 `smoke.sh` ends `SMOKE OK`; `checklist.md` ticked; durable facts recorded in
 `docs/compiler_architecture.org` in place, by anchor; `step-brief.md`
-rewritten for F26 (the cut); DIV filed for any deviation, using the number
-you are given.
+rewritten for F27; DIV filed for any deviation, using the number you are
+given.

@@ -6,7 +6,7 @@ target_sources(
     PUBLIC
         FILE_SET forth_forth_headers
             TYPE HEADERS
-            FILES input_source.hpp interp.hpp
+            FILES compilebuf.hpp input_source.hpp interp.hpp session.hpp
 )
 
 if(FORTH_ENABLE_TESTING)
@@ -14,7 +14,11 @@ if(FORTH_ENABLE_TESTING)
 
     target_sources(
         interpreter_test
-        PRIVATE input_source.test.cpp interp.test.cpp
+        PRIVATE
+            compilebuf.test.cpp
+            input_source.test.cpp
+            interp.test.cpp
+            session.test.cpp
     )
 
     target_link_libraries(interpreter_test compile-time-forth.forth)

@@ -9,6 +9,7 @@
 #include <smd/forth/foundation/source_pos.hpp>
 #include <smd/forth/machine/cell.hpp>
 #include <smd/forth/machine/dictionary.hpp>
+#include <smd/forth/machine/emit.hpp>
 #include <smd/forth/machine/instruction.hpp>
 
 #include <type_traits>
@@ -39,23 +40,8 @@ namespace smd::forth::machine {
 // `branch0` targets do, since a forward jump's target instruction has not
 // been emitted yet when the jump itself is emitted.
 
-/// Appends @p code/@p operand to @p out's instruction array, diagnosing
-/// overflow rather than exceeding @p out's own @c MaxCode capacity.
-/// Returns the newly appended instruction's own index -- callers that will
-/// need to back-patch this instruction's operand later (an `IF`/`BEGIN`'s
-/// own forward branch) keep this index.
-template <int MaxCode, int MaxWords>
-constexpr auto emit(compiled_program<MaxCode, MaxWords> &out, op code,
-                    cell operand, foundation::source_pos pos)
-    -> foundation::result<int> {
-    if (out.code.size() >= MaxCode) {
-        return foundation::parse_error{pos, "compiled program exceeds MaxCode "
-                                            "capacity"};
-    }
-    int const index = out.code.size();
-    out.code.push_back(instr{.code = code, .operand = operand});
-    return index;
-}
+// @ref emit itself now lives in machine/emit.hpp (step F25, D16): a
+// relocation, not a rewrite -- see that header's own top comment.
 
 // Forward declarations: codegen_emit_body and codegen_emit_node are mutually
 // recursive, mirroring eval_direct.hpp's eval_body/eval_node.
