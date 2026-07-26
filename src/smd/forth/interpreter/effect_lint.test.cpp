@@ -10,15 +10,25 @@
 
 using smd::forth::foundation::source_pos;
 using smd::forth::foundation::source_span;
+using smd::forth::interpreter::check_definition_effect;
 using smd::forth::interpreter::combine_branch;
 using smd::forth::interpreter::combine_sequential;
 using smd::forth::interpreter::has_declared_effect;
 using smd::forth::interpreter::identity_effect;
+using smd::forth::interpreter::instruction_effect;
+using smd::forth::interpreter::instruction_successors;
 using smd::forth::interpreter::known;
 using smd::forth::interpreter::parse_declared_effect;
 using smd::forth::interpreter::primitive_data_effect;
 using smd::forth::interpreter::primitive_return_delta;
+using smd::forth::interpreter::recover_basic_blocks;
+using smd::forth::interpreter::recover_loop_regions;
 using smd::forth::interpreter::unknown_effect;
+using smd::forth::machine::cell;
+using smd::forth::machine::compiled_program;
+using smd::forth::machine::default_dictionary;
+using smd::forth::machine::instr;
+using smd::forth::machine::op;
 using smd::forth::machine::primitive;
 
 TEST_CASE("EffectLintTest - HeaderIsIdempotent") { REQUIRE(true); }
@@ -108,4 +118,170 @@ static_assert([] {
                                source_pos{static_cast<int>(text.size()), 1,
                                           static_cast<int>(text.size()) + 1}};
     return parse_declared_effect(text, span) == known(0, 1);
+}());
+
+// -- Step F30: CFG recovery and the checker, over hand-built instructions ----
+//
+// The F12/F17 program battery is reproduced end-to-end through `interpret()`
+// in `interp.test.cpp` (`EffectLintTest -` prefix); these exercise this
+// header's own new constexpr APIs directly, over hand-built
+// `machine::compiled_program`/`machine::dictionary` values, the same style
+// `compilebuf.test.cpp` already uses for `machine::instr` sequences.
+
+// -- instruction_successors ---------------------------------------------------
+
+static_assert([] {
+    instr const push_i{.code = op::push, .operand = cell{5}};
+    auto const e = instruction_successors(push_i, 3);
+    return e.a == 4 && e.b == -1;
+}());
+
+static_assert([] {
+    instr const ret_i{.code = op::ret, .operand = cell{0}};
+    auto const e = instruction_successors(ret_i, 7);
+    return e.a == -1 && e.b == -1;
+}());
+
+static_assert([] {
+    instr const branch_i{.code = op::branch, .operand = cell{10}};
+    auto const e = instruction_successors(branch_i, 2);
+    return e.a == 10 && e.b == -1;
+}());
+
+static_assert([] {
+    instr const branch0_i{.code = op::branch0, .operand = cell{20}};
+    auto const e = instruction_successors(branch0_i, 5);
+    return e.a == 6 && e.b == 20; // fallthrough, then the jump target.
+}());
+
+static_assert([] {
+    // LEAVE never falls through -- its own single successor is the loop
+    // exit its own operand names, not `index + 1`.
+    instr const leave_i{.code = op::leave, .operand = cell{15}};
+    auto const e = instruction_successors(leave_i, 9);
+    return e.a == 15 && e.b == -1;
+}());
+
+// -- instruction_effect
+// --------------------------------------------------------
+
+static_assert([] {
+    compiled_program<16, 8> program{};
+    program.code.push_back(instr{.code = op::push, .operand = cell{5}});
+    auto const dict = default_dictionary<>();
+    auto const e = instruction_effect(program, dict, 0, -1, unknown_effect);
+    return e.data == known(0, 1) && e.ret_delta == 0;
+}());
+
+static_assert([] {
+    compiled_program<16, 8> program{};
+    program.code.push_back(
+        instr{.code = op::prim, .operand = static_cast<cell>(primitive::dup)});
+    auto const dict = default_dictionary<>();
+    auto const e = instruction_effect(program, dict, 0, -1, unknown_effect);
+    return e.data == known(1, 2) && e.ret_delta == 0;
+}());
+
+static_assert([] {
+    // `>R`'s own data-stack view (pops 1, pushes 0) is distinct from its
+    // return-stack contribution (+1) -- both come back from one call.
+    compiled_program<16, 8> program{};
+    program.code.push_back(
+        instr{.code = op::prim, .operand = static_cast<cell>(primitive::to_r)});
+    auto const dict = default_dictionary<>();
+    auto const e = instruction_effect(program, dict, 0, -1, unknown_effect);
+    return e.data == known(1, 0) && e.ret_delta == 1;
+}());
+
+static_assert([] {
+    // LEAVE and EXECUTE both map to unknown_effect (this header's own top
+    // comment: LEAVE's target is a genuine join with the loop's own
+    // normal-exhaustion path, so a known no-op treatment would falsely
+    // conflict at it).
+    compiled_program<16, 8> program{};
+    program.code.push_back(instr{.code = op::leave, .operand = cell{3}});
+    program.code.push_back(instr{.code = op::execute, .operand = cell{0}});
+    auto const dict = default_dictionary<>();
+    auto const leave_e =
+        instruction_effect(program, dict, 0, -1, unknown_effect);
+    auto const exec_e =
+        instruction_effect(program, dict, 1, -1, unknown_effect);
+    return !leave_e.data.known && !exec_e.data.known;
+}());
+
+// -- recover_loop_regions
+// -------------------------------------------------------
+
+static_assert([] {
+    // do_setup at 0; dest (its own index + 1) is 1; loop_step at 2 closes
+    // it, matched by its own operand equaling dest.
+    compiled_program<16, 8> program{};
+    program.code.push_back(instr{.code = op::do_setup, .operand = cell{0}});
+    program.code.push_back(instr{.code = op::push, .operand = cell{1}});
+    program.code.push_back(instr{.code = op::loop_step, .operand = cell{1}});
+    auto const regions = recover_loop_regions(program, 0, 3);
+    return regions.size() == 1 && regions[0].start == 1 && regions[0].end == 2;
+}());
+
+// -- recover_basic_blocks
+// --------------------------------------------------------
+
+static_assert([] {
+    // branch0 at 0 (fallthrough 1, jump target 2); a push at 1; a ret at 2
+    // -- three leaders (0, 1, 2), so three single-instruction blocks.
+    compiled_program<16, 8> program{};
+    program.code.push_back(instr{.code = op::branch0, .operand = cell{2}});
+    program.code.push_back(instr{.code = op::push, .operand = cell{9}});
+    program.code.push_back(instr{.code = op::ret, .operand = cell{0}});
+    auto const blocks = recover_basic_blocks<8>(program, 0, 3);
+    if (!blocks.has_value()) {
+        return false;
+    }
+    auto const &bs = blocks.value();
+    return bs.size() == 3 && bs[0].start == 0 && bs[0].end == 1 &&
+           bs[1].start == 1 && bs[1].end == 2 && bs[2].start == 2 &&
+           bs[2].end == 3;
+}());
+
+// -- check_definition_effect
+// -----------------------------------------------------
+
+// SQUARED's own shape (`DUP *`), hand-built rather than compiled through
+// `interpret()`: net effect known(1, 1), and a hand-computed peak depth of
+// 2 (DUP takes one input to two; `*` brings it back to one).
+static_assert([] {
+    compiled_program<16, 8> program{};
+    program.code.push_back(instr{.code = op::halt, .operand = cell{0}});
+    int const entry = 1;
+    program.code.push_back(
+        instr{.code = op::prim, .operand = static_cast<cell>(primitive::dup)});
+    program.code.push_back(
+        instr{.code = op::prim, .operand = static_cast<cell>(primitive::star)});
+    program.code.push_back(instr{.code = op::ret, .operand = cell{0}});
+    auto const dict = default_dictionary<>();
+    auto const result = check_definition_effect(
+        program, dict, entry, 4, "", source_span{}, false, source_pos{});
+    if (!result.has_value()) {
+        return false;
+    }
+    auto const &eff = result.value();
+    return eff.net == known(1, 1) && eff.peak_depth == 2;
+}());
+
+// A DO-loop body with a nonzero net effect (the F17 correction) is
+// diagnosed even hand-built, not just through `interpret()`.
+static_assert([] {
+    compiled_program<16, 8> program{};
+    program.code.push_back(instr{.code = op::halt, .operand = cell{0}});
+    int const entry = 1;
+    program.code.push_back(instr{.code = op::do_setup, .operand = cell{0}});
+    program.code.push_back(
+        instr{.code = op::prim,
+              .operand = static_cast<cell>(primitive::dup)}); // dest, net +1
+    program.code.push_back(instr{.code = op::loop_step, .operand = cell{2}});
+    program.code.push_back(instr{.code = op::ret, .operand = cell{0}});
+    auto const dict = default_dictionary<>();
+    auto const result = check_definition_effect(
+        program, dict, entry, 5, "", source_span{}, false, source_pos{});
+    return !result.has_value();
 }());

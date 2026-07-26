@@ -419,3 +419,49 @@ A machine fault (division by zero) mapped to its standard code and caught like a
 `ABORT"` caught by an enclosing `CATCH` (`AbortQuoteCaughtByCatch`); `ABORT` as `-1 THROW` (`AbortIsMinusOneThrow`); `0 THROW` as a no-op (`ThrowZeroIsANoOp`); an uncaught `THROW` diagnosed carrying its own code in `foundation::parse_error::where.offset` (`UncaughtThrowWhileInterpreting`).
 
 See DIV-0018 (=docs/divergences/DIV-0018-f31-catch-throw-design.md=) for the complete record of this step's own design choices, including the ones this section only summarizes.
+
+* Phase 14: The Effect Lint (step F30, docs/forth-plan-2.md)
+
+D20's own suspension window (DIV-0014: "between F26 and F30 there is no stack-effect *checking* at all") closes here: `interpreter::effect_lint.hpp` recovers a real control-flow graph over a colon definition's own instruction range — `interpreter::compile_buffer`'s own code, between `entry_point` and the `ret` `;` emits to close it — and runs an abstract interpreter over it, at every `;`, in `interpreter::interpret`.
+Where the deleted R1 elaborator's own `analyze_body` folded the elaborated core's tree structurally (an `IF` node's own two arms, a `DO`-loop node's own body, each recursed into by hand), this step's own `check_definition_effect` works at instruction granularity: every reachable instruction is assigned a *level* — a running (data-stack, return-stack) depth pair, relative to the definition's own entry — via a worklist that requires every edge reaching the same instruction to agree.
+A branch's two arms, or a loop's back edge, are both just edges under this one mechanism, so the F17 corrections (`DO`'s own two-cell entry cost, `+LOOP`'s own net-+1 body) fall out of the same uniform join-consistency check rather than needing their own code paths, and the F17 residual (Part 11's own recorded-but-unverified loop-frame-teardown assumption) closes the same way: `10 0 DO 5 >R LOOP` fails because the loop's own back edge disagrees with the forward path on return-stack depth, a static rejection at `;` rather than a runtime check in the loop's own hot path.
+
+** Two discoveries the plan's own literal wording did not anticipate
+
+Both are recorded in full in DIV-0019 (=docs/divergences/DIV-0019-f30-effect-lint-design.md=); in brief:
+
+- Multiple reachable exit points (an early `EXIT`, or the closing `;` itself) are *not* required to agree with each other.
+  DIV-0006 named `: F DUP 0< IF EXIT THEN DROP ;` as a genuinely different-shaped definition the deleted elaborator silently assumed consistent rather than checked; this project's own `interpreter::corpus::exit_boundary_program` (`INNER`) is exactly this shape, and it is valid, intentional Forth-2012, not a defect.
+  Recovering a real CFG makes the distinction precisely visible for the first time: multiple *known* exits that disagree simply make the definition's own net effect `unknown` (stored, not guessed) — never an error.
+  A *declared* `( ... -- ... )` effect changes this (D20's own "hard gate exactly when declared"): every reachable *known* exit is checked against the declaration individually, which is what actually closes DIV-0006 for the case that matters — a written contract can no longer silently disagree with an early `EXIT`.
+- `LEAVE`'s own local effect must stay `unknown` (ported verbatim in spirit from the deleted elaborator's own `core_leave` case, not an independent rediscovery): unlike `EXIT`, `LEAVE`'s own target *is* a genuine control-flow join with the loop's normal-exhaustion path, so a known, no-op treatment would make `interpreter::corpus::find5_program` (`LEAVE`'s own arm leaves one extra cell the exhaustion path never pushes) a hard, always-on diagnosed conflict — exactly the corpus regression this step's own instructions warned against.
+
+** `instruction_successors`: the CFG's own edge relation, recovered once, shared with F33 (D24)
+
+#+transclude: [[file:../src/smd/forth/interpreter/effect_lint.hpp::8a1d5c3e-9f27-4b6a-8e2d-1c7f9a3b5e6d]] :lines 2- :src cpp :end "8a1d5c3e-9f27-4b6a-8e2d-1c7f9a3b5e6d end"
+
+`instruction_successors` is the one edge relation both this checker's own worklist and `recover_basic_blocks` walk — D24's own "the recovered CFG is shared with F33's sender lowering, one analysis, two clients" — so a basic-block boundary `recover_basic_blocks` finds is always also an instruction this checker treats as a join or a branch.
+`recover_loop_regions` matches each `do_setup` to its own `loop_step`/`plus_loop_step` by dest (the operand `interpreter::apply_control_word`'s own `loop_`/`plus_loop_` case always emits), independent of `check_definition_effect`'s own worklist — it is what `EXIT`-inside-`DO`-without-`UNLOOP` (D20's fourth diagnosis, a lexical/positional check, not a depth one) is built on.
+
+** The per-instruction, per-definition working set is sized off its own capacity, not the session's
+
+`check_definition_effect`'s own node table, worklist, and exit/`ret` lists are indexed by *offset from* the definition's own entry, capacity `MaxSpan` (default 160) — deliberately independent of `MaxCode` (`compiled_program`'s own instruction-array capacity, which bounds the whole session's ever-growing shared code space, D13, not any one definition).
+Sizing this per-`;` working set off `MaxCode`'s own multi-thousand default would make every colon definition pay constant-evaluation cost proportional to the *whole session's* worst case; `MaxSpan` bounds one definition's own instruction count instead, diagnosing (not silently truncating) a definition that exceeds it.
+
+** `machine::compiled_colon_word` gains the checker's own durable output
+
+`effect_known`/`effect_inputs`/`effect_outputs` (the computed-or-declared-and-verified net effect, consulted by a later `call` to this word from another definition's own check) and `peak_depth` (the greatest absolute data-stack depth reached, `-1` unless `effect_known` — DIV-0019's own disposition of DIV-0008's "peak depth" gap: reported only for a definition whose shape is fully pinned down, never a partial number for one that touches `unknown` or whose return paths genuinely differ).
+`compiled_program::required_stack_depth`/`::required_return_depth` (DIV-0008's own `-1` placeholders) are finally filled, but not with a single whole-program bound the way F14's original design assumed: D13's own shared, ever-growing code space means many colon words share one `compiled_program` over a whole session, so `interpret`'s own `;` handling instead tracks a running maximum across every definition closed so far whose own peak was computable — DIV-0019's own documented, coarser reading of what these two fields can still mean under the post-F26 architecture.
+
+** Every diagnosis is a hard, always-on compile error; a declaration promotes nothing further
+
+Branch/loop net disagreement, `>R`/`R>` imbalance (across a branch, a loop's back edge, or left unbalanced at a definition's own end), and `EXIT` inside `DO` without `UNLOOP` are diagnosed unconditionally — D7: genuine misuse, not merely an unverified claim, independent of whether the definition wrote a declared effect.
+A declared effect adds exactly one more check on top: `required_depth` (this checker's own computed minimum entry depth) against the declaration's own inputs, and every reachable *known* exit's own absolute output depth against the declaration's own outputs — skipped (not guessed at) the moment any reachable instruction's own local effect is itself unknown (`?DUP`/`EXECUTE`/`CATCH`/a call to an unknown-effect word), since `required_depth` can only *undercount* from that point on, never overcount, and a `RUNIT`-shaped `( xt -- ) EXECUTE` must not be rejected merely because this checker cannot see what `EXECUTE` itself requires.
+
+** Merge criteria
+
+The F12/F17 positive and negative program battery, reproduced over this step's own instruction-range path (`interp.test.cpp`'s own `EffectLintTest -` prefix): `BADCOND`/`BADLOOP`/`BADPLUSLOOP`/`BADUNTIL`/`BADRET`/`BADRETEND`/`DOEX`/`BADDECL`-shaped programs all still diagnosed, `SQUARED`/`ABS2`-shaped ones with a matching declaration still install; the F17 residual (`10 0 DO 5 >R LOOP`) now diagnosed too.
+One genuine, documented behavioral widening from the deleted elaborator's own per-construct rules: `BEGIN DUP DUP WHILE DROP REPEAT`-shaped code (a condition that leaves extra cells a body then reabsorbs, so the whole cycle is still self-consistent) is accepted here, where the old "condition must leave exactly one flag" rule rejected it regardless of the body — never unsafe (every reachable instruction's own minimum depth is still verified unconditionally), just less eager to reject an unidiomatic-but-consistent shape (`EffectLintTest - WhileConditionLeavingExtraCellsIsAcceptedWhenTheCycleIsConsistent`).
+A hand-computed peak-depth merge criterion: `DUP DUP DROP DROP` has net effect zero but peaks at three cells, verified directly against `effect_inputs`/`peak_depth` (`EffectLintTest - PeakDepthIsARealNumberAssertedAgainstAHandComputation`), which also verifies `compiled_program::required_stack_depth`'s own first fill.
+
+See DIV-0019 (=docs/divergences/DIV-0019-f30-effect-lint-design.md=) for the complete design record.
