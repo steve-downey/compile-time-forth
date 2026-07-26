@@ -1,4 +1,4 @@
-<div class="abstract" id="org1e26849">
+<div class="abstract" id="org3cc5735">
 <p>
 The front end produces trees; the machine is what those trees eventually run on.
 This entry builds the substrate: a cell, two stacks, the primitives, the
@@ -21,7 +21,7 @@ holds a placeholder.
 
 # A cell and two stacks
 
-Forth's memory model is famously blunt. Everything is a cell, and a cell is a machine word. Here it is a `std::int64_t` &mdash; signed, because Forth arithmetic is signed by default and I would rather match that than fight it.
+Forth's memory model is famously blunt. Everything is a cell, and a cell is a machine word. Here it is a `std::int64_t` &#x2014; signed, because Forth arithmetic is signed by default and I would rather match that than fight it.
 
 ```cpp
 using cell = std::int64_t;
@@ -33,11 +33,11 @@ inline constexpr cell flag_true = -1;
 inline constexpr cell flag_false = 0;
 ```
 
-A Forth true is `-1`, all bits set, not `1`. That is not decoration &mdash; it makes `AND` and `OR` double as bitwise and logical operators, which is the sort of economy the whole language is built out of.
+A Forth true is `-1`, all bits set, not `1`. That is not decoration &#x2014; it makes `AND` and `OR` double as bitwise and logical operators, which is the sort of economy the whole language is built out of.
 
-Two stacks. The data stack is where computation happens; the return stack holds return addresses and the occasional stashed value. Both are `static_vector`, so neither reallocates, and both are bounds-checked on every push and pop &mdash; an overflow or underflow is a diagnosed error, not undefined behavior. That check is not optional under `constexpr`: reading past the end of a `static_vector` during constant evaluation is a hard compile error anyway, so better to catch it as a real Forth stack fault with a message than as a raw `constexpr` diagnostic.
+Two stacks. The data stack is where computation happens; the return stack holds return addresses and the occasional stashed value. Both are `static_vector`, so neither reallocates, and both are bounds-checked on every push and pop &#x2014; an overflow or underflow is a diagnosed error, not undefined behavior. That check is not optional under `constexpr`: reading past the end of a `static_vector` during constant evaluation is a hard compile error anyway, so better to catch it as a real Forth stack fault with a message than as a raw `constexpr` diagnostic.
 
-`forth_state` bundles the whole runtime world: the data stack, the return stack, the data space, and an output buffer for the words that print. The primitives &mdash; arithmetic, comparison, stack shuffling &mdash; are an `enum`, and `apply_primitive` is one switch that executes a primitive against a `forth_state`. Nothing here is clever. It is the flat, obvious core the fast machine will later be checked against.
+`forth_state` bundles the whole runtime world: the data stack, the return stack, the data space, and an output buffer for the words that print. The primitives &#x2014; arithmetic, comparison, stack shuffling &#x2014; are an `enum`, and `apply_primitive` is one switch that executes a primitive against a `forth_state`. Nothing here is clever. It is the flat, obvious core the fast machine will later be checked against.
 
 
 # The dictionary
@@ -55,16 +55,16 @@ using dictionary_entry = std::variant<
     primitive_opcode, colon_word, variable_word, constant_word, foreign_word>;
 ```
 
-The dictionary is append-only, and lookup scans it newest-first. That single choice gives Forth its redefinition semantics for free: define `FOO`, then define `FOO` again, and a later reference finds the newer one while the older one stays buried and reachable by anything compiled before the redefinition. There is no mutation, no deletion &mdash; just a search order. `default_dictionary()` builds the starting vocabulary of primitives that every program begins with.
+The dictionary is append-only, and lookup scans it newest-first. That single choice gives Forth its redefinition semantics for free: define `FOO`, then define `FOO` again, and a later reference finds the newer one while the older one stays buried and reachable by anything compiled before the redefinition. There is no mutation, no deletion &#x2014; just a search order. `default_dictionary()` builds the starting vocabulary of primitives that every program begins with.
 
-Actually resolving a name in a program &mdash; deciding *which* entry a `syn_word` refers to &mdash; is not the dictionary's job. The dictionary stores and finds; elaboration resolves. Keeping that split is the same discipline as the reader: one question, one place.
+Actually resolving a name in a program &#x2014; deciding *which* entry a `syn_word` refers to &#x2014; is not the dictionary's job. The dictionary stores and finds; elaboration resolves. Keeping that split is the same discipline as the reader: one question, one place.
 
 
 # The data space, and a real address type
 
 `VARIABLE` and `CREATE` carve out cells in a data space, and programs read and write them with `@` and `!`. The data space is another cell arena with bounds-checked `allot`, `fetch`, and `store`. The part worth stopping on is the address.
 
-A data-space address is an index. It would be trivial to represent it as a `cell` &mdash; it already is one, underneath. But then an address and an ordinary number are the same type, and nothing stops a program's machinery from putting a raw index where a value belongs, or doing arithmetic on an address as if it were data. So the address is its own type, convertible to and from `cell` only when you say so:
+A data-space address is an index. It would be trivial to represent it as a `cell` &#x2014; it already is one, underneath. But then an address and an ordinary number are the same type, and nothing stops a program's machinery from putting a raw index where a value belongs, or doing arithmetic on an address as if it were data. So the address is its own type, convertible to and from `cell` only when you say so:
 
 ```cpp
 class addr {
@@ -104,9 +104,9 @@ struct variable_word {
 };
 ```
 
-That field wants to be an `addr`. It holds a `cell`. When I built the dictionary, the distinct `addr` type didn't exist yet &mdash; it belongs to the data space, and the dictionary is not the data space's owner. Rather than invent a second, possibly-conflicting address type inside the dictionary header just to name the field, I let the field hold the only representation that existed: a plain `cell` index. Nothing in the dictionary itself puts a `variable_word`'s address on the stack, so the missing type safety costs nothing yet. But it is not the guarantee the `addr` type is there to give, and any code that builds a `variable_word` right now is passing an unprotected index.
+That field wants to be an `addr`. It holds a `cell`. When I built the dictionary, the distinct `addr` type didn't exist yet &#x2014; it belongs to the data space, and the dictionary is not the data space's owner. Rather than invent a second, possibly-conflicting address type inside the dictionary header just to name the field, I let the field hold the only representation that existed: a plain `cell` index. Nothing in the dictionary itself puts a `variable_word`'s address on the stack, so the missing type safety costs nothing yet. But it is not the guarantee the `addr` type is there to give, and any code that builds a `variable_word` right now is passing an unprotected index.
 
-The first place that actually constructs a `variable_word` is elaboration, when it processes a `VARIABLE` declaration. So that is where the field gets its real type &mdash; and that is the next entry's problem.
+The first place that actually constructs a `variable_word` is elaboration, when it processes a `VARIABLE` declaration. So that is where the field gets its real type &#x2014; and that is the next entry's problem.
 
 The machine has a heartbeat: cells, stacks, a vocabulary, and somewhere to store things. Nothing can run yet, because nothing has resolved a single word.
 

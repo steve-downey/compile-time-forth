@@ -102,7 +102,7 @@ skipping a loop, and it bought that with an unspecified comparison. So it goes.
 What stays is the comparison that is always legal: a pointer against a null
 pointer constant, which both compilers accept in a constant expression.
 
-#+transclude: [[orgit:~/src/compile-time-forth/main::src/smd/forth/foundation/parse_error.hpp::fb523d66-58d7-4ce9-bee0-44644f86c414]] :lines 2- :src cpp :end "fb523d66-58d7-4ce9-bee0-44644f86c414 end"
+#+transclude: [[orgit-file:~/src/compile-time-forth/compile-time-forth::blog/part-01::src/smd/forth/foundation/parse_error.hpp::fb523d66-58d7-4ce9-bee0-44644f86c414]] :lines 2- :src cpp :end "fb523d66-58d7-4ce9-bee0-44644f86c414 end"
 
 The truth table is unchanged. Two null messages are equal, one null and one not
 is unequal, two non-null messages go to the scan they always went to. No test's

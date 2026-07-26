@@ -30,7 +30,7 @@ Forth's memory model is famously blunt. Everything is a cell, and a cell is a
 machine word. Here it is a ~std::int64_t~ --- signed, because Forth arithmetic
 is signed by default and I would rather match that than fight it.
 
-#+transclude: [[orgit:~/src/compile-time-forth/main::src/smd/forth/machine/cell.hpp::8a026053-5555-4fac-ac06-9b82d6df3f3c]] :lines 2- :src cpp :end "8a026053-5555-4fac-ac06-9b82d6df3f3c end"
+#+transclude: [[orgit-file:~/src/compile-time-forth/compile-time-forth::blog/part-05::src/smd/forth/machine/cell.hpp::8a026053-5555-4fac-ac06-9b82d6df3f3c]] :lines 2- :src cpp :end "8a026053-5555-4fac-ac06-9b82d6df3f3c end"
 
 A Forth true is ~-1~, all bits set, not ~1~. That is not decoration --- it makes
 ~AND~ and ~OR~ double as bitwise and logical operators, which is the sort of
@@ -95,7 +95,7 @@ raw index where a value belongs, or doing arithmetic on an address as if it were
 data. So the address is its own type, convertible to and from ~cell~ only when
 you say so:
 
-#+transclude: [[orgit:~/src/compile-time-forth/main::src/smd/forth/machine/data_space.hpp::033d6c89-6d8a-469c-812b-5416dd6e5284]] :lines 2- :src cpp :end "033d6c89-6d8a-469c-812b-5416dd6e5284 end"
+#+transclude: [[orgit-file:~/src/compile-time-forth/compile-time-forth::blog/part-05::src/smd/forth/machine/data_space.hpp::033d6c89-6d8a-469c-812b-5416dd6e5284]] :lines 2- :src cpp :end "033d6c89-6d8a-469c-812b-5416dd6e5284 end"
 
 Both conversions are ~explicit~. You can turn a ~cell~ into an ~addr~ and back,
 but never by accident, and never silently in the middle of an expression that

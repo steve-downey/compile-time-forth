@@ -37,14 +37,14 @@ a struct that stores a null-terminated copy of the text in a fixed char array,
 which makes it usable as a non-type template parameter --- so a program's content,
 not just its address or length, can drive template argument deduction.
 
-#+transclude: [[orgit:~/src/compile-time-forth/main::src/smd/forth/forth.hpp::0f3a01ca-389f-4ca6-b09c-6b6423482246]] :lines 2- :src cpp :end "0f3a01ca-389f-4ca6-b09c-6b6423482246 end"
+#+transclude: [[orgit-file:~/src/compile-time-forth/compile-time-forth::blog/part-09::src/smd/forth/forth.hpp::0f3a01ca-389f-4ca6-b09c-6b6423482246]] :lines 2- :src cpp :end "0f3a01ca-389f-4ca6-b09c-6b6423482246 end"
 
 That literal is the key to keying a variable template on the program's text ---
 the whole pipeline runs once, at namespace-scope ~constexpr~ initialization, and
 the result is stored in a ~forth_program~ that offers ~.run()~, ~.stack()~, and
 ~.output()~:
 
-#+transclude: [[orgit:~/src/compile-time-forth/main::src/smd/forth/forth.hpp::9affe4fc-3d72-4f41-8fd0-d2338f9ab603]] :lines 2- :src cpp :end "9affe4fc-3d72-4f41-8fd0-d2338f9ab603 end"
+#+transclude: [[orgit-file:~/src/compile-time-forth/compile-time-forth::blog/part-09::src/smd/forth/forth.hpp::9affe4fc-3d72-4f41-8fd0-d2338f9ab603]] :lines 2- :src cpp :end "9affe4fc-3d72-4f41-8fd0-d2338f9ab603 end"
 
 So the source text is the template argument, and using it is one line:
 

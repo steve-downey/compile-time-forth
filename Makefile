@@ -370,6 +370,10 @@ docs/blog/%.md : docs/blog/%.org
 .PHONY: blog-md
 blog-md: $(BLOG_ORGFILES:.org=.md) ## convert docs/blog/*.org to GFM markdown
 
+.PHONY: check-transclusions
+check-transclusions: ## verify every #+transclude: resolves (posts pinned, living docs worktree)
+	python3 scripts/check-transclusions.py
+
 .PHONY: clean-blog-md
 clean-blog-md:
 	-rm -f $(BLOG_ORGFILES:.org=.md) $(BLOG_ORGFILES:.org=.md.deps)

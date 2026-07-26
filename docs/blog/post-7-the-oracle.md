@@ -1,7 +1,7 @@
-<div class="abstract" id="org22fba8f">
+<div class="abstract" id="orga0f02ef">
 <p>
 Before the fast machine, the slow one. A direct evaluator walks the elaborated
-core by structural recursion &mdash; obvious, correct, and destined to be the
+core by structural recursion &#x2014; obvious, correct, and destined to be the
 reference every faster backend gets checked against. Getting its acceptance test
 to pass meant adding two words the plan used but never actually put in the
 dictionary. And running it confirmed, out loud, the effect-checker blind spot I
@@ -21,7 +21,7 @@ described last time.
 
 # Why build the slow one first
 
-I am going to compile Forth to a flat instruction array and run it on a virtual machine. That machine will be fast and, being fast, easy to get subtly wrong. So before it exists I want an evaluator I am sure of &mdash; one so plainly correct that when it and the VM disagree, I know which one to trust.
+I am going to compile Forth to a flat instruction array and run it on a virtual machine. That machine will be fast and, being fast, easy to get subtly wrong. So before it exists I want an evaluator I am sure of &#x2014; one so plainly correct that when it and the VM disagree, I know which one to trust.
 
 The direct evaluator is that. It walks the elaborated core node by node, by ordinary structural recursion, against a `forth_state`. A literal pushes. A word reference runs a primitive or recurses into a colon body. An `IF` evaluates its condition and walks exactly one arm. There is no compilation step, no instruction pointer, nowhere for a bug to hide. It is the oracle.
 
@@ -36,7 +36,7 @@ constexpr auto eval_direct(core_node const& n, arena const& a, forth_state& s)
 }
 ```
 
-Two details keep it honest under `constexpr`. `EXIT` is an evaluation signal, not a return value smuggled through &mdash; evaluating a colon body stops early and cleanly when a body item signals `EXIT`, the way Forth's `EXIT` leaves the current word. And every run has a fuel budget: a step count that ticks down, so a non-terminating program becomes a diagnosed budget-exhaustion error instead of a compiler that never comes back. An infinite loop at compile time is not a hang you can Ctrl-C. Fuel makes non-termination a value you can test for.
+Two details keep it honest under `constexpr`. `EXIT` is an evaluation signal, not a return value smuggled through &#x2014; evaluating a colon body stops early and cleanly when a body item signals `EXIT`, the way Forth's `EXIT` leaves the current word. And every run has a fuel budget: a step count that ticks down, so a non-terminating program becomes a diagnosed budget-exhaustion error instead of a compiler that never comes back. An infinite loop at compile time is not a hang you can Ctrl-C. Fuel makes non-termination a value you can test for.
 
 
 # The word the plan forgot
@@ -50,11 +50,11 @@ The acceptance test I set for this step is a countdown, and it is lifted straigh
 
 It does not pass. It cannot pass, as written, and finding out why took a minute.
 
-Two words in that line had nothing behind them. `.` &mdash; print the top of stack &mdash; had no runtime behavior at all. The design prose talks about output words as though they append to a buffer in `forth_state`, and reads as if the machinery were already there, but the machine substrate only ever implemented arithmetic, comparison, and stack shuffling. It never wired `.`, `.S`, `EMIT`, or `CR`. And `1-` &mdash; subtract one &mdash; was worse off: it wasn't in the dictionary at all. It isn't in the plan's word table anywhere, not in the arithmetic row, not anywhere, despite being used verbatim in the very criterion I was trying to satisfy. Elaboration would diagnose `1-` as an unknown word before evaluation ever started.
+Two words in that line had nothing behind them. `.` &#x2014; print the top of stack &#x2014; had no runtime behavior at all. The design prose talks about output words as though they append to a buffer in `forth_state`, and reads as if the machinery were already there, but the machine substrate only ever implemented arithmetic, comparison, and stack shuffling. It never wired `.`, `.S`, `EMIT`, or `CR`. And `1-` &#x2014; subtract one &#x2014; was worse off: it wasn't in the dictionary at all. It isn't in the plan's word table anywhere, not in the arithmetic row, not anywhere, despite being used verbatim in the very criterion I was trying to satisfy. Elaboration would diagnose `1-` as an unknown word before evaluation ever started.
 
-I had two options. Rewrite the criterion to dodge the missing words &mdash; spell `1-` as `1 -`, drop the print &mdash; and quietly drift from the plan's own example. Or add the words. I added the words. Four output primitives (`.`, `.S`, `EMIT`, `CR`) wired through `apply_primitive` and `default_dictionary`, each with a stack-effect entry so the Part 6 checker knows them; and `1-` as a primitive with effect `( n -- n-1 )`. The dictionary went from 37 entries to 42, and every test and comment that counted primitives moved with it.
+I had two options. Rewrite the criterion to dodge the missing words &#x2014; spell `1-` as `1 -`, drop the print &#x2014; and quietly drift from the plan's own example. Or add the words. I added the words. Four output primitives (`.`, `.S`, `EMIT`, `CR`) wired through `apply_primitive` and `default_dictionary`, each with a stack-effect entry so the Part 6 checker knows them; and `1-` as a primitive with effect `( n -- n-1 )`. The dictionary went from 37 entries to 42, and every test and comment that counted primitives moved with it.
 
-I left `1+` out on purpose. Nothing this step exercises needs it. It is used later in an example I haven't reached, and when I reach it, it gets added the same way `1-` did &mdash; I am not going to build words on spec for a criterion that doesn't yet demand them.
+I left `1+` out on purpose. Nothing this step exercises needs it. It is used later in an example I haven't reached, and when I reach it, it gets added the same way `1-` did &#x2014; I am not going to build words on spec for a criterion that doesn't yet demand them.
 
 With the two words in, `3 COUNTDOWN` prints `"3 2 1 "`, and it matches the plan's literal text instead of a paraphrase I had to invent to route around a gap.
 
@@ -67,16 +67,16 @@ Last entry I described a blind spot in the effect checker: it is not flow-sensit
 : F  DUP 0< IF EXIT THEN DROP ;
 ```
 
-has two real, different effects by path &mdash; one cell on the early-exit path, zero on the fall-through where `DROP` runs &mdash; and the checker computes one effect and flags nothing. At the time that was an argument on paper.
+has two real, different effects by path &#x2014; one cell on the early-exit path, zero on the fall-through where `DROP` runs &#x2014; and the checker computes one effect and flags nothing. At the time that was an argument on paper.
 
 It is not on paper anymore. The direct evaluator runs `F` down each path and the depths disagree exactly as predicted: hand it a negative and it exits leaving a cell; hand it a non-negative and it falls through to `DROP` and leaves nothing. The checker passed the definition. The evaluator shows the two outcomes. The gap I could only describe last time is now something I can run.
 
-That is the good and bad of building the oracle. It is correct enough to confirm where the analysis lies. It does not fix the analysis &mdash; the checker still can't see the disagreement &mdash; but it turns "I think this is a gap" into "here is the program that walks through it," which is the difference between a worry and a test case.
+That is the good and bad of building the oracle. It is correct enough to confirm where the analysis lies. It does not fix the analysis &#x2014; the checker still can't see the disagreement &#x2014; but it turns "I think this is a gap" into "here is the program that walks through it," which is the difference between a worry and a test case.
 
 
 # What it doesn't do yet
 
-`DO` &hellip; `LOOP` is diagnosed, not executed. The evaluator recognizes a counted loop and reports it as not implemented rather than guessing at loop-parameter semantics I would rather design properly later. That is a deliberate stop, not an oversight &mdash; the same stop the fast machine is going to make for the same reason.
+`DO` &#x2026; `LOOP` is diagnosed, not executed. The evaluator recognizes a counted loop and reports it as not implemented rather than guessing at loop-parameter semantics I would rather design properly later. That is a deliberate stop, not an oversight &#x2014; the same stop the fast machine is going to make for the same reason.
 
 The oracle runs. It prints, it counts down, it exits early, and it exhausts fuel on a program that won't stop. Now I can build the fast machine and have something to hold it against.
 

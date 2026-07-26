@@ -128,17 +128,35 @@ sub-agents.
   - Spot-check the architecture facts in section 11 still hold (trivially
     destructible tree nodes, no heap types in the compiled program, capacities
     parameterized).
-  - Confirm `docs/compiler_architecture.org` transclusions still resolve: every
-    `#+transclude:` target file exists and its UUID `start` and `<uuid> end` anchors
-    are present. A file rename/move silently orphans a transclude, turning the living
-    doc into dead narrative. Quick check:
-
-    ```sh
-    grep -oE 'file:[^:]+::[0-9a-f-]{36}' docs/compiler_architecture.org
-    # for each: the file (relative to docs/) must exist and contain the uuid twice
-    # (the anchor and its "<uuid> end" marker).
-    ```
+  - Confirm every `#+transclude:` still resolves, in both document categories:
+    `make check-transclusions`. Living documents (`docs/compiler_architecture.org`,
+    `compile-time-forth.org`) resolve against the worktree, so a file rename/move
+    silently orphans a transclude and turns the living doc into dead narrative.
+    Blog posts resolve against their `blog/part-NN` tag and are checked there
+    instead — a rename cannot break them, by design.
 - Merge to main with `--no-ff` only when all checks pass.
+- **Cut the blog tag at the merge, before dispatching the blog agent.** The post
+  for step N pins its code to an annotated tag on that step's merge commit, so
+  the code inside a diary entry stays the code that entry was written against:
+
+  ```sh
+  git tag -a blog/part-NN <merge-sha> -m "Part NN: <title> (F<N>)"
+  ```
+
+  Do not push it yet. If the blog agent reports that it had to add an anchor pair
+  (its contract requires it to say so), move the still-unpushed tag onto the
+  commit carrying the anchors — an anchor-only change adds inert comments, never
+  code, so the pinned code is still the step's code:
+
+  ```sh
+  git tag -f -a blog/part-NN <blog-commit> -m "Part NN: <title> (F<N>)"
+  make blog-md && make check-transclusions
+  ```
+
+  Push the tag once the post is committed and the check is green. After that the
+  tag never moves: a published post's pin is permanent. Record the row in
+  `docs/blog/pins.md`. Policy and back-catalogue analysis:
+  `docs/epistolary-pinning-plan.md`.
 - After the merge, **dispatch a distinct Sonnet blog agent** to write that step's
   public blog entry (section 8; full contract in `docs/blog/AGENTS.md`). It is
   never the worker that implemented the step — a separate sub-agent, so the
@@ -438,9 +456,11 @@ portable authoring contract is `docs/blog/AGENTS.md`; in outline:
   discovery.
 - **Output:** `docs/blog/post-N-<slug>.org`, continuing the existing Part-N
   sequence (F0–F15 are Parts 0–9; F16 is Part 10, one post per step from there).
-  Verbatim code is pulled by orgit transclusion; the `#+DATE` is the step's
-  commit date. `make blog-md` regenerates the `.md`; the agent updates the prior
-  post's next-link and `index.org`, and commits the `.org` plus generated `.md`.
+  Verbatim code is pulled by transclusion pinned to the step's `blog/part-NN`
+  tag, never against the worktree; the `#+DATE` is the step's commit date.
+  `make blog-md` regenerates the `.md` and `make check-transclusions` gates it;
+  the agent updates the prior post's next-link and `index.org`, and commits the
+  `.org` plus generated `.md`.
 
 ---
 

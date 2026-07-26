@@ -70,12 +70,24 @@ Before finishing:
 
 ## Code in posts
 
-- **Verbatim code: orgit transclusion.** Pull real source with
-  `#+transclude: [[orgit:~/src/compile-time-forth/main::<path>::<UUID>]] :lines 2- :src cpp :end "<UUID> end"`,
-  against a `// <UUID>` / `// <UUID> end` comment pair in the source. If the
-  region has no anchor, add a **tight** pair (just around the code, excluding the
-  long doc comment). Anchors are inert comments; verify with `make compile` if
-  you add any. This keeps posts in sync with the code and portable.
+- **Verbatim code: pinned transclusion.** Pull real source with
+  `#+transclude: [[orgit-file:~/src/compile-time-forth/compile-time-forth::blog/part-NN::<path>::<UUID>]] :lines 2- :src cpp :end "<UUID> end"`,
+  against a `// <UUID>` / `// <UUID> end` comment pair in the source, where
+  `blog/part-NN` is **this post's own tag** — the orchestrator cuts it at your
+  step's merge before dispatching you. Never a raw SHA, never `orgit:`, never a
+  bare `file:`.
+- **The pin is what makes a post a diary entry.** Your code is read out of git at
+  that tag, not out of the worktree, so a refactor three steps from now cannot
+  reach back and rewrite the code inside your prose. The rule that follows: an
+  anchor must exist **at your pin**, not in the worktree. Later steps may move or
+  delete anchors freely — they owe the published past nothing. See
+  `docs/epistolary-pinning-plan.md` and `docs/blog/pins.md`.
+- **Adding an anchor.** Prefer a region that is already anchored at your tag. If
+  the region you need has none, add a **tight** pair (just around the code,
+  excluding the long doc comment), verify with `make compile` — anchors are inert
+  comments — and **say so when you hand back**: your tag has to move onto the
+  commit that carries the anchor before it can resolve, and only the orchestrator
+  does that.
 - **Shapes stay inline.** Pedagogical simplifications, pseudocode, Forth source
   examples, and any code that does not exist verbatim in current source (e.g. a
   placeholder that was later replaced) go in inline `#+begin_src` blocks marked
@@ -99,10 +111,13 @@ Mirror the existing posts (`post-0-the-pitch.org` … `post-9-one-shot-api.org`)
 
 ## Before you finish
 
-- `make blog-md` runs clean.
-- Grep the generated `.md` for a leftover `#+transclude` directive — its presence
-  means a transclusion failed to expand (usually a missing/mismatched anchor).
-- Each transcluded region's real code is present in the `.md`.
+- `make blog-md` runs clean, then `make check-transclusions` passes.
+- Do **not** grep the `.md` for a leftover `#+transclude` directive and call that
+  a check. A transclusion that fails to resolve leaves no directive behind — it
+  leaves nothing, and the code block silently disappears. That grep reported the
+  series clean the entire time Parts 0–9 were shipping empty code blocks
+  (`pins.md` DISC-4). `make check-transclusions` is the check: it verifies the
+  anchor pair exists at your pin and that the code is actually in the `.md`.
 - `lexcheck.py --register blog` passes; the nav chain is unbroken; `index.org`
   lists the new post.
 - Commit the `.org` and the generated `.md` (not `.md.deps`, not the emacs

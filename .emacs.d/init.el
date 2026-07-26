@@ -215,3 +215,15 @@
 
 (require 'org-transclusion)
 (add-hook 'org-transclusion-add-functions 'org-transclusion-add-orgit)
+
+;; Pinned transclusion for the blog series: posts resolve their code at a
+;; blog/part-NN tag rather than against the worktree, so a later refactor
+;; cannot rewrite the code inside an already-published diary entry.  Living
+;; documents keep the worktree forms above.  See docs/epistolary-pinning-plan.md
+;; and docs/blog/pins.md.
+(let ((repo-root (expand-file-name
+                  ".." (file-name-directory
+                        (or load-file-name buffer-file-name default-directory)))))
+  (add-to-list 'load-path (expand-file-name "etc/blog" repo-root)))
+(require 'orgit-file-transclusion)
+(setq orgit-file-forge-url "https://github.com/steve-downey/compile-time-forth/blob/")
