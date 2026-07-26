@@ -30,7 +30,7 @@
 ## True Forth revision (docs/forth-plan-2.md)
 
 - [x] Step F23: revision governance and pivot record
-- [ ] Step F24: interpreter, interpret state only
+- [x] Step F24: interpreter, interpret state only
 - [ ] Step F25: colon compiler and session image
 - [ ] Step F26: the cut
 - [ ] Step F27: immediacy and control flow

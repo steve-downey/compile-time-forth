@@ -72,6 +72,7 @@ endif()
 
 add_subdirectory(elaborator)
 add_subdirectory(foundation)
+add_subdirectory(interpreter)
 add_subdirectory(machine)
 add_subdirectory(parser)
 add_subdirectory(reader)

@@ -1,114 +1,110 @@
-# step-brief.md — Step F24: The interpreter, interpret state only
+# step-brief.md — Step F25: the colon compiler and the session image
 
 Forward-only brief for the next clean agent. Bounded; not a log. Prior-step
 narrative lives in `git log`; architecture lives in
 `docs/compiler_architecture.org` — consult it only where pointed, by anchor.
+Your orchestrator pastes your own step section from `docs/forth-plan-2.md`
+plus the decision records it cites; this brief does not attempt to restate
+that section from memory, only to hand you what F24 learned building the
+interpreter that your own pasted section will not tell you.
 
-**Read this first: the plan changed.** `docs/forth-plan-2.md` is now the governing
-plan and `docs/forth-plan.md` is superseded history. The project pivoted from a
-structural grammar to the real Forth-2012 text interpreter. Your orchestrator
-pastes your step section and the decision records it cites; do not open either
-plan. The pivot rationale, if you need it, is
-`docs/divergences/DIV-0011-true-forth-pivot.md`.
+## Goal (from the checklist title and F24's own forward pointer; verify against your pasted step section)
 
-## Goal
+`checklist.md` names this step "colon compiler and session image." F24's own
+step text (docs/forth-plan-2.md §6) previewed it as: D15's eventual artifact
+is a session image — code space, dictionary, data-space seed, and output, a
+trivially copyable literal built in one constant-expression evaluation and
+runnable again at runtime — and that lands at F25/F26. F24 explicitly did
+not build this; `compiled_forth<Source>` (`forth.hpp`) is untouched and still
+the R1 one-shot API. Confirm the precise merge criterion against your own
+pasted section rather than this paraphrase.
 
-Build the Forth-2012 §3.4 outer text interpreter, **interpret state only**, in
-`src/smd/forth/interpreter/{input_source,interp}.hpp` (+ `.test.cpp` +
-`CMakeLists.txt`). `forth_state` grows an input source (a source view plus a
-`>IN` offset), `BASE` (default 10), and `STATE` (0 = interpreting).
+## What F24 built, by anchor
 
-The loop: scan a word; look it up in the dictionary (newest-first, so
-redefinition shadows); if found and it is a primitive, run it through
-`apply_primitive`; if not found, try it as a number per `BASE` and push it; if
-that fails, a **positioned** diagnosed error naming the unknown word. `\` and
-`( ... )` are consumed by the existing comment scanners. There is no `:` yet —
-that is F25.
+`docs/compiler_architecture.org`'s new **Phase 7** section (after Phase 6)
+covers all of this in prose, transcluding both files in full:
 
-## Merge criterion
+- `smd::forth::interpreter::forth_state<MaxDepth, MaxRDepth, MaxData, MaxOut,
+  MaxName>` (`src/smd/forth/interpreter/interp.hpp`, anchor
+  `aa1d6f83-9b3c-4e2a-8d5f-3c7b1e9a4f62` covers `interpret` itself) —
+  **composes** a `machine::forth_state` (accessor: `.machine()`) with a new
+  `input_source` (`.source()`), `BASE` (`.base()`/`.set_base()`, default 10),
+  and `STATE` (`.state()`/`.set_state()`, default 0). See DIV-0012 for why
+  this is composition, not an in-place edit of `machine::forth_state` —
+  every existing R1-pipeline consumer of that narrower type is unaffected.
+- `input_source` (`src/smd/forth/interpreter/input_source.hpp`, anchor
+  `6a8b2e4f-1c9d-4a3e-8f5b-2d7c9e1a4b6f`) — `SOURCE`/`>IN` as a
+  `std::string_view` plus a plain `int` offset, per D19: `>IN` is real
+  machine state, not a cursor hidden in the scanner. `cursor_at_in()`
+  rebuilds a `parser::cursor` by replaying from the start of the text.
+- `interpret(state, dict, fuel)` — the outer loop, interpret state only: no
+  `:`, so every dictionary hit it can reach is a `machine::primitive`,
+  executed through the unchanged `machine::apply_primitive`. A non-primitive
+  binding is diagnosed (`"word is not executable yet (F24: primitives
+  only)"`), not silently skipped — **this is the branch F25 replaces** with
+  real `colon_word` execution once `:` can produce one.
+- Number classification per `BASE`: `is_number_token_in_base`/
+  `token_to_cell_in_base` (same file), agreeing with the decimal-only
+  `reader::is_number_token`/`token_to_cell` at base 10, generalized to
+  2..36. `BASE` is plumbed and tested directly (`set_base`/`base()`); no
+  `HEX`/`DECIMAL` word exists yet — add one only if your own step section
+  asks for it.
+- `consume_interp_fuel` — D22 fuel for the outer loop itself, once per token,
+  independent of `machine::consume_vm_fuel`/`machine::consume_fuel`.
 
-Per your pasted step section. At minimum, as `static_assert`s with Catch2
-mirrors: `1 2 + .` yields output `"3 "` and an empty stack; `BASE` is plumbed and
-tested (directly, or via `HEX`/`DECIMAL` if you include them); an unknown word
-carries its source position; a stack underflow reached through the interpreter is
-the same diagnosed error `apply_primitive` already produces.
+## Gotchas F25 needs and cannot get from its own pasted section
 
-## What already exists that F24 builds on (pointers, not narration)
-
-- **The token layer is already written and tested.**
-  `src/smd/forth/reader/forth_chars.hpp` has `fold_char`, `is_word_char`,
-  `skip_forth_space`, `scan_word`, `scan_token<MaxName>`, `scan_paren_comment`,
-  `is_number_token`, and `token_to_cell`. Architecture anchors
-  `e9a1c6a1-9d3d-4a6a-9f2e-7d3f2b3c8a1c` and
-  `c3d5e8b2-7f2a-4b9c-8d3e-4f6a8c2b1e9f`. **Do not rewrite these.** Decision D19
-  (pasted with your step) says the token layer either moves under `interpreter/`
-  or stays in `parser/` — **your choice, made once, recorded in
-  `docs/compiler_architecture.org`.** Note `reader/` is deleted at F26, so
-  "leave it in `reader/`" is not one of the options; if you choose to leave it in
-  place for now, say so explicitly in your report and in the brief you write, so
-  F26 knows it inherits the move.
-- **`forth_state`** (`machine/forth_state.hpp`) is
-  `template <int MaxDepth, int MaxRDepth, int MaxData, int MaxOut>` — data stack,
-  return stack, arena data space, and a fixed-capacity output buffer with
-  `emit_char`/`emit_cell`. Your new fields go here, as more template-parameterized
-  state, never hardcoded capacities.
-- **`apply_primitive`** is in the same header and already covers all 47
-  primitives including the memory words (`@ ! +! ALLOT`) and the output words
-  (`. .S EMIT CR`). Interpreting a primitive **is** calling it. Every misuse it
-  can see is already a diagnosed `foundation::result` error, never UB — your loop
-  propagates those, it does not re-diagnose them.
-- **The dictionary** (`machine/dictionary.hpp`) has append-only storage with
-  newest-first lookup, which is what gives Forth redefinition semantics for free.
-  `default_dictionary()` installs the primitives.
-- **The F5 number/word tests move here intact.** The hard-won edges are that `-1`
-  is a number and `1-` is a word, and that words fold to uppercase at scan time.
-  Those tests are the specification for the number recognizer; carry them, do not
-  re-derive them.
-- **Fuel is architecture now, not just a VM concern** (D22): the interpreter loop
-  itself carries a step budget, so a pathological source cannot run the constant
-  evaluator out of steps undiagnosed. Model it on the VM's existing budget.
-
-## Gotchas
-
-- **`default_dictionary()` holds 47 primitives, not 46.** The array in
-  `dictionary.hpp` is correct at 47; its own doc comment above it still says 46
-  and omits `1+` from the prose word list. Fix that comment while you are there —
-  the wrong number has already propagated into planning documents once.
-- **Nothing is deleted in this step.** The reader grammar, the elaborator,
-  `eval_direct`, and `codegen` all still build and all their tests still pass.
-  The cut is F26. If your change makes any of them fail to compile, you have
-  reached further than this step.
-- **Diagnostics are a merge criterion, not a nicety.** The elaborator got
-  positioned errors from a tree; you have to thread position through `>IN`
-  yourself. Test the shape of the error, not just that one occurred.
-- **`>IN` is an offset into the input source, and it is ordinary machine state.**
-  That is the whole point — it is what makes user-defined parsing words possible
-  at F29. Do not hide it inside the scanner as a local cursor.
+- **`machine::dictionary`'s existing `colon_word` binding (`dictionary.hpp`)
+  is an R1 type and is very likely the wrong shape for you.** Its one field,
+  `core_id`, is a handle into the elaborator's arena
+  (`elaborator::compiled_unit`) — machinery step F26 deletes. A true-Forth
+  colon definition compiles directly as immediate words run (D13/D24:
+  threaded code, defunctionalized CPS, the return stack as the
+  continuation), with no elaborator arena to hold a `core_id` into. Whether
+  you repurpose `colon_word`, add a new binding variant, or change what
+  `core_id` means is your call — but do not assume the existing struct
+  already fits; it was built for a pipeline this pivot retired.
+- **There is no code space yet.** `machine::instruction.hpp`/`codegen.hpp`/
+  `vm.hpp`'s `compiled_program<MaxCode, MaxWords>` is a fixed, pre-sized
+  array produced by one batch `codegen` call over an already-complete
+  elaborated tree. A colon compiler that compiles words one `:`/`;` pair at
+  a time as the interpreter meets them needs an incrementally-appendable
+  code space, most likely living on `interpreter::forth_state` itself
+  (D15's "code space" is part of the session image). Whether that reuses
+  `instr`/`op` from `instruction.hpp` or needs its own representation is
+  yours to decide.
+- **`interpret`'s unknown-word and non-primitive-binding branches are your
+  extension points**, not `apply_primitive`. Do not add compiling behavior
+  inside `apply_primitive` (`machine/forth_state.hpp`) — that function is
+  the pure-primitive substrate F8/F13/F16 already finished and other steps
+  depend on its exact 47-opcode shape (`dictionary_test.cpp` asserts
+  `dict.size() == 47`).
+- **`STATE` is already a field, always 0 coming out of F24.** You do not
+  need to add it to `interpreter::forth_state`; you need to make `interpret`
+  (or a colon-compiler entry point layered over it) actually write and read
+  it.
+- **Fuel**: reuse `consume_interp_fuel`'s shape (per-something-processed,
+  positioned diagnosis) rather than inventing a fourth fuel mechanism if
+  compiling needs its own budget accounting.
 
 ## Standing constraints
 
-- Makefile is the single build interface. **Use `TOOLCHAIN=gcc-16`** — bare `make`
-  picks system gcc-13, which rejects `gnu++26` and fails to configure.
-  `make TOOLCHAIN=gcc-16 compile|test`; secondary `clang-21`.
-- **`make lint` runs clean, all hooks.** The previous brief's caveat that the
-  node/go-based hooks (`markdownlint`, `gitleaks`, `checkmake`) cannot provision
-  is **stale** — they provision and pass as of F23. Treat a lint failure as a
-  real failure. **clang-format will reflow** touched files; let it. Note that
-  clang-format is pinned to v21.1.2 by `.pre-commit-config.yaml` and is stricter
-  than a system clang-format may be, particularly about the indentation of
-  transclusion anchor comments.
-- Every compiled structure is flat, trivially destructible, and
-  capacity-parameterized; heap-backed `fix`/`Box` types are barred. All
-  capacities are template parameters with defaults.
-- Compile-time tests use the immediately-invoked-lambda `static_assert` pattern;
-  every public constexpr API gets one.
-- **Do not pick your own DIV number.** The orchestrator allocates it at dispatch.
+- `TOOLCHAIN=gcc-16` for `make compile|test`; `make lint` runs clean, all
+  hooks — a lint failure is real.
+- Nothing is deleted until F26: the R1 pipeline (reader/elaborator/
+  eval_direct/codegen/vm, all reachable via `forth.hpp`'s `compiled_forth`)
+  must keep building and keep passing its own tests. F24 touched none of it.
+- Every compiled structure stays flat, trivially destructible, and
+  capacity-parameterized; heap-backed `fix`/`Box` types are barred (D3).
+- Compile-time tests use the immediately-invoked-lambda `static_assert`
+  pattern; every public constexpr API gets one.
+- Do not pick your own DIV number; the orchestrator allocates it at
+  dispatch. F24 used DIV-0012.
 
 ## Before handoff
 
-`make TOOLCHAIN=gcc-16 compile`, `... test` green (and `clang-21` if available);
-lint green or the individual-hook fallback above; `smoke.sh` ends `SMOKE OK`;
-`checklist.md` ticked; the D19 token-layer decision and any new durable fact
-recorded in `docs/compiler_architecture.org` in place, by anchor;
-`step-brief.md` rewritten for F25 (the colon compiler and the session image);
-DIV filed for any deviation, using the number you were given.
+`make TOOLCHAIN=gcc-16 compile`, `... test` green; `make lint` green;
+`smoke.sh` ends `SMOKE OK`; `checklist.md` ticked; durable facts recorded in
+`docs/compiler_architecture.org` in place, by anchor; `step-brief.md`
+rewritten for F26 (the cut); DIV filed for any deviation, using the number
+you are given.

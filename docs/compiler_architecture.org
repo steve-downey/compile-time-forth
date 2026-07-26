@@ -51,6 +51,13 @@ A colon definition's declared stack-effect comment is the one =( ... )= exceptio
 
 #+transclude: [[file:../src/smd/forth/reader/forth_chars.hpp::c3d5e8b2-7f2a-4b9c-8d3e-4f6a8c2b1e9f]] :lines 2- :src cpp :end "c3d5e8b2-7f2a-4b9c-8d3e-4f6a8c2b1e9f end"
 
+**D19's token-layer location decision (step F24).**
+D19 (=docs/forth-plan-2.md=) puts the combinator library "below the word," owning scanning and classification over the machine's own input source, and gives the step that first needs this layer from outside =reader/= (F24, the text interpreter) the choice of where =forth_chars.hpp= itself should live: under =interpreter/=, or down in =parser/= where the rest of the combinator library already sits.
+F24 makes that choice, but only partially: =forth_chars.hpp= **stays at its current path**, =src/smd/forth/reader/forth_chars.hpp=, for now, consumed by =smd::forth::interpreter= through its existing canonical include (=<smd/forth/reader/forth_chars.hpp>=) rather than moved.
+The reasoning is scope, not disagreement with D19: =reader/= is deleted wholesale at step F26 (the cut), and moving this one header a step early — which would mean renamesting its =smd::forth::reader= namespace to match wherever it lands, and touching every one of its current consumers (=read_program.hpp=, the reader grammar's own tests) — is exactly the kind of reach beyond one step's own boundary =AGENTS.md= asks agents not to make.
+=forth_chars.hpp= has no dependency on anything else in =reader/= (only on =foundation/= and =parser/=), so the move itself is mechanical whenever it happens; F24's own recommendation, non-binding, is that its natural home is =parser/= alongside the rest of the combinator library, not =interpreter/=, since D19 frames it as combinator-library machinery that several consumers (the interpreter now, F29's parsing words later) sit on top of, not as something the interpreter itself owns.
+**Step F26 inherits this move as unfinished business**: relocating =forth_chars.hpp= (and re-pointing its two includers) is part of "the cut," not a separate future step.
+
 * Phase 2: Applicative Parser Combinators and the Forth Grammar
 
 DRAFT — pending author revision.
@@ -249,3 +256,30 @@ A =Source= that fails to parse, fails elaboration, or overflows any capacity is 
 
 F15's own merge criterion, verbatim: =compiled_forth<": SQUARED DUP * ;  4 SQUARED">.stack()= static-asserts to =[16]= — a one-element stack snapshot whose only cell is =16= (=forth.test.cpp='s =SquaredMergeCriterion=).
 The =hello= example (=src/examples/hello.cpp=) runs a small program through =compiled_forth= and prints its =.output()=; =src/examples/godbolt_forth.cpp= is the Godbolt single-file extraction example the plan asks for, modeled on =~/src/compile-time-scheme/main/src/examples/godbolt_arithmetic.cpp='s own shape — "single-file extraction" is literal here, since =forth.hpp= is header-only as of this step.
+
+* Phase 7: The Text Interpreter, Interpret State Only (step F24, docs/forth-plan-2.md)
+
+Everything above this section describes the R1 pipeline (source text → structural parse → syntax tree → elaboration → codegen → a choice of backend), superseded as the project's front end by DIV-0011's true-Forth pivot (=docs/divergences/DIV-0011-true-forth-pivot.md=).
+That pipeline, its tree, and its elaborator are untouched by step F24 and remain fully buildable and tested — the cut that removes them is step F26 — but they are no longer where new front-end work lands.
+D13 makes the Forth-2012 section 3.4 outer text interpreter the architecture: parse a word, find it, execute it (interpret state only, as of this step — compiling arrives at F25), else try it as a number per =BASE=, else a positioned diagnosed error; =STATE=, =SOURCE=, =>IN=, and =BASE= are ordinary machine state, not hidden inside any parser.
+
+=smd::forth::interpreter::forth_state= is what "machine state grows =SOURCE=/=>IN=/=BASE=/=STATE=" means concretely: it wraps a =machine::forth_state= (the stacks, data space, and output buffer, all unchanged since F8/F10) by composition rather than by editing that type in place, and adds an =input_source= plus =BASE= (default 10) and =STATE= (0 = interpreting; F25 is the first step that ever writes a nonzero value).
+Composition, not an in-place edit, is what keeps every existing consumer of the narrower =machine::forth_state= — =machine::run=, =machine::eval_program=, =forth.hpp='s own =forth_program= — working unchanged; the wider type stays a literal, trivially destructible aggregate exactly like its inner =machine::forth_state= already was (D3).
+
+#+transclude: [[file:../src/smd/forth/interpreter/input_source.hpp::6a8b2e4f-1c9d-4a3e-8f5b-2d7c9e1a4b6f]] :lines 2- :src cpp :end "6a8b2e4f-1c9d-4a3e-8f5b-2d7c9e1a4b6f end"
+
+=>IN= is stored as a bare byte offset, not as a =parser::cursor=, per D19's own instruction that it be ordinary, inspectable machine state rather than a cursor buried inside a scanner's local variables — the property F29's user-defined parsing words will depend on, since a Forth-level word like =PARSE= has to be able to read and write =>IN= through the same interface the outer loop itself uses.
+=input_source::cursor_at_in= is the bridge back to the combinator library: it rebuilds a =parser::cursor= by replaying =parser::cursor::bump= from the start of the source text, which is what keeps line/column diagnostics correct without =input_source= maintaining a second, parallel line/column tracker of its own.
+
+The outer loop itself is =interpret=: scan one word via =reader::scan_word= (the D19 token layer discussed in Phase 1, still at its current path), look it up in the =machine::dictionary= newest-first (free redefinition shadowing, unchanged since F9), run it through =machine::apply_primitive= if it resolves to a primitive, else classify it as a number per the state's own =BASE= and push it, else diagnose an unknown word at the word's own start position.
+Number classification per =BASE= is new machinery, not a generalization of =reader::is_number_token=/=token_to_cell= in place: those two stay fixed to decimal (D8's original scope, predating =BASE=), and =is_number_token_in_base=/=token_to_cell_in_base= sit in =interp.hpp= instead, agreeing with the decimal-only pair at =base == 10= (checked directly, by =static_assert=) and generalizing to any base 2..36 by treating =A=..=Z= as digits 10..35 — which composes for free with D8's case folding, since every token reaching this classification has already been folded to uppercase by =scan_word=.
+
+#+transclude: [[file:../src/smd/forth/interpreter/interp.hpp::aa1d6f83-9b3c-4e2a-8d5f-3c7b1e9a4f62]] :lines 2- :src cpp :end "aa1d6f83-9b3c-4e2a-8d5f-3c7b1e9a4f62 end"
+
+Fuel is architecture now (D22), not only a VM/evaluator concern: =consume_interp_fuel= bounds the outer loop itself, once per token actually processed, the same shape as =machine::consume_vm_fuel= and =machine::consume_fuel= but scoped to a layer neither of those reaches — a source that is nothing but an unbroken stream of valid tokens, none of which ever exhausts a stack or any other already-fueled subsystem, still cannot run the constant evaluator past its own budget undiagnosed.
+Every stack/data-space misuse a primitive's own =apply_primitive= diagnoses (underflow, overflow, division by zero, an out-of-bounds =@=/=!=) surfaces through =interpret= completely unchanged — the identical =foundation::parse_error= value, not a re-diagnosed or repositioned one, since D7's machine substrate carries no source-position concept of its own to add.
+An unknown word's diagnosis, by contrast, is always positioned: at the scanned token's own start, after any leading whitespace/comment has already been skipped, which is what makes =\= and =( ... )= comments simply vanish as intertoken space rather than ever becoming tokens themselves.
+
+F24's own merge criterion, verbatim: =1 2 + .= run through =interpret= leaves output ="3 "= and an empty data stack; =BASE= defaults to 10 and setting it to 16 makes =FF .= print =255 = (=interp.test.cpp='s =HexBaseHandling=); an unknown word's diagnosed error carries the position of the word itself, not the source's start (=UnknownWordCarriesPosition=); a stack underflow reached through =interpret= is ===-equal, error value for error value, to calling =machine::apply_primitive= directly for the same misuse (=UnderflowMatchesApplyPrimitiveDirectly=).
+The F5 number/word tests — =-1= is a number, =1-= is a word — move here intact, now exercised through the full interpreter loop rather than only the token-layer classifier (=NegativeOneIsANumberOneMinusIsAWord=).
+There is no =:= yet: every dictionary hit this step can actually reach is a =machine::primitive=, and a non-primitive binding (unreachable from =machine::default_dictionary= today, reachable in principle from a caller-supplied dictionary) is diagnosed rather than silently skipped, per D7.
