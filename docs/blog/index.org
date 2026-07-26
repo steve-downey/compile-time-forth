@@ -156,6 +156,16 @@ loop's back edge turns out to need the same agreement any other join does.
 The first version of it was also wrong, caught not by a test I wrote but by
 a conformance suite landing on the same tree the same week.
 
+** [[file:post-21-the-oracle-is-not-an-authority.org][Part 21 — The Oracle Is Not an Authority]]
+
+The other two legs of the oracle Part 15 promised finally exist: John
+Hayes' own conformance tester, adapted as real Forth text and compiled by
+this project's own interpreter, gating six batteries on a session's own
+captured output; and a harness that runs the same programs through real
+~gforth~ and diffs the stacks. One disagreement turns out not to be a bug
+at all --- Forth-2012 leaves it ambiguous on purpose --- but two others
+are, and neither gets fixed tonight.
+
 * Table of Contents
 
 #+toc: headlines 1

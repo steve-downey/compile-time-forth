@@ -1,4 +1,4 @@
-<div class="abstract" id="org6bb91c5">
+<div class="abstract" id="orgb1bf3ec">
 <p>
 Part 15 cut the elaborator and left a plain confession standing where the
 stack-effect checker used to be: nothing checked, a declared effect stored
@@ -254,7 +254,7 @@ The other loose thread is smaller and more mechanical: every diagnosis this chec
 
 <nav style="margin-top: 3em; border-top: 1px solid #ccc; padding-top: 1em">
 
-[↑ Series Index](index.md) | [← Part 19 - The Gap That Stopped Mattering](post-19-the-gap-that-stopped-mattering.md)
+[↑ Series Index](index.md) | [← Part 19 - The Gap That Stopped Mattering](post-19-the-gap-that-stopped-mattering.md) | [Part 21 - The Oracle Is Not an Authority →](post-21-the-oracle-is-not-an-authority.md)
 
 </nav>
 

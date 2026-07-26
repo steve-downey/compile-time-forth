@@ -34,6 +34,7 @@ worktree and are supposed to roll forward.
 | Part 18 | What >IN Was For | F29 | `6b61b86` | `blog/part-18` | 3 |
 | Part 19 | The Gap That Stopped Mattering | F31 | `bbd725d` | `blog/part-19` | 4 |
 | Part 20 | Just Edges | F30 | `6039eb4` | `blog/part-20` | 4 |
+| Part 21 | The Oracle Is Not an Authority | F32 | `5759114` | `blog/part-21` | 4 |
 
 Pin SHAs are the commits that introduced each post. They are **not** the phase
 merges, for the reason in DISC-1.

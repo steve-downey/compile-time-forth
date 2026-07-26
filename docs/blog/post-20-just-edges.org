@@ -241,7 +241,7 @@ Coarser, and worth remembering the next time a diagnosis says less than
 I'd like it to.
 
 #+html: <nav style="margin-top: 3em; border-top: 1px solid #ccc; padding-top: 1em">
-[[file:index.org][↑ Series Index]] | [[file:post-19-the-gap-that-stopped-mattering.org][← Part 19 - The Gap That Stopped Mattering]]
+[[file:index.org][↑ Series Index]] | [[file:post-19-the-gap-that-stopped-mattering.org][← Part 19 - The Gap That Stopped Mattering]] | [[file:post-21-the-oracle-is-not-an-authority.org][Part 21 - The Oracle Is Not an Authority →]]
 #+html: </nav>
 
 * References
