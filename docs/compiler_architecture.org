@@ -20,7 +20,7 @@ Steps F5 through F15 (=docs/forth-plan.md=, the superseded R1 plan) built a clas
 DIV-0011 (=docs/divergences/DIV-0011-true-forth-pivot.md=) retired that design in favor of D13: the Forth-2012 section 3.4 text interpreter, with no reader phase and no elaboration phase, is the architecture.
 Steps F24/F25 built the new front end alongside the old one; step F26 ("the cut", =docs/forth-plan-2.md=) deleted the R1 pipeline outright once the new one could stand on its own.
 Phases 2 through 5 below described the deleted pipeline (grammar, syntax tree, elaboration, and two of its three codegen backends) and have moved to =docs/history/architecture-grammar-era.org=, a frozen one-time snapshot — they are no longer part of this living document's own read path.
-As of this revision the lexical layer (Phase 1), the public one-shot API (Phase 6), the text interpreter (Phase 7), the colon compiler and session image (Phase 8), the cut itself (Phase 9), immediacy and control flow (Phase 10), and execution tokens and defining words (Phase 11) are current.
+As of this revision the lexical layer (Phase 1), the public one-shot API (Phase 6), the text interpreter (Phase 7), the colon compiler and session image (Phase 8), the cut itself (Phase 9), immediacy and control flow (Phase 10), execution tokens and defining words (Phase 11), and parsing words and strings (Phase 12) are current.
 
 * Pipeline overview
 
@@ -51,10 +51,10 @@ Unlike the R1 pipeline this lexical layer originally fed (=docs/history/architec
 
 #+transclude: [[file:../src/smd/forth/parser/forth_chars.hpp::e9a1c6a1-9d3d-4a6a-9f2e-7d3f2b3c8a1c]] :lines 2- :src cpp :end "e9a1c6a1-9d3d-4a6a-9f2e-7d3f2b3c8a1c end"
 
-Forth's own notion of intertoken space is wider than plain whitespace: it also swallows =\ ...= line comments and =( ... )= parenthesized comments, repeating until none of the three remain.
-A colon definition's declared stack-effect comment is the one =( ... )= exception to "comments are just whitespace": the interpreter's own =scan_colon_header= (Phase 8) captures its span (rather than discarding it, the way ordinary comment-skipping does) whenever that comment contains =--=, so the declared effect can be re-sliced out of the original source text later without ever duplicating the comment's characters into a tree (D20: captured, not yet verified — that lands at step F30).
-
-#+transclude: [[file:../src/smd/forth/parser/forth_chars.hpp::c3d5e8b2-7f2a-4b9c-8d3e-4f6a8c2b1e9f]] :lines 2- :src cpp :end "c3d5e8b2-7f2a-4b9c-8d3e-4f6a8c2b1e9f end"
+Through step F28, Forth's own notion of intertoken space was wider than plain whitespace: this scanner also swallowed =\ ...= line comments and =( ... )= parenthesized comments, repeating until none of the three remained (=skip_forth_space=, since deleted).
+Step F29 re-expresses =\= and =(= as ordinary immediate dictionary words instead (D19; see Phase 12): a source =(= or =\= character is now an ordinary one-character word, like any other name that happens to be followed by whitespace, and comments are no longer a scanner-level concept at all — =skip_intertoken_space=, plain ASCII whitespace only, is the only thing this layer itself still does between one token and the next.
+A colon definition's declared stack-effect comment is unaffected by that reexpression: the interpreter's own =scan_colon_header= (Phase 8) still captures a =( ... )= comment's span directly (rather than letting the ordinary =(= word consume it) whenever that comment immediately follows a =:= definition's own name and contains =--=, so the declared effect can be re-sliced out of the original source text later without ever duplicating the comment's characters into a tree (D20: captured, not yet verified — that lands at step F30).
+See Phase 12 for =\=/=(='s own reexpressed code and =scan_delimited=, the shared scanning primitive every F29 parsing word (including them) is built from.
 
 **D19's token-layer location, resolved at step F26.**
 D19 (=docs/forth-plan-2.md=) puts the combinator library "below the word," owning scanning and classification over the machine's own input source, and gave the step that first needed this layer from outside =reader/= (F24, the text interpreter) the choice of where =forth_chars.hpp= itself should live: under =interpreter/=, or down in =parser/= where the rest of the combinator library already sits.
@@ -321,3 +321,56 @@ This is a structural fact about what these words are, not a scope cut this step 
 A `DEFER`red word invoked before `IS` is diagnosed on execution, not a silent no-op (=DeferredWordBeforeIsIsDiagnosed=); redefinition shadowing is unaffected by every new binding kind this step adds (=machine/dictionary.test.cpp='s own shadowing tests, carried unchanged).
 
 See DIV-0016 (=docs/divergences/DIV-0016-f28-execution-tokens-and-defining-words.md=) for the complete record of this step's own design choices, including the ones this section only summarizes.
+
+* Phase 12: Parsing Words and Strings (step F29, docs/forth-plan-2.md)
+
+D19's own reason for building `>IN` as a plain offset on `machine::forth_state` rather than a cursor hidden inside a scanner reaches its payoff here: a parsing word written in ordinary Forth, calling `PARSE` or `WORD`, works — the demonstration D19 exists for.
+
+** `PARSE`/`WORD`/`CHAR`/`COUNT`/`TYPE` are ordinary primitives, not control words
+
+Every one of these five only needs `state.source()` and `state.data_space()`, both plain fields of `machine::forth_state` since step F28's own fold (Phase 11), so each is a real `machine::primitive` enumerator, dispatched through `apply_primitive` exactly like `DUP`/`@`/`ALLOT` — no dictionary access, no new opcode.
+This is the concrete reason `PARSE`/`WORD` used *inside* a colon definition read text from wherever `SOURCE`/`>IN` happen to be *when that definition later runs*, not text present at its own definition: being ordinary, non-immediate words, a compiling dispatch on them emits `op::prim` (D13's own rule, unchanged), so their own scanning action fires at the compiled word's own call time, exactly like any other primitive's side effect.
+
+#+transclude: [[file:../src/smd/forth/parser/forth_chars.hpp::9cfdb6e6-c3b2-467a-a80c-50a53628f424]] :lines 2- :src cpp :end "9cfdb6e6-c3b2-467a-a80c-50a53628f424 end"
+
+`scan_delimited` is the one shared scan every parsing word in this project is built from — `PARSE` (no leading skip), `WORD` (skip leading delimiters first, and store a *counted* string per D21 rather than a bare address/length pair), and the reexpressed `(`/`S"`/`."`/`ABORT"` below, differing only in the delimiter, the leading-skip flag, and what each does with the result.
+`CHAR`/`[CHAR]` use a second, narrower combinator, `scan_bare_name` (same file): a raw, unfolded, capacity-unlimited blank-delimited name scan, since only the first character of the result is ever consulted.
+`PARSE`/`WORD` copy their result into freshly allotted data-space cells (D21: one cell per character) rather than a reusable scratch buffer — a deliberate choice, not an oversight: every other allotting word already in this project (`CREATE`, `VALUE`, `DEFER`, `,`) grows data space monotonically too, so a loop that calls `WORD` many times consumes data space the same way a loop calling `CREATE` many times would, bounded by the caller's own `MaxData`, not by a hidden separate capacity.
+
+** `(`/`\`: reexpressed from scanner-level skipping into ordinary immediate words
+
+Through step F28, `\`/`(` comments were swallowed by the scanner itself (`skip_forth_space`, `parser/forth_chars.hpp`) before a token was even identified.
+This step deletes that function (along with `forth_lexeme`): `scan_word`'s own trailing skip is now plain whitespace only (`lexeme`, already existing), so a source `(` or `\` character survives as an ordinary one-character token whenever the next character is whitespace — the same self-delimiting convention every other Forth-2012 word relies on.
+Two new, immediate, non-compile-only `control_builtin` tags (`paren_`, `backslash_`) give them real dictionary entries: found and dispatched by `interpret()`'s own token loop exactly like any other word, each scans forward from `state.source()` for its own terminator (`)` or end of line) via `scan_delimited` and advances `>IN` past it.
+An unterminated `(` is still diagnosed (`scan_delimited`'s own `found_delim` flag reports it); an unterminated `\` (a trailing comment with no newline before end of input) is not an error, matching Forth-2012's own "discard the remainder of the parse area."
+One consequence worth naming: a comment can no longer appear *between* `:` and its own name (`: ( oops ) NAME` now names the word `(`, exactly as a raw name-parse would in any Forth-2012 system) — `scan_colon_header` (Phase 8) is unaffected otherwise, and can now use `scan_word`'s own rest cursor directly to find the name's own end, since that trailing skip no longer risks silently consuming a `( ... )` stack-effect comment immediately following it.
+
+** `S"`/`."`/`ABORT"`: parsing their own string at the moment they are met
+
+All three are immediate control words (`apply_control_word`, interp.hpp): each must consume its own following `"`-delimited text right when it is encountered, regardless of `STATE`, the same reason `(`/`\` must.
+`S"` stores the string into freshly allotted data space (D21, one cell per character, exactly `WORD`'s own convention) and leaves its address and length — Forth-2012's own `( -- c-addr u )` runtime shape, works identically interpreting (push immediately) or compiling (compile the address and length as two literal pushes, since the data-space address is already fixed by the time compilation runs).
+`."` is `S"` plus `TYPE`: interpreting prints the string immediately with no data-space storage at all (nothing has to survive past that one call); compiling stores it (it must survive until the enclosing definition's own later runtime call) and compiles a push-address/push-length/`TYPE` sequence instead of `S"`'s own bare pushes.
+
+#+transclude: [[file:../src/smd/forth/machine/forth_state.hpp::4beb6ab5-f28e-4b2f-8a21-3d4ba8575f55]] :lines 2- :src cpp :end "4beb6ab5-f28e-4b2f-8a21-3d4ba8575f55 end"
+
+`ABORT"` is compile-only (Forth-2012: its interpretation semantics are undefined) and, per DIV-0017, is not yet the real `THROW -2` Forth-2012 calls for — `THROW`/`CATCH` do not exist until F31.
+Its compiled form stores the message and compiles a push-address/push-length/`abort_quote` sequence; the `abort_quote` primitive prints the message (if the runtime flag is nonzero) and then returns a diagnosed `foundation::parse_error` — a hard stop of the whole interpretation, not a silent no-op, and not yet an unwind to a `CATCH`.
+See DIV-0017 for the full record and its own revisit condition.
+
+** `[CHAR]`: compile-only `CHAR`
+
+`[CHAR]` scans the next blank-delimited name at the moment it is met (`scan_bare_name`, same as `CHAR`'s own primitive) and compiles a literal push of its first character's own code, rather than leaving that scan for runtime the way the ordinary, non-immediate `CHAR` primitive does.
+Compile-only, per Forth-2012.
+
+** `default_dictionary` grows to 89 entries
+
+54 primitives (48 from before this step, plus `PARSE WORD CHAR COUNT TYPE` and the runtime half of `ABORT"`) plus 35 control words (29 from before this step, plus `( \ S" ." [CHAR] ABORT"`, all six immediate).
+`effect_lint.hpp`'s own `primitive_data_effect` switch gained six cases (D20: the shape is statically known for every one of these; whether `ABORT"`'s own primitive returns at all is not, which is exactly the kind of fact D20 defers to F30, not something this table decides).
+
+** Merge criteria
+
+`: GREET ." HELLO" CR ;  GREET` outputs `"HELLO\n"` in both worlds — through `interpret()` directly (`interp.test.cpp`'s `DotQuoteMergeCriterion`) and through the public API (`forth.test.cpp`'s own criterion of the same name).
+The demonstration D19 exists for: `: ECHO-WORD 32 WORD COUNT TYPE ;  ECHO-WORD FOO` outputs `"FOO"` — `FOO` exists nowhere near `ECHO-WORD`'s own definition, only at its own call site, and the same program works at `constexpr` through `compiled_forth<Source>` (`forth.test.cpp`'s `UserDefinedParsingWordMergeCriterion`) exactly as it does through `interpret()` directly.
+`S"` round-trips through `TYPE` directly (its own Forth-2012 runtime shape); `WORD`'s own counted-string output round-trips through `COUNT`/`TYPE` — both exercised together in one program (`StringRoundTripMergeCriterion`, both files).
+
+See DIV-0017 (=docs/divergences/DIV-0017-f29-parsing-words-and-strings.md=) for the complete record of this step's own design choices, including the ones this section only summarizes.

@@ -1152,3 +1152,208 @@ TEST_CASE("InterpTest - PostponeExecuteComposesWithOtherCode") {
     CHECK(std::holds_alternative<smd::forth::machine::compiled_colon_word>(
         entry->binding));
 }
+
+// -- Step F29: parsing words and strings (D19/D21) --------------------------
+
+// Merge criterion: `: GREET ." HELLO" CR ;  GREET` outputs correctly.
+static_assert([] {
+    forth_state<64, 64, 1024, 256> st{": GREET .\" HELLO\" CR ;  GREET"};
+    auto dict = default_dictionary<>();
+    compile_buffer<> buf;
+    auto r = interpret(st, dict, buf);
+    return r.has_value() && output_of(st) == "HELLO\n";
+}());
+
+TEST_CASE("InterpTest - DotQuoteMergeCriterion") {
+    forth_state<64, 64, 1024, 256> st{": GREET .\" HELLO\" CR ;  GREET"};
+    auto dict = default_dictionary<>();
+    compile_buffer<> buf;
+    auto r = interpret(st, dict, buf);
+    REQUIRE(r.has_value());
+    CHECK(output_of(st) == "HELLO\n");
+}
+
+// Merge criterion, and the reason D19 built the input stream as plain
+// machine state rather than a scanner-hidden cursor: a *user-defined*
+// parsing word, written in ordinary Forth and calling `WORD` (a primitive
+// with no dictionary or compile-time special-casing at all, F29's own step
+// text), reads its own argument out of the input stream at the moment it is
+// *called* -- not the text present when it was *defined*. `ECHO-WORD` is
+// defined once; `FOO` is text that exists nowhere near its own definition,
+// only at its own call site.
+static_assert([] {
+    forth_state<64, 64, 1024, 256> st{
+        ": ECHO-WORD 32 WORD COUNT TYPE ;  ECHO-WORD FOO"};
+    auto dict = default_dictionary<>();
+    compile_buffer<> buf;
+    auto r = interpret(st, dict, buf);
+    return r.has_value() && output_of(st) == "FOO";
+}());
+
+TEST_CASE("InterpTest - UserDefinedParsingWordMergeCriterion") {
+    forth_state<64, 64, 1024, 256> st{
+        ": ECHO-WORD 32 WORD COUNT TYPE ;  ECHO-WORD FOO"};
+    auto dict = default_dictionary<>();
+    compile_buffer<> buf;
+    auto r = interpret(st, dict, buf);
+    REQUIRE(r.has_value());
+    CHECK(output_of(st) == "FOO");
+}
+
+// A second instance of the same demonstration using PARSE directly instead
+// of WORD, confirming the merge criterion's own "PARSE or WORD" wording: a
+// colon word that reads a comma-terminated argument via PARSE, called twice
+// with two different trailing arguments, reads each one correctly at its
+// own call site.
+static_assert([] {
+    forth_state<64, 64, 1024, 256> st{": ECHO-TO-COMMA 44 PARSE TYPE ;  "
+                                      "ECHO-TO-COMMA one,ECHO-TO-COMMA two,"};
+    auto dict = default_dictionary<>();
+    compile_buffer<> buf;
+    auto r = interpret(st, dict, buf);
+    return r.has_value() && output_of(st) == "onetwo";
+}());
+
+TEST_CASE("InterpTest - UserDefinedParsingWordViaParseMergeCriterion") {
+    forth_state<64, 64, 1024, 256> st{": ECHO-TO-COMMA 44 PARSE TYPE ;  "
+                                      "ECHO-TO-COMMA one,ECHO-TO-COMMA two,"};
+    auto dict = default_dictionary<>();
+    compile_buffer<> buf;
+    auto r = interpret(st, dict, buf);
+    REQUIRE(r.has_value());
+    CHECK(output_of(st) == "onetwo");
+}
+
+// Merge criterion: `S"` round-trips through `COUNT`/`TYPE`. `S"` itself
+// already leaves ( c-addr u -- ), Forth-2012's own runtime shape, so its own
+// round trip is through `TYPE` directly; `COUNT` is what turns a *counted*
+// string -- `WORD`'s own output shape (D21) -- back into the same ( c-addr
+// u -- ) pair. Both round trips are exercised together here, over data this
+// step's own primitives produced, not hand-built test fixtures.
+static_assert([] {
+    forth_state<64, 64, 1024, 256> st{
+        "S\" HELLO \" TYPE : ECHO 32 WORD COUNT TYPE ;  ECHO WORLD"};
+    auto dict = default_dictionary<>();
+    compile_buffer<> buf;
+    auto r = interpret(st, dict, buf);
+    return r.has_value() && output_of(st) == "HELLO WORLD";
+}());
+
+TEST_CASE("InterpTest - StringRoundTripMergeCriterion") {
+    forth_state<64, 64, 1024, 256> st{
+        "S\" HELLO \" TYPE : ECHO 32 WORD COUNT TYPE ;  ECHO WORLD"};
+    auto dict = default_dictionary<>();
+    compile_buffer<> buf;
+    auto r = interpret(st, dict, buf);
+    REQUIRE(r.has_value());
+    CHECK(output_of(st) == "HELLO WORLD");
+}
+
+// S" also works purely interpreting, leaving an address/length pair rather
+// than printing.
+static_assert([] {
+    forth_state<64, 64, 1024, 256> st{"S\" HI\""};
+    auto dict = default_dictionary<>();
+    compile_buffer<> buf;
+    auto r = interpret(st, dict, buf);
+    return r.has_value() && st.data().depth() == 2 &&
+           st.data().peek(0).value() == 2;
+}());
+
+// `(` and `\` are ordinary dictionary words now (D19), not scanner-level
+// special cases: this is the same source `InterpTest -
+// CommentsAreConsumedLikeIntertokenSpace` (above) already exercises, still
+// producing the identical output through the new mechanism.
+TEST_CASE("InterpTest - ParenAndBackslashAreOrdinaryImmediateWords") {
+    forth_state<64, 64, 1024, 256> st{
+        "1 2 + \\ a line comment\n( a paren comment ) ."};
+    auto dict = default_dictionary<>();
+    compile_buffer<> buf;
+    auto r = interpret(st, dict, buf);
+    REQUIRE(r.has_value());
+    CHECK(output_of(st) == "3 ");
+    auto const *entry = dict.lookup("(");
+    REQUIRE(entry != nullptr);
+    CHECK(entry->immediate);
+}
+
+TEST_CASE("InterpTest - UnterminatedParenCommentIsDiagnosed") {
+    forth_state<64, 64, 1024, 256> st{"1 2 + ( never closed"};
+    auto dict = default_dictionary<>();
+    compile_buffer<> buf;
+    auto r = interpret(st, dict, buf);
+    REQUIRE_FALSE(r.has_value());
+    CHECK(std::string_view{r.error().message}.find("unterminated") !=
+          std::string_view::npos);
+}
+
+// `\` at end of input with no trailing newline is a clean end of source, not
+// an error -- unlike `(` with no closing `)`.
+TEST_CASE("InterpTest - BackslashToEndOfInputIsNotAnError") {
+    forth_state<64, 64, 1024, 256> st{"1 2 + . \\ trailing, no newline"};
+    auto dict = default_dictionary<>();
+    compile_buffer<> buf;
+    auto r = interpret(st, dict, buf);
+    REQUIRE(r.has_value());
+    CHECK(output_of(st) == "3 ");
+}
+
+TEST_CASE("InterpTest - CharAndBracketCharMergeCriterion") {
+    // CHAR is an ordinary (non-immediate) primitive: usable directly while
+    // interpreting.
+    forth_state<64, 64, 1024, 256> st{"CHAR ! : STAR [CHAR] * ;  STAR"};
+    auto dict = default_dictionary<>();
+    compile_buffer<> buf;
+    auto r = interpret(st, dict, buf);
+    REQUIRE(r.has_value());
+    REQUIRE(st.data().depth() == 2);
+    CHECK(st.data().peek(1).value() == static_cast<int>('!'));
+    CHECK(st.data().peek(0).value() == static_cast<int>('*'));
+}
+
+TEST_CASE("InterpTest - BracketCharIsCompileOnly") {
+    forth_state<64, 64, 1024, 256> st{"[CHAR] *"};
+    auto dict = default_dictionary<>();
+    compile_buffer<> buf;
+    auto r = interpret(st, dict, buf);
+    REQUIRE_FALSE(r.has_value());
+    CHECK(std::string_view{r.error().message}.find("compile-only") !=
+          std::string_view::npos);
+}
+
+// ABORT" (DIV-0017): compile-only, and a diagnosed hard stop -- not yet
+// Forth-2012's own `THROW -2` (CATCH/THROW land at F31) -- when the runtime
+// flag is nonzero; a silent no-op when it is zero.
+TEST_CASE("InterpTest - AbortQuoteIsCompileOnly") {
+    forth_state<64, 64, 1024, 256> st{"ABORT\" boom\""};
+    auto dict = default_dictionary<>();
+    compile_buffer<> buf;
+    auto r = interpret(st, dict, buf);
+    REQUIRE_FALSE(r.has_value());
+    CHECK(std::string_view{r.error().message}.find("compile-only") !=
+          std::string_view::npos);
+}
+
+TEST_CASE("InterpTest - AbortQuoteFalseFlagIsANoOp") {
+    forth_state<64, 64, 1024, 256> st{
+        ": CHECK ABORT\" boom\" ;  0 CHECK 1 2 +"};
+    auto dict = default_dictionary<>();
+    compile_buffer<> buf;
+    auto r = interpret(st, dict, buf);
+    REQUIRE(r.has_value());
+    CHECK(output_of(st).empty());
+    REQUIRE(st.data().depth() == 1);
+    CHECK(st.data().peek().value() == 3);
+}
+
+TEST_CASE("InterpTest - AbortQuoteTrueFlagPrintsMessageThenDiagnoses") {
+    forth_state<64, 64, 1024, 256> st{
+        ": CHECK ABORT\" boom\" ;  -1 CHECK 1 2 +"};
+    auto dict = default_dictionary<>();
+    compile_buffer<> buf;
+    auto r = interpret(st, dict, buf);
+    REQUIRE_FALSE(r.has_value());
+    CHECK(output_of(st) == "boom");
+    // The abort happened before "1 2 +" ran.
+    CHECK(st.data().depth() == 0);
+}

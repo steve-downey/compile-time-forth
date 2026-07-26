@@ -211,3 +211,66 @@ TEST_CASE("ForthTest - TickExecuteMergeCriterion") {
     REQUIRE(s.size() == 1);
     CHECK(s[0] == 25);
 }
+
+// Step F29: parsing words and strings, through the public one-shot API --
+// interpret() itself is what gained PARSE/WORD/CHAR/COUNT/TYPE and the
+// S"/."/ABORT"/[CHAR]/(/\ control words (interp.hpp, D19/D21), so every
+// program below runs through compiled_forth<Source> unchanged, exactly like
+// F27's and F28's own criteria above.
+
+// `: GREET ." HELLO" CR ;  GREET` outputs correctly in both worlds --
+// compile time (this static_assert) and runtime (the TEST_CASE below).
+static_assert([] {
+    auto out = compiled_forth<": GREET .\" HELLO\" CR ;  GREET">.output();
+    return out.size() == 6 &&
+           std::string_view{out.begin(),
+                            static_cast<std::size_t>(out.size())} == "HELLO\n";
+}());
+
+TEST_CASE("ForthTest - DotQuoteMergeCriterion") {
+    auto out = compiled_forth<": GREET .\" HELLO\" CR ;  GREET">.output();
+    REQUIRE(out.size() == 6);
+    CHECK(std::string_view{out.begin(), static_cast<std::size_t>(out.size())} ==
+          "HELLO\n");
+}
+
+// D19's own central demonstration: a user-defined parsing word, written in
+// ordinary Forth, that reads its own argument out of the input stream via
+// WORD -- FOO exists nowhere near ECHO-WORD's own definition, only at its
+// own call site -- working at constexpr, through the same public API every
+// other step's own merge criterion uses.
+static_assert([] {
+    auto out = compiled_forth<": ECHO-WORD 32 WORD COUNT TYPE ;  "
+                             "ECHO-WORD FOO">.output();
+    return out.size() == 3 &&
+           std::string_view{out.begin(),
+                            static_cast<std::size_t>(out.size())} == "FOO";
+}());
+
+TEST_CASE("ForthTest - UserDefinedParsingWordMergeCriterion") {
+    auto out = compiled_forth<": ECHO-WORD 32 WORD COUNT TYPE ;  "
+                             "ECHO-WORD FOO">.output();
+    REQUIRE(out.size() == 3);
+    CHECK(std::string_view{out.begin(), static_cast<std::size_t>(out.size())} ==
+          "FOO");
+}
+
+// `S"` round-trips through `COUNT`/`TYPE` (S" itself through TYPE directly,
+// per Forth-2012's own ( c-addr u -- ) runtime shape; COUNT is what turns a
+// *counted* string -- WORD's own output shape, D21 -- back into that same
+// pair), both exercised together over data these primitives produced.
+static_assert([] {
+    auto out = compiled_forth<"S\" HELLO \" TYPE : ECHO 32 WORD COUNT TYPE ;  "
+                             "ECHO WORLD">.output();
+    return out.size() == 11 &&
+           std::string_view{out.begin(), static_cast<std::size_t>(
+                                             out.size())} == "HELLO WORLD";
+}());
+
+TEST_CASE("ForthTest - StringRoundTripMergeCriterion") {
+    auto out = compiled_forth<"S\" HELLO \" TYPE : ECHO 32 WORD COUNT TYPE ;  "
+                             "ECHO WORLD">.output();
+    REQUIRE(out.size() == 11);
+    CHECK(std::string_view{out.begin(), static_cast<std::size_t>(out.size())} ==
+          "HELLO WORLD");
+}
