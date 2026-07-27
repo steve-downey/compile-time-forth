@@ -243,6 +243,30 @@ static_assert([] {
            bs[2].end == 3;
 }());
 
+// Step F33 (docs/forth-plan-2.md), DIV-0025: the leader-computation
+// regression guard the case above could not be. A straight-line run with no
+// branch anywhere (push, push, prim +, ret) must recover as exactly *one*
+// block -- an earlier draft of recover_basic_blocks added every ordinary
+// instruction's own fallthrough edge as a leader unconditionally, making
+// every block one instruction long regardless of whether any branch was
+// nearby. The case above never caught this: its own leading branch0 already
+// forces three single-instruction blocks for an unrelated reason, so the
+// defect and the fix agree on that one input. This one does not.
+static_assert([] {
+    compiled_program<16, 8> program{};
+    program.code.push_back(instr{.code = op::push, .operand = cell{1}});
+    program.code.push_back(instr{.code = op::push, .operand = cell{2}});
+    program.code.push_back(
+        instr{.code = op::prim, .operand = static_cast<cell>(primitive::plus)});
+    program.code.push_back(instr{.code = op::ret, .operand = cell{0}});
+    auto const blocks = recover_basic_blocks<8>(program, 0, 4);
+    if (!blocks.has_value()) {
+        return false;
+    }
+    auto const &bs = blocks.value();
+    return bs.size() == 1 && bs[0].start == 0 && bs[0].end == 4;
+}());
+
 // -- check_definition_effect
 // -----------------------------------------------------
 

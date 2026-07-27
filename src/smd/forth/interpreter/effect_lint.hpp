@@ -513,6 +513,20 @@ struct instr_edges {
         return {index + 1, static_cast<int>(in.operand)};
     case op::leave:
         return {static_cast<int>(in.operand), -1};
+    case op::catch_mark:
+        // Step F33 (docs/forth-plan-2.md), D24: `catch_mark`'s own operand
+        // is a real second control-flow edge -- the resume instruction a
+        // caught `throw_op` jumps to directly (`vm.hpp`'s own
+        // `perform_throw`), reached without ever falling through the paired
+        // `prim catch_ok` that always sits at `index + 1` (both of
+        // `interp.hpp`'s own `CATCH` cases emit the pair together, D11/D18).
+        // F30's own checker never needed this edge (`catch_mark`'s own local
+        // effect is `unknown_effect` regardless of which edge is taken, see
+        // this header's own top comment), so it went unmodeled until F33's
+        // own sender lowering needed both of `CATCH`'s real completions
+        // (normal vs. caught) as two separately wired continuations -- see
+        // `sender/lower.hpp`'s own top comment for how it consumes this.
+        return {index + 1, static_cast<int>(in.operand)};
     default:
         return {index + 1, -1};
     }
@@ -602,10 +616,32 @@ struct basic_block {
 /// itself, the instruction immediately following any block-ending
 /// instruction (whether or not anything actually falls into it -- unreached
 /// code still gets its own block rather than being folded into whatever
-/// precedes it), and the target of any branch/branch0/loop_step/
-/// plus_loop_step/leave. Blocks are the maximal runs between consecutive
-/// leaders, in instruction order. Diagnoses @p MaxBlocks exhaustion rather
-/// than exceeding it (D7).
+/// precedes it), and *both* real edges of a genuine branch instruction
+/// (`branch`/`branch0`/`loop_step`/`plus_loop_step`/`leave`/`catch_mark`) --
+/// including a conditional's own fallthrough edge, since that is a second,
+/// real way to reach what follows, distinct from plain physical adjacency.
+/// Blocks are the maximal runs between consecutive leaders, in instruction
+/// order. Diagnoses @p MaxBlocks exhaustion rather than exceeding it (D7).
+///
+/// Step F33 (docs/forth-plan-2.md) fix: an earlier draft of this function
+/// added *every* instruction's own @ref instruction_successors edges as
+/// leaders, unconditionally -- including @c edges.a for an ordinary,
+/// non-branching instruction (@ref instruction_successors's own "default"
+/// case, `{index + 1, -1}`), which is pure bookkeeping for @ref
+/// check_definition_effect's own worklist advance, not a real CFG boundary.
+/// That made *every* instruction a leader of its own physically-following
+/// instruction, so *every* block came out one instruction long regardless of
+/// whether any branch was nearby -- silently contradicting this function's
+/// own "maximal straight-line run" contract (the existing unit test below
+/// never caught it, since its only case already forces single-instruction
+/// blocks for an unrelated reason: a leading `branch0`). F33's own sender
+/// lowering is the first real consumer of block *granularity* (`recover_
+/// basic_blocks` had none before this step, per D24's own doc comment) and
+/// depends on straight-line runs actually being recovered as one block, so
+/// this function now only consults @ref instruction_successors's own edges
+/// for instructions that are genuinely branches -- an ordinary instruction's
+/// physical adjacency to whatever follows needs no separate leader entry.
+/// Filed as DIV-0025.
 template <int MaxBlocks, int MaxCode, int MaxWords>
 [[nodiscard]] constexpr auto recover_basic_blocks(
     machine::compiled_program<MaxCode, MaxWords> const &program, int entry,
@@ -636,15 +672,25 @@ template <int MaxBlocks, int MaxCode, int MaxWords>
     }
     for (int i = entry; i < end_exclusive; ++i) {
         auto const &in = program.code[i];
-        auto const edges = instruction_successors(in, i);
-        if (edges.a != -1) {
-            if (auto r = add_leader(edges.a); !r.has_value()) {
-                return r.error();
+        // Only a genuine branch instruction's own edges are leader-worthy
+        // (this function's own top comment, DIV-0025): an ordinary
+        // instruction's "default" successor (index + 1) is physical
+        // adjacency, not a real alternate control-flow entry.
+        bool const is_branch =
+            in.code == op::branch || in.code == op::branch0 ||
+            in.code == op::loop_step || in.code == op::plus_loop_step ||
+            in.code == op::leave || in.code == op::catch_mark;
+        if (is_branch) {
+            auto const edges = instruction_successors(in, i);
+            if (edges.a != -1) {
+                if (auto r = add_leader(edges.a); !r.has_value()) {
+                    return r.error();
+                }
             }
-        }
-        if (edges.b != -1) {
-            if (auto r = add_leader(edges.b); !r.has_value()) {
-                return r.error();
+            if (edges.b != -1) {
+                if (auto r = add_leader(edges.b); !r.has_value()) {
+                    return r.error();
+                }
             }
         }
         bool const is_terminator =

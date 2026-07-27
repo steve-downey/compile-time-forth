@@ -20,7 +20,7 @@ Steps F5 through F15 (=docs/forth-plan.md=, the superseded R1 plan) built a clas
 DIV-0011 (=docs/divergences/DIV-0011-true-forth-pivot.md=) retired that design in favor of D13: the Forth-2012 section 3.4 text interpreter, with no reader phase and no elaboration phase, is the architecture.
 Steps F24/F25 built the new front end alongside the old one; step F26 ("the cut", =docs/forth-plan-2.md=) deleted the R1 pipeline outright once the new one could stand on its own.
 Phases 2 through 5 below described the deleted pipeline (grammar, syntax tree, elaboration, and two of its three codegen backends) and have moved to =docs/history/architecture-grammar-era.org=, a frozen one-time snapshot — they are no longer part of this living document's own read path.
-As of this revision the lexical layer (Phase 1), the public one-shot API (Phase 6), the text interpreter (Phase 7), the colon compiler and session image (Phase 8), the cut itself (Phase 9), immediacy and control flow (Phase 10), execution tokens and defining words (Phase 11), parsing words and strings (Phase 12), CATCH and THROW (Phase 13), and conformance (Phase 14) are current.
+As of this revision the lexical layer (Phase 1), the public one-shot API (Phase 6), the text interpreter (Phase 7), the colon compiler and session image (Phase 8), the cut itself (Phase 9), immediacy and control flow (Phase 10), execution tokens and defining words (Phase 11), parsing words and strings (Phase 12), CATCH and THROW (Phase 13), conformance (Phase 14), the effect lint (Phase 15), and the sender backend (Phase 16) are current.
 
 * Pipeline overview
 
@@ -35,12 +35,12 @@ flowchart LR
     B --> D[Dictionary]
     B --> E[Data space]
     C --> F["Stack-machine VM (re-run, e.g. from a session image)"]
-    C --> G["Sender/receiver CPS backend (planned, step F33)"]
+    C --> G["Sender/receiver backend (Phase 16, step F33) -- a second executor of the same code"]
 #+end_src
 
 Code space, dictionary, and data space together are D15's "session image" (=interpreter::session=, Phase 8): a trivially copyable literal that survives from the one =constexpr= evaluation that built it into ordinary runtime code, where the VM can run one of its own defined words again.
 The stack-machine VM and its instruction set (Phase 9) are retained unchanged from the R1 pipeline (D16); only what feeds them changed.
-The sender/receiver backend is still planned, not yet built (step F33).
+The sender/receiver backend (Phase 16) is a second, runtime-only executor of that same instruction stream, not a second code path fed by anything upstream of it (D14) -- see Phase 16 for why it cannot also be a compile-time path.
 
 * Phase 1: Source Text and the Lexical Layer
 
@@ -522,3 +522,130 @@ One genuine, documented behavioral widening from the deleted elaborator's own pe
 A hand-computed peak-depth merge criterion: `DUP DUP DROP DROP` has net effect zero but peaks at three cells, verified directly against `effect_inputs`/`peak_depth` (`EffectLintTest - PeakDepthIsARealNumberAssertedAgainstAHandComputation`), which also verifies `compiled_program::required_stack_depth`'s own first fill.
 
 See DIV-0019 (=docs/divergences/DIV-0019-f30-effect-lint-design.md=) for the complete design record.
+* Phase 16: The Sender Backend (step F33, docs/forth-plan-2.md)
+
+This is the step the project's own thesis (D11) either holds or does not: threaded code is CPS with the continuation defunctionalized as the return stack, so lowering to Execution26 senders is *refunctionalization* — taking that defunctionalized representation (a stack of addresses plus a dispatch loop, =vm.hpp='s own =run_from=) back to explicit continuations.
+=src/smd/forth/sender/lower.hpp= is a second *executor* of the exact same =machine::instr= stream =run_from= already runs (D14: one semantics, two executors), consuming F30's own recovered control-flow graph directly (D24's own "one analysis, two clients") rather than rebuilding it.
+
+=word_sender= completes on one of three channels; @ref block_outcome (the value channel's own shape) is how a recovered block, or a whole word, reports which of them it took:
+
+#+transclude: [[file:../src/smd/forth/sender/lower.hpp::e7f4b8a2-1c6d-4e3f-9a5b-2d7c8e1f4a6b]] :lines 2- :src cpp :end "e7f4b8a2-1c6d-4e3f-9a5b-2d7c8e1f4a6b end"
+
+The error channel's own payload, =control_error=, is D24's "THROW -> error channel with (n, state)" verbatim:
+
+#+transclude: [[file:../src/smd/forth/sender/lower.hpp::d3e6a9c1-4f7b-4a2e-8c1d-6b9e3a5f7c2d]] :lines 2- :src cpp :end "d3e6a9c1-4f7b-4a2e-8c1d-6b9e3a5f7c2d end"
+
+** What lowers natively
+
+=sender::word_sender<...>= (a hand-written Execution26 sender, =connect=/=operation_state=, matching =vendor/execution/examples/sender_demo.cpp='s own pattern) is the per-word executor; its own =run= is the "explicit constexpr trampoline for control transfer" R1 F18's own pre-authorization names — a plain C++ loop over =interpreter::recover_basic_blocks='s own recovered blocks, building and driving exactly one fresh composed sender per block (D24's own "one composed sender per block"), because a loop's own trip count is runtime data and Execution26 senders are concrete types with no template-level fixed point without type erasure this step does not otherwise add.
+
+Every construct this step's own merge criteria name lowers natively, with no VM-in-a-sender fallback:
+
+- =IF=/=ELSE=/=THEN= and both =BEGIN= forms (=BEGIN...UNTIL=, =BEGIN...WHILE...REPEAT=): a =block_outcome::jump= (or =fallthrough=) value completion the trampoline loop acts on directly — "loops as repeat-until composition" (D24) via ordinary C++ iteration.
+- =DO=/=LOOP=/=+LOOP=/=LEAVE=: the same jump/fallthrough mechanism, mutating =forth_state::returns()= for the loop's own limit/index frame exactly as =vm.hpp= does (this lowering does not touch the return stack's own =DO=-loop bookkeeping at all — only call-frame and =CATCH=-frame bookkeeping are elided, see "The fallback boundary" below).
+- =EXIT= (which compiles to a bare =op::ret=, =vm.hpp='s own top comment) and a plain =;=: both complete =word_sender='s own value channel (=block_outcome{ret}=) directly — "EXIT/ret/LEAVE as value completions" (D24), literally.
+- =CATCH=/=THROW=: =THROW=, and any primitive fault this project already maps to a THROW code (D7), complete the error channel (=set_error(control_error{n, &state})=) — D24's "THROW -> error channel with (n, state)". =CATCH= (the =catch_mark=/=catch_ok= pair =interp.hpp= always emits together) composes the protected xt's own nested =word_sender= with real =then=/=upon_error= combinators — not a hand-rolled if/else — into "0 on normal completion, n with the Forth stack restored on a caught throw": D24's "CATCH as the error-to-value adapter with Forth stack restoration". Handled *inline*, wherever =catch_mark= appears within a block's own instruction scan, not only when it is a block's own first instruction — an earlier draft assumed the latter and was wrong whenever something (e.g. =push_xt= for =[']=) precedes =catch_mark= in its own recovered block.
+- =EXECUTE=: reuses the identical machinery =call= does (a target read from the data stack at runtime rather than the instruction's own operand), recursing into a fresh =word_sender= exactly the same way.
+- =CREATE=/=DOES>=: =does_enter= is a terminator completing the value channel exactly like =ret= (this step needed no special casing beyond that); =create_word= is an ordinary mid-block instruction reaching into =dict= exactly as =vm.hpp='s own =create_here= does.
+
+=call=/=EXECUTE= are refunctionalized most literally of all: neither pushes a return address onto =forth_state::returns()= any more.
+Entering a callee is an ordinary recursive C++ call (=word_sender::run= constructing and driving a nested =word_sender=), so the *C++ call stack* is the continuation — exactly the return-stack entry it replaces.
+=ret=/=does_enter= complete the value channel instead of popping anything: the recursive caller's own C++ frame resumes on its own, needing no address to jump to.
+=op::halt=, reached from any depth, propagates as a =block_outcome::halt= value completion through every recursive level rather than being resolved locally, matching =vm.hpp='s own unconditional "stop the whole run regardless of call depth" behavior for it.
+
+** The fallback boundary
+
+D24 permits a VM-in-a-sender fallback for non-refunctionalizable return-stack use, on the condition that the boundary be named precisely rather than let quietly become the implementation.
+This step's own trigger, =sender::word_uses_return_stack_data=, is conservative and whole-word: any of =>R=/=R>=/=R@= anywhere in a word's own compiled body routes that word's *entire* execution through =sender::run_word_via_vm= (=vm.hpp='s own =run_from=, wrapped as one step), never a partial lowering.
+
+#+transclude: [[file:../src/smd/forth/sender/lower.hpp::f4b1c8e6-2a5d-4b9f-8c3e-1d6a9f4b2c8e]] :lines 2- :src cpp :end "f4b1c8e6-2a5d-4b9f-8c3e-1d6a9f4b2c8e end"
+
+*Why this trigger, precisely.* Under =vm.hpp=, a =call='s own return address is a real cell on the return stack; a word using =R>=/=R@= could in principle inspect or overwrite that exact cell, redirecting its own control flow through data.
+This lowering elides that cell entirely — nothing is ever pushed onto =returns()= for a call — so a word relying on reading its own return address via =R>=/=R@= would see wrong data (whatever this lowering's own =DO=-loop bookkeeping happens to have left nearby) if lowered natively.
+This is a *sound but not tight* boundary: many =>R=/=R>= uses are perfectly well-nested and never touch a call-frame address at all (=interp.test.cpp='s own =DEEP= — =42 >R 10 0 DO 5 THROW LOOP R> DROP= — never crosses a call boundary and would in fact produce identical results lowered natively), but precisely characterizing which uses are safe would need a real return-stack shape analysis this step does not attempt.
+Any use is treated as potentially unstructured, uniformly.
+
+*The two named boundary programs* (=lower_catch_native.test.cpp=, =lower_catch_fallback.test.cpp=):
+
+- Native side: =: BOOM 42 THROW ; : TRY ['] BOOM CATCH ;= — neither word touches the return stack as data, so both lower natively; =BOOM='s own =42 THROW= completes its own block's sender via the error channel, adapted back to a value by =TRY='s own =catch_mark= case.
+- Fallback side: =: DEEP 42 >R 10 0 DO 5 THROW LOOP R> DROP ; : GUARD ['] DEEP CATCH ;= (=interp.test.cpp='s own existing =CATCH= corpus) — =DEEP='s own body uses =>R=/=R>=, so it falls back for its whole body; =GUARD='s own =CATCH= around it does *not* fall back (=GUARD= itself touches neither), a genuine mixed case: a natively-lowered =CATCH= whose own protected xt runs via the fallback.
+
+Getting the fallback side correct needed two fixes beyond =run_from= called bare (DIV-0027, found by running this exact program, not by inspection):
+
+1. A manufactured return address (=interpreter::compile_buffer::call_word='s own halt-pad convention, replayed verbatim), since entering via this path is not an =op::call=/=op::execute= and nothing else supplies one.
+2. Hiding =state.handler_depth()= (save, set =-1=, restore) for the call's own duration. =vm.hpp='s own =perform_throw= treats =handler_depth()= as the base of a *real*, VM-materialized 3-cell frame on =returns()=; this lowering's own native =CATCH= never materializes one (kept as C++ locals instead, DIV-0026's sibling decision).
+   Left visible, an enclosing sender-level =CATCH='s own =handler_depth()= would make =perform_throw= set =ip= to a resume point meaningful only to the *sender* trampoline and let =run_from='s own dispatch loop keep fetching from it — corrupting execution by interpreting the caller's own code as more of the fallback word's own body.
+   Hiding it turns an escaping =THROW= into =run_from='s own standard "uncaught" diagnosis instead; =word_sender::run='s own caller recognizes that exact message and re-numbers it into a proper =control_error{numbered = true, ...}=, so the enclosing sender-level =CATCH= still catches it correctly.
+
+See DIV-0027 (=docs/divergences/DIV-0027-f33-fallback-handler-depth-isolation.md=) for the complete record, including why the more direct fix (also pushing a real 3-cell frame from the native =CATCH= case) does not work.
+
+** The constexpr capability split: a positive D24 outcome, not a gap
+
+=beman::execution26::sync_wait= is not =constexpr=-capable: its own implementation (=vendor/execution/include/beman/execution/detail/sync_wait.hpp=) constructs a =run_loop=, and its own error path unconditionally converts an unhandled =set_error= into a =std::exception_ptr= (=as_except_ptr=) and rethrows it (=std::rethrow_exception=) — none of =run_loop=, =std::exception_ptr=, or =throw=/=rethrow_exception= is usable in a constant expression.
+R1 F18's own pre-authorization named exactly this possibility and its resolution: "if =sync_wait= turns out not to be constexpr-capable at all, then compile-time coverage comes from the VM and the sender backend is the runtime path — that is an acceptable, documented outcome per D24, not a failure."
+That is the outcome here.
+The refunctionalization itself holds — every combinator this component uses below =sync_wait= (=just=, =then=, =let_value=, =connect=, =start=) *is* =constexpr=-marked in Execution26's own implementation — but the one call that actually drives a sender to completion is not, so the whole executor built on it is runtime-only by construction, not by omission.
+=sender::run_from_via_senders= pre-normalizes its own sender's error/stopped channels to an ordinary value (=upon_error=/=upon_stopped=, D24's own adapters again) before its own single, true top-level =sync_wait= call, specifically so that call never observes an unhandled =set_error= and therefore never reaches its own exception-throwing path at all — D7 ("never a C++ exception for a Forth-level fault") holds structurally, not by luck.
+Every *recursive*, mid-composition step (a nested =call=/=CATCH='s own callee) instead uses a small hand-rolled =drive= helper (connect a fixed receiver, =start=, read back whichever channel fired) rather than =sync_wait= at all — the plan's own "never =sync_wait= inside evaluation" read literally: this project's one =sync_wait= call site is never inside another sender's own evaluation.
+Compile-time =Forth-2012= coverage remains exclusively =vm.hpp='s own =run_from= (D14 leg (a), Phase 14); this component adds a second, runtime-only executor, verified against the first by direct comparison, not a second compile-time path.
+
+** DIV-0026: receiver type erasure, a general lesson for recursive sender composition
+
+A first working draft of =word_sender= followed the textbook Execution26 shape directly: =run= was a member template over the connecting receiver's own concrete type, exactly like =operation_state= itself.
+This does not compile to completion on this machine for any nontrivial word.
+Measured directly: a single =run_from_via_senders= call over the simplest possible corpus program (=ABS=, one =IF=, no =CATCH=, no nested calls) drove =cc1plus= to *42 GB* resident before the kernel OOM-killed it; a follow-up run under an explicit =ulimit -v= cap of roughly *11 GB* also failed, denied by a single *6.7 GB* allocation request after 2m26s — a hard cap an order of magnitude below the original failure point was not enough to let it finish either, confirming unbounded growth rather than merely "expensive."
+
+*Why.* Local lambdas inside a function template get a distinct closure type per instantiation of the enclosing template, even when textually identical — a language rule, not a quirk of this codebase.
+=run='s own =CATCH= handling composes a nested =word_sender= with real =then=/=upon_error= lambdas written directly in =run='s own source.
+If =run= is itself a member template over the connecting receiver, each instantiation mints its own copies of those lambda types; composing the nested =word_sender= with them produces a receiver type embedding them, and connecting to *that* type requires instantiating =run= again — for a new receiver type, minting *its own* new lambdas, requiring yet another instantiation, without bound.
+There is no fixed point: nothing in this composition converges to a receiver type =run= has already been instantiated for, because every instantiation's own lambdas are unique to it by construction.
+(=call=/=execute='s own recursive step does not have this problem: it drives a nested =word_sender= through =drive=, which always connects to the single, fixed =drive_receiver<block_outcome, error_type>= type regardless of the enclosing receiver — it is specifically =CATCH='s own genuine sender-combinator composition that triggers it.)
+
+*The fix.* =abstract_receiver<Value, Error>= (a three-method interface, =value=/=error=/=stopped=) and =receiver_adapter<Value, Error, Receiver>= (a trivial one-time wrapper from a concrete Execution26 receiver to that interface) replace the direct receiver-templated =run=.
+=word_sender::run= is now templated only on =word_sender='s own class-level dimensions (=MaxCode=, ..., =DictName=), never on whatever connects to it — instantiated exactly once per distinct combination, full stop, regardless of how many closures compose around it externally.
+Measured after the fix: the same =ABS= case compiles in roughly 2–6 seconds using *330–360 MB* peak RSS (measured three times, including once under a 4 GB =ulimit -v= cap); a seven-scenario comparison battery in one translation unit compiles in roughly 5 seconds at *395 MB* peak RSS.
+
+*The general lesson.* Any component that writes a custom Execution26 sender whose own work function recurses into itself through further sender composition, via the ordinary receiver-templated =connect=/=operation_state= pattern, hits this same wall the moment that composition uses a local lambda — which most idiomatic Execution26 code does routinely.
+F34 (the FFI) is a plausible next place this could recur if it composes senders recursively across a foreign call boundary; DIV-0026 (=docs/divergences/DIV-0026-f33-sender-receiver-type-erasure.md=) exists so that step does not have to rediscover the wall by OOM-killing a machine first.
+
+** DIV-0025: the CFG's second client, and what it found
+
+=interpreter::recover_basic_blocks= (F30, Phase 15) was, before this step, called by exactly nothing: =check_definition_effect= walks =instruction_successors= directly, per instruction, and =recover_basic_blocks= existed solely as "the reusable CFG product D24 asks this step to leave behind for F33's own sender lowering."
+This step is the first real consumer of block *granularity* the function was written for, and it revealed a real defect: the leader-computation loop added *every* instruction's own structural fallthrough edge (=instruction_successors='s own "default" case, pure worklist-advance bookkeeping, not a control-flow fact) as a leader, unconditionally — so every recovered block came out exactly one instruction long, regardless of whether any branch was anywhere nearby, silently contradicting the function's own "maximal straight-line run" doc comment.
+The existing F30 unit test never caught it: its one example already forces single-instruction blocks for an unrelated reason (a leading =branch0=), so the defect and the fix produce the same answer for that one input.
+Confirmed directly: a hand-built four-instruction straight-line program (no branch anywhere) recovered as four one-instruction blocks before the fix, one block after it.
+
+This is the strongest form D20's own "one analysis, two clients" claim can take: the shared analysis had exactly one client for two steps running, and only broke visibly the moment a second, genuinely different client — one that needs block *extent*, not merely edge existence — tried to consume the same product for what it was actually built for.
+Fixed in place (=interpreter::effect_lint.hpp=): the edge-leader step now only runs for a genuine branch instruction (=branch=/=branch0=/=loop_step=/=plus_loop_step=/=leave=/=catch_mark=); an ordinary instruction's physical adjacency to whatever follows needs no separate leader entry.
+=instruction_successors= also gained =op::catch_mark='s own second, real edge (its resume-ip operand, previously unmodeled per F30's own step-brief note) as part of this same step, isolating the =catch_mark=/=catch_ok= pair into exactly one two-instruction block.
+See DIV-0025 (=docs/divergences/DIV-0025-f30-basic-block-leader-defect.md=) for the complete record.
+
+** Per-shard compile cost: a memory baseline, not only a timing one
+
+Unlike Phase 14's own per-shard table (constexpr operation count against a raised compiler ceiling — wall-clock is the only cost that ceiling can regress against), this component's own binding constraint is peak compiler *memory*, per DIV-0026's own measured finding: instantiating this component's own sender machinery costs several hundred MB of peak =cc1plus= resident memory per distinct =forth_state=/capacity combination, even after the type-erasure fix — not the many-GB-and-growing cost of the unfixed defect, but still real, and the reason every =lower_*.test.cpp= shard below is kept to one or two corpus programs sharing one capacity combination rather than combined into fewer, larger files (D22, "budgets are architecture").
+Measured single-TU =g++-16= compile time and peak RSS per shard (=-std=c++26=, this project's own default optimization level, wall clock and =/usr/bin/time -v= peak resident set size):
+
+| Shard                             | Programs                                  | Time  | Peak RSS |
+|------------------------------------+--------------------------------------------+-------+----------|
+| =lower.test.cpp=                   | (no sender instantiation; helper unit tests) | 1.9s  | 300 MB   |
+| =lower_if.test.cpp=                | ABS (=IF=)                                  | 3.8s  | 378 MB   |
+| =lower_loops1.test.cpp=            | COUNTDOWN, UPTO3 (both =BEGIN= forms)       | 3.8s  | 379 MB   |
+| =lower_loops2.test.cpp=            | SUMTO, TENS (=DO=/=LOOP= with =I=/=J=)      | 4.7s  | 378 MB   |
+| =lower_leave.test.cpp=             | FIND5 (=LEAVE=), SUMEVEN (=+LOOP=)          | 6.3s  | 376 MB   |
+| =lower_exit.test.cpp=              | exit-boundary (=EXIT=), FIRST (=UNLOOP EXIT=) | 5.0s  | 378 MB   |
+| =lower_defining.test.cpp=          | =DOES>=/=CREATE=, nested =CATCH=            | 5.3s  | 376 MB   |
+| =lower_catch_native.test.cpp=      | TRY/BOOM, uncaught THROW, caught fault      | 7.8s  | 378 MB   |
+| =lower_catch_fallback.test.cpp=    | GUARD/DEEP (the fallback boundary program)  | 6.1s  | 377 MB   |
+| =lower_fuel.test.cpp=              | SPIN (fuel exhaustion, stop channel)        | 6.3s  | 378 MB   |
+
+Recorded here as the regression baseline a future change to this component would show up against — a future shard combining programs at *different* capacity sizes should be measured the same way and split further if it comes in heavy, rather than assumed cheap by extrapolation from this table.
+
+** Merge criteria
+
+The F27/F28/F31 program battery passes through the sender backend with identical final states to =machine::run_from=/=interpreter::call_word= (=sender::testing::states_agree=, compared directly in every =lower_*.test.cpp= shard: data-stack depth and contents, and captured output — not return-stack shape, which the two executors deliberately do not agree on, DIV-0026/DIV-0027's own record).
+=CATCH=/=THROW= demonstrably routes through =set_error= (=lower_catch_native.test.cpp=).
+Native (non-fallback) lowering is shown for =IF=, both =BEGIN= forms, =DO= with =LEAVE=, =EXIT=, and =CATCH=/=THROW= (the shard table above, each verified against the VM directly).
+One program on each side of the fallback boundary is named ("The fallback boundary" above): =TRY=/=BOOM= (native), =GUARD=/=DEEP= (fallback).
+The constexpr-capability split is recorded ("The constexpr capability split" above): =sync_wait= is not constexpr-capable, so this component is a runtime-only executor; compile-time coverage remains exclusively the VM's.
+
+See DIV-0025 through DIV-0027 (=docs/divergences/=) for the complete record of this step's own findings.
