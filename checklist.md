@@ -39,7 +39,7 @@
 - [x] Step F30: effect lint
 - [x] Step F31: CATCH and THROW
 - [x] Step F32: conformance
-- [ ] Step F33: sender backend
+- [x] Step F33: sender backend
 - [ ] Step F34: foreign function interface
 - [ ] Step F35: bootstrap prelude (stretch)
 - [ ] Step F36: consolidation

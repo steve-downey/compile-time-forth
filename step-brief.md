@@ -1,120 +1,114 @@
-# step-brief.md — Step F33: The Sender Backend
+# step-brief.md — Step F34: The Foreign Function Interface
 
 Forward-only brief for the next clean agent. Bounded; not a log. Prior-step
 narrative lives in `git log`; architecture lives in
 `docs/compiler_architecture.org` — consult it only where pointed, by anchor.
 Your orchestrator pastes your own step section from `docs/forth-plan-2.md`
 plus the decision records it cites; this brief does not attempt to restate
-that section from memory. **F32 (conformance) ran concurrently with F30 and
-will already be merged by the time you start — do not assume F32's own state
-from this brief; read its own step-brief/checklist entry instead.**
+that section from memory.
 
-## What F30 built, by anchor
+## What F33 built, by anchor
 
-`docs/compiler_architecture.org`'s Phase 14 section ("The Effect Lint")
+`docs/compiler_architecture.org`'s Phase 16 section ("The Sender Backend")
 covers this in full, with transcluded code anchors. Read it before opening
-`interpreter/effect_lint.hpp` wholesale.
+`sender/lower.hpp` wholesale.
 
-- **The CFG recovery you need is already built, and is D24's own explicit
-  hand-off**: `interpreter::instruction_successors(instr const&, int index)
-  -> instr_edges` (`effect_lint.hpp`) is the *one* edge relation over
-  `machine::instr` — every opcode's own real successor(s) within an
-  instruction range, `-1` meaning "no such edge." `interpreter::
-  recover_basic_blocks<MaxBlocks>(program, entry, end_exclusive)` (no
-  default for `MaxBlocks` — you must specify it explicitly at each call
-  site) partitions a definition's own range into maximal straight-line runs
-  using exactly this edge relation, returning
-  `foundation::result<foundation::static_vector<basic_block, MaxBlocks>>`
-  (`struct basic_block { int start; int end; }`, half-open). This *is*
-  "one analysis, two clients" (D24's own words): F30's own checker walks
-  the same edges at per-instruction granularity (a worklist, not blocks —
-  simpler for a checker that only cares about levels); you want the
-  block-partitioned view directly.
-- **`instruction_successors` does *not* model `op::catch_mark`'s own
-  resume-ip edge.** `catch_mark`'s own operand is a real jump target (the
-  instruction right after the paired `prim catch_ok`, reached directly by
-  a caught `THROW` rather than by falling through `catch_ok`'s own normal-
-  completion path) — a genuine second control-flow edge out of that
-  instruction. F30's own checker didn't need it (`catch_mark`'s own local
-  *effect* is `unknown_effect` regardless of which edge is taken, so
-  omitting the edge cost nothing for level-checking purposes), so
-  `instruction_successors` only returns the default single successor
-  (`index + 1`) for it. If your own sender lowering needs `CATCH`'s two
-  real completions (normal vs. caught) as two separate wired
-  continuations, you will need to add that edge yourself — either by
-  special-casing `op::catch_mark` in your own block/edge walk, or by
-  extending `instruction_successors` itself (the latter is probably
-  cleaner: nothing in F30's own checker would be affected by `catch_mark`
-  gaining a second, always-known edge, since the checker's own worklist
-  already tolerates unknown-poisoned edges without needing them to be
-  absent). Given D24's own context ("unstructured return-stack
-  manipulation does not refunctionalize and falls back to the VM inside a
-  single sender"), you may already plan to handle `CATCH`/`THROW` via a VM
-  fallback rather than real sender continuations — if so, this gap may not
-  block you at all, but it is worth confirming rather than discovering
-  partway through.
-- **The edge relation is orthogonal to the effect lattice's own `unknown`.**
-  `instruction_successors` always returns real, structural edges regardless
-  of whether `instruction_effect`'s own *data*-effect for that instruction
-  is `known` or `unknown` (`LEAVE`/`EXECUTE`/`CATCH` all still have real,
-  fully-modeled successors; only their *effect* is unknown). Do not
-  conflate the two: for sender lowering, every edge `instruction_successors`
-  reports is real control flow you must wire, independent of whether F30's
-  own checker could verify anything about the data stack across it.
-- **`machine::compiled_colon_word` gained four fields**: `effect_known`,
-  `effect_inputs`, `effect_outputs`, `peak_depth` (`-1` unless
-  `effect_known`) — the checker's own per-word, durable output. Not
-  consumed by anything F30 itself wrote beyond `interpreter::
-  instruction_effect`'s own `op::call` case (looks up a callee's stored
-  effect by matching `entry_point`); available to you if useful, not
-  required.
-- **`compiled_program::required_stack_depth`/`::required_return_depth`**
-  (DIV-0008's own `-1` placeholders) are now filled, but as a running
-  maximum across every definition closed so far in a session whose own
-  peak was computable — not a per-word number, and not computed at all for
-  any definition touching `unknown` anywhere. Do not read these as a
-  precise bound for any one word; use `compiled_colon_word::peak_depth`
-  instead if you need a per-word figure, and expect `-1` on it often (any
-  word using `EXECUTE`/`CATCH`/`?DUP`/a call to such a word).
-- **Diagnoses fire at `;`,`interpreter::interpret`'s own compiling path**,
-  positioned at the closing `;` itself (`machine::instr` still carries no
-  source position of its own, D16 unchanged) — irrelevant to your own
-  lowering, since by the time your code runs, every definition it sees has
-  already passed this gate.
-
-## Gotchas F33 needs and cannot get from its own pasted section
-
-- **`recover_loop_regions<MaxCode, MaxWords, MaxRegions = 64>`** recovers
-  `DO...LOOP`/`+LOOP` regions by matching `do_setup` to its own
-  `loop_step`/`plus_loop_step` by dest — a purely structural, non-CFG
-  helper (a plain scan, not using `instruction_successors` at all). If your
-  own loop-as-repeat-until-composition lowering wants this pairing, it is
-  already there; you do not need to re-derive it.
-- **A definition's own per-analysis working set (`check_definition_effect`'s
-  own `MaxSpan`, default 160) is independent of `MaxCode`** — if you add
-  your own per-definition analysis, follow the same pattern (index by
-  offset from `entry`, a small dedicated capacity template parameter, not
-  `MaxCode` reused directly): an early F30 draft sized its own working set
-  off `MaxCode`'s multi-thousand default and made every single `;` pay for
-  the whole session's own worst case, turning a few dozen `interpret()`
-  calls in one test file into several minutes of constant-evaluation time.
-  `recover_basic_blocks` already takes its own explicit `MaxBlocks` for the
-  same reason — do not give it a large default either.
+- **The sender backend is real and green**: `sender::word_sender<...>`
+  (`sender/lower.hpp`) is a second executor of the same `machine::instr`
+  stream `vm.hpp`'s own `run_from` runs, verified bit-for-bit against it
+  (`sender::testing::states_agree`, `sender/run_and_compare.hpp`) for `IF`,
+  both `BEGIN` forms, `DO`/`LOOP`/`+LOOP`/`LEAVE`, `EXIT`, `CATCH`/`THROW`,
+  `EXECUTE`, and `CREATE`/`DOES>`. Public entry points: `sender::
+  run_from_via_senders(program, state, entry, fuel, dict)` (mirrors `vm.hpp`'s
+  own `run_from`) and `sender::run_via_senders(program, state, fuel)` (mirrors
+  `run`, seeds the data space first).
+- **`sync_wait` is not constexpr-capable** (`beman::execution26::sync_wait`'s
+  own implementation uses `run_loop`, `std::exception_ptr`, and `throw`/
+  `rethrow_exception` internally — none of which is usable in a constant
+  expression). The sender backend is therefore a **runtime-only** executor;
+  compile-time Forth-2012 coverage remains exclusively `vm.hpp`'s own
+  `run_from`. If your own step reaches for Execution26 senders at all
+  (plausible for an FFI boundary — composing a call out to foreign code and
+  back is exactly the shape senders are for), expect the same split: build
+  the composition with `constexpr`-marked combinators (`just`/`then`/
+  `let_value`/`connect`/`start` all are), but the actual driving call
+  (`sync_wait`, or your own equivalent) will not be, and nothing downstream
+  of it can be constant-evaluated either.
+- **If you write a custom Execution26 sender whose own work function
+  recurses into itself through further sender composition, do not make that
+  work function a member template over the connecting receiver's own
+  concrete type** — the ordinary, textbook `connect`/`operation_state`
+  shape. `word_sender`'s own first draft did exactly this and OOM-killed the
+  build machine at 42 GB (a follow-up run under an 11 GB cap also failed).
+  Cause: local lambdas inside a function template get a distinct closure
+  type per instantiation of the *enclosing* template, so a receiver-
+  templated recursive work function has no fixed point — instantiating it
+  for one receiver mints new lambda types, composing them into a new
+  receiver type, requiring another instantiation, unboundedly. Fix (already
+  built and reusable in spirit, not literally importable since it is
+  `lower.hpp`-private): type-erase the sender's own receiver
+  (`abstract_receiver<Value, Error>` + a trivial `receiver_adapter<Value,
+  Error, Receiver>` one-time wrapper) so the work function is templated only
+  on the sender's own fixed dimensions, never on whatever connects to it.
+  Full record, including the measured before/after numbers: DIV-0026.
+- **Component tests that instantiate Execution26 sender machinery are
+  expensive per distinct capacity combination even after that fix** —
+  330–400 MB peak `cc1plus` RSS measured per `forth_state`/capacity
+  combination, not per test case (multiple test cases sharing one
+  combination in one TU are nearly free; a *new* combination is not). If F34
+  composes senders at all, shard its own tests the same way this step's
+  `sender/lower_*.test.cpp` files do (one or two programs per translation
+  unit, one capacity combination per file) from the start, and measure each
+  shard (`/usr/bin/time -v` against a standalone compile) rather than
+  assuming cost. `docs/compiler_architecture.org`'s own Phase 16 table is
+  the baseline to compare against, not just to imitate the shape of.
+- **`run_word_via_vm`'s own handler-hiding pattern** (`sender/lower.hpp`) is
+  the template for any future case where sender-composed code calls into a
+  region whose own error handling was not itself written in terms of
+  Execution26's error channel: save the ambient signal that would otherwise
+  leak across the boundary, run the foreign region with it hidden, then
+  translate whatever comes back into the shape the sender side expects
+  before restoring it. If F34's FFI boundary can be called from inside a
+  `CATCH`-protected region (a foreign function invoked via an xt that a
+  Forth word passes to `CATCH`), the same category of bug this step found
+  (DIV-0028 — an enclosing sender-level `handler_depth()` corrupting a
+  nested VM-driven dispatch loop) is worth checking for explicitly, not
+  assumed away by analogy.
+- **`sender::word_body_end`** (`sender/lower.hpp`) is a real, useful, but
+  imprecise pattern if you need a compiled word's own instruction range
+  post-hoc (after compilation, not at `;`-time when `buf.here()` is free):
+  `compiled_program` stores no per-word end, only `entry_points` (starts),
+  so this scans for the smallest later-recorded entry point as a safe
+  (possibly loose) upper bound. Reusable as-is if you need the same thing;
+  do not assume it is tight.
+- **`sender::run_and_compare.hpp`** (`compile_and_run_both`, `states_agree`)
+  is a small, reusable "compile a word, run it through both the VM and the
+  sender backend, compare final data-stack/output state" test helper.
+  Reusable if F34 wants the same VM-vs-second-executor comparison shape for
+  its own tests, with one caveat: it always starts both runs from a
+  *fresh* `forth_state` with caller-supplied stack arguments pushed. A word
+  depending on data-space *content* established at compile time (`CREATE`/
+  `DOES>`-style — this step hit exactly this in `lower_defining.test.cpp`'s
+  own `DoesEnter` test) needs both runs to start from a *copy* of the
+  already-interpreted `forth_state` instead, not from the shared helper;
+  see that test file for the direct pattern.
 
 ## Standing constraints
 
 - `TOOLCHAIN=gcc-16` for `make compile|test`; `make lint` runs clean, all
   hooks. **Run `make lint` as the very last thing before you commit, and
-  commit whatever it reformats.** Watch for codespell false positives on
-  short local variable names that happen to collide with common words
-  (a two-letter abbreviation for "flow node" was one F30 hit; renamed to
-  the unabbreviated spelling).
+  commit whatever it reformats.**
+- Watch `pgrep -af cc1plus` and its RSS before launching a new build if any
+  step touches sender/Execution26 composition — see the compile-cost note
+  above. Never stack a second build against a first that appears stuck;
+  diagnose (memory, not just time) before retrying.
 - Every compiled structure stays flat, trivially destructible, and
   capacity-parameterized; heap-backed `fix`/`Box` types are barred (D3).
 - Compile-time tests use the immediately-invoked-lambda `static_assert`
-  pattern; every public constexpr API gets one.
+  pattern; every public constexpr API gets one — but see the constexpr-
+  capability note above before assuming a *sender*-composed API can.
 - Do not pick your own DIV number; the orchestrator allocates it at
-  dispatch. F30 used DIV-0019 (DIV-0020 is next).
+  dispatch. F33 used DIV-0025 through DIV-0028 (DIV-0028 is next).
 
 ## Before handoff
 
@@ -122,5 +116,6 @@ covers this in full, with transcluded code anchors. Read it before opening
 `make check-transclusions` green; `smoke.sh gcc-16` and `smoke.sh clang-21`
 both end `SMOKE OK`; `checklist.md` ticked; durable facts recorded in
 `docs/compiler_architecture.org` in place, by anchor; `step-brief.md`
-rewritten for **F34** (foreign function interface); DIV filed for any
-deviation, using the number you are given.
+rewritten for **F35** (bootstrap prelude, if reached next) or whatever the
+plan names after F34; DIV filed for any deviation, using the number you are
+given.
