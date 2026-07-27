@@ -71,7 +71,7 @@ covers this in full, with transcluded code anchors. Read it before opening
   before restoring it. If F34's FFI boundary can be called from inside a
   `CATCH`-protected region (a foreign function invoked via an xt that a
   Forth word passes to `CATCH`), the same category of bug this step found
-  (DIV-0027 — an enclosing sender-level `handler_depth()` corrupting a
+  (DIV-0028 — an enclosing sender-level `handler_depth()` corrupting a
   nested VM-driven dispatch loop) is worth checking for explicitly, not
   assumed away by analogy.
 - **`sender::word_body_end`** (`sender/lower.hpp`) is a real, useful, but
@@ -108,7 +108,7 @@ covers this in full, with transcluded code anchors. Read it before opening
   pattern; every public constexpr API gets one — but see the constexpr-
   capability note above before assuming a *sender*-composed API can.
 - Do not pick your own DIV number; the orchestrator allocates it at
-  dispatch. F33 used DIV-0025 through DIV-0027 (DIV-0028 is next).
+  dispatch. F33 used DIV-0025 through DIV-0028 (DIV-0028 is next).
 
 ## Before handoff
 

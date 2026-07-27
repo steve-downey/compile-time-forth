@@ -190,10 +190,9 @@ to_status(control_error<MaxDepth, MaxRDepth, MaxData, MaxOut> const &e)
 /// stack as data (@ref touches_return_stack_data) -- the whole-word,
 /// conservative trigger for @ref run_word_via_vm.
 template <int MaxCode, int MaxWords>
-[[nodiscard]] constexpr auto
-word_uses_return_stack_data(machine::compiled_program<MaxCode, MaxWords> const
-                                &program,
-                            int entry, int end_exclusive) -> bool {
+[[nodiscard]] constexpr auto word_uses_return_stack_data(
+    machine::compiled_program<MaxCode, MaxWords> const &program, int entry,
+    int end_exclusive) -> bool {
     for (int i = entry; i < end_exclusive; ++i) {
         if (touches_return_stack_data(program.code[i])) {
             return true;
@@ -260,8 +259,12 @@ struct drive_receiver {
 
     drive_result<Value, Error> *out;
 
-    auto set_value(Value v) && noexcept -> void { out->value.emplace(std::move(v)); }
-    auto set_error(Error e) && noexcept -> void { out->error.emplace(std::move(e)); }
+    auto set_value(Value v) && noexcept -> void {
+        out->value.emplace(std::move(v));
+    }
+    auto set_error(Error e) && noexcept -> void {
+        out->error.emplace(std::move(e));
+    }
     auto set_stopped() && noexcept -> void { out->stopped = true; }
 };
 
@@ -442,12 +445,11 @@ class word_sender;
 ///   from the native `CATCH` case) does not work.
 template <int MaxCode, int MaxWords, int MaxDepth, int MaxRDepth, int MaxData,
           int MaxOut, int DictWords, int DictName>
-[[nodiscard]] auto
-run_word_via_vm(machine::compiled_program<MaxCode, MaxWords> const &program,
-                machine::forth_state<MaxDepth, MaxRDepth, MaxData, MaxOut>
-                    &state,
-                int entry, machine::dictionary<DictWords, DictName> *dict,
-                int &fuel) -> machine::status {
+[[nodiscard]] auto run_word_via_vm(
+    machine::compiled_program<MaxCode, MaxWords> const &program,
+    machine::forth_state<MaxDepth, MaxRDepth, MaxData, MaxOut> &state,
+    int entry, machine::dictionary<DictWords, DictName> *dict, int &fuel)
+    -> machine::status {
     auto push_halt_pad = state.returns().push(machine::cell{0});
     if (!push_halt_pad.has_value()) {
         return push_halt_pad;
@@ -548,9 +550,10 @@ class word_sender {
 
 template <int MaxCode, int MaxWords, int MaxDepth, int MaxRDepth, int MaxData,
           int MaxOut, int MaxBlocks, int DictWords, int DictName>
-auto word_sender<MaxCode, MaxWords, MaxDepth, MaxRDepth, MaxData, MaxOut,
-                 MaxBlocks, DictWords, DictName>::
-    run(abstract_receiver<block_outcome, error_type> &rec) -> void {
+auto word_sender<
+    MaxCode, MaxWords, MaxDepth, MaxRDepth, MaxData, MaxOut, MaxBlocks,
+    DictWords, DictName>::run(abstract_receiver<block_outcome, error_type> &rec)
+    -> void {
     using machine::instr;
     using machine::op;
     auto const &program = *program_;
@@ -598,9 +601,8 @@ auto word_sender<MaxCode, MaxWords, MaxDepth, MaxRDepth, MaxData, MaxOut,
     auto blocks_r =
         interpreter::recover_basic_blocks<MaxBlocks>(program, entry_, word_end);
     if (!blocks_r.has_value()) {
-        rec.error( error_type{.numbered = false,
-                                             .diag = blocks_r.error(),
-                                             .state = &state});
+        rec.error(error_type{
+            .numbered = false, .diag = blocks_r.error(), .state = &state});
         return;
     }
     auto const &blocks = blocks_r.value();
@@ -621,17 +623,16 @@ auto word_sender<MaxCode, MaxWords, MaxDepth, MaxRDepth, MaxData, MaxOut,
             }
         }
         if (blk == nullptr) {
-            rec.error(
-                error_type{
-                    .numbered = false,
-                    .diag = foundation::parse_error{
+            rec.error(error_type{
+                .numbered = false,
+                .diag =
+                    foundation::parse_error{
                         foundation::source_pos{},
                         "sender lowering: instruction pointer left its own "
                         "recovered block range"},
-                    .state = &state});
+                .state = &state});
             return;
         }
-
 
         // Every other block: a straight-line run of ordinary instructions,
         // possibly ending in one genuine terminator this block's own
@@ -639,457 +640,167 @@ auto word_sender<MaxCode, MaxWords, MaxDepth, MaxRDepth, MaxData, MaxOut,
         // "one composed sender per block", @ref word_sender::run's own
         // trampoline loop driving exactly one fresh instance of it here per
         // pass.
-        auto step = make_inline_sender<block_outcome, error_type>(
-            [&](auto rec2) -> void {
-                bool const last_is_terminator = [&] {
-                    switch (program.code[blk->end - 1].code) {
-                    case op::ret:
-                    case op::does_enter:
-                    case op::halt:
-                    case op::branch:
-                    case op::branch0:
-                    case op::loop_step:
-                    case op::plus_loop_step:
-                    case op::leave:
-                        return true;
-                    default:
-                        return false;
-                    }
-                }();
-                int const straight_end =
-                    last_is_terminator ? blk->end - 1 : blk->end;
+        auto step = make_inline_sender<block_outcome, error_type>([&](auto rec2)
+                                                                      -> void {
+            bool const last_is_terminator = [&] {
+                switch (program.code[blk->end - 1].code) {
+                case op::ret:
+                case op::does_enter:
+                case op::halt:
+                case op::branch:
+                case op::branch0:
+                case op::loop_step:
+                case op::plus_loop_step:
+                case op::leave:
+                    return true;
+                default:
+                    return false;
+                }
+            }();
+            int const straight_end =
+                last_is_terminator ? blk->end - 1 : blk->end;
 
-                for (int i = blk->start; i < straight_end; ++i) {
-                    instr const &in = program.code[i];
-                    switch (in.code) {
-                    case op::push:
-                    case op::push_xt: {
-                        auto r = state.data().push(in.operand);
-                        if (!r.has_value()) {
-                            set_error(std::move(rec2),
-                                      error_type{.numbered = false,
-                                                 .diag = r.error(),
-                                                 .state = &state});
-                            return;
-                        }
-                        break;
-                    }
-                    case op::prim: {
-                        if (static_cast<machine::primitive>(in.operand) ==
-                            machine::primitive::catch_ok) {
-                            // Defensive only (D7): the block-recovery fix
-                            // above (DIV-0025) always isolates catch_ok
-                            // immediately after catch_mark into that same
-                            // compound block, handled before this sender is
-                            // even built -- a generic prim dispatch should
-                            // never reach it.
-                            set_error(
-                                std::move(rec2),
-                                error_type{
-                                    .numbered = false,
-                                    .diag = foundation::parse_error{
-                                        foundation::source_pos{},
-                                        "sender lowering: catch_ok reached "
-                                        "outside CATCH's own compound step"},
-                                    .state = &state});
-                            return;
-                        }
-                        auto r = machine::apply_primitive(
-                            static_cast<machine::primitive>(in.operand),
-                            state);
-                        if (!r.has_value()) {
-                            if (machine::is_abort_quote_condition(r.error())) {
-                                set_error(
-                                    std::move(rec2),
-                                    error_type{.numbered = true,
-                                               .n = machine::cell{-2},
-                                               .state = &state});
-                                return;
-                            }
-                            if (state.handler_depth() >= 0) {
-                                auto mapped =
-                                    machine::machine_fault_throw_code(
-                                        r.error());
-                                if (mapped.has_value()) {
-                                    set_error(std::move(rec2),
-                                              error_type{
-                                                  .numbered = true,
-                                                  .n = mapped.value(),
-                                                  .state = &state});
-                                    return;
-                                }
-                            }
-                            set_error(std::move(rec2),
-                                      error_type{.numbered = false,
-                                                 .diag = r.error(),
-                                                 .state = &state});
-                            return;
-                        }
-                        break;
-                    }
-                    case op::call:
-                    case op::execute: {
-                        int target = 0;
-                        if (in.code == op::call) {
-                            target = static_cast<int>(in.operand);
-                        } else {
-                            auto t = state.data().pop();
-                            if (!t.has_value()) {
-                                set_error(std::move(rec2),
-                                          error_type{.numbered = false,
-                                                     .diag = t.error(),
-                                                     .state = &state});
-                                return;
-                            }
-                            target = static_cast<int>(t.value());
-                        }
-                        // Refunctionalized `call`/`EXECUTE` (this header's
-                        // own top comment): an ordinary recursive C++ call
-                        // into a fresh word_sender, not a return-stack
-                        // push. Its own value/error/stopped channel is
-                        // propagated immediately -- @ref halt in
-                        // particular must stop *this* run too, not just
-                        // resume the caller (vm.hpp's own run_from would
-                        // stop unconditionally at halt regardless of call
-                        // depth; D14 requires the same final behavior
-                        // here).
-                        word_sender callee{program_, state_, target, dict_,
-                                           fuel_};
-                        auto out =
-                            drive<block_outcome, error_type>(std::move(callee));
-                        if (out.stopped) {
-                            set_stopped(std::move(rec2));
-                            return;
-                        }
-                        if (out.error.has_value()) {
-                            set_error(std::move(rec2), *out.error);
-                            return;
-                        }
-                        if (out.value->kind == transfer_kind::halt) {
-                            set_value(std::move(rec2),
-                                      block_outcome{transfer_kind::halt, -1});
-                            return;
-                        }
-                        break;
-                    }
-                    case op::create_word: {
-                        if (dict_ == nullptr) {
-                            set_error(
-                                std::move(rec2),
-                                error_type{
-                                    .numbered = false,
-                                    .diag = foundation::parse_error{
-                                        foundation::source_pos{},
-                                        "CREATE: no dictionary available to "
-                                        "this run"},
-                                    .state = &state});
-                            return;
-                        }
-                        auto r = machine::create_here(
-                            *dict_, state, static_cast<int>(in.operand));
-                        if (!r.has_value()) {
-                            set_error(std::move(rec2),
-                                      error_type{.numbered = false,
-                                                 .diag = r.error(),
-                                                 .state = &state});
-                            return;
-                        }
-                        break;
-                    }
-                    case op::do_setup: {
-                        auto start = state.data().pop();
-                        if (!start.has_value()) {
-                            set_error(std::move(rec2),
-                                      error_type{.numbered = false,
-                                                 .diag = start.error(),
-                                                 .state = &state});
-                            return;
-                        }
-                        auto limit = state.data().pop();
-                        if (!limit.has_value()) {
-                            set_error(std::move(rec2),
-                                      error_type{.numbered = false,
-                                                 .diag = limit.error(),
-                                                 .state = &state});
-                            return;
-                        }
-                        if (auto r = state.returns().push(limit.value());
-                            !r.has_value()) {
-                            set_error(std::move(rec2),
-                                      error_type{.numbered = false,
-                                                 .diag = r.error(),
-                                                 .state = &state});
-                            return;
-                        }
-                        if (auto r = state.returns().push(start.value());
-                            !r.has_value()) {
-                            set_error(std::move(rec2),
-                                      error_type{.numbered = false,
-                                                 .diag = r.error(),
-                                                 .state = &state});
-                            return;
-                        }
-                        break;
-                    }
-                    case op::push_index: {
-                        int const level = static_cast<int>(in.operand);
-                        auto v = state.returns().peek(2 * level);
-                        if (!v.has_value()) {
-                            set_error(std::move(rec2),
-                                      error_type{.numbered = false,
-                                                 .diag = v.error(),
-                                                 .state = &state});
-                            return;
-                        }
-                        auto r = state.data().push(v.value());
-                        if (!r.has_value()) {
-                            set_error(std::move(rec2),
-                                      error_type{.numbered = false,
-                                                 .diag = r.error(),
-                                                 .state = &state});
-                            return;
-                        }
-                        break;
-                    }
-                    case op::unloop: {
-                        if (auto r = state.returns().pop(); !r.has_value()) {
-                            set_error(std::move(rec2),
-                                      error_type{.numbered = false,
-                                                 .diag = r.error(),
-                                                 .state = &state});
-                            return;
-                        }
-                        if (auto r = state.returns().pop(); !r.has_value()) {
-                            set_error(std::move(rec2),
-                                      error_type{.numbered = false,
-                                                 .diag = r.error(),
-                                                 .state = &state});
-                            return;
-                        }
-                        break;
-                    }
-                    case op::catch_mark: {
-                        // `CATCH` (D24, D11): a compound step handled
-                        // inline, wherever it appears within a block --
-                        // *not* only at a block's own start. `catch_mark`
-                        // is a genuine branch for interpreter::
-                        // recover_basic_blocks's own leader computation (it
-                        // contributes both its own fallthrough and its own
-                        // resume-ip as leaders, DIV-0025's own edge fix),
-                        // but that only guarantees `catch_ok`'s own
-                        // position and the resume ip are block
-                        // boundaries -- not that `catch_mark` itself is
-                        // one, since whatever compiles the xt onto the data
-                        // stack (`['] BOOM` here, `push_xt`) still precedes
-                        // it in the very same block. So this case both pops
-                        // the xt *and* consumes `catch_ok` (the very next
-                        // instruction, always emitted immediately after by
-                        // both of interp.hpp's own `CATCH` cases) itself,
-                        // then completes this whole block right here with
-                        // `jump(resume_ip)` -- resume_ip is `catch_mark`'s
-                        // own paired leader, generally in a *different*
-                        // recovered block than whatever precedes `CATCH`
-                        // here, so continuing this block's own scan past it
-                        // would be wrong regardless.
-                        int const resume_ip = static_cast<int>(in.operand);
-                        auto xt = state.data().pop();
-                        if (!xt.has_value()) {
-                            set_error(std::move(rec2),
-                                      error_type{.numbered = false,
-                                                 .diag = xt.error(),
-                                                 .state = &state});
-                            return;
-                        }
-                        int const saved_data_depth = state.data().depth();
-                        int const saved_return_depth =
-                            state.returns().depth();
-                        int const prev_handler = state.handler_depth();
-                        // Any non-negative sentinel marks a handler active;
-                        // this lowering never materializes a return-stack
-                        // frame for CATCH (this header's own top comment),
-                        // so unlike vm.hpp's own frame_base this value
-                        // names no real stack cell -- it only has to be
-                        // restorable and distinct enough to nest correctly,
-                        // which the return-stack depth already is.
-                        state.set_handler_depth(saved_return_depth);
-
-                        word_sender callee{program_, state_,
-                                           static_cast<int>(xt.value()),
-                                           dict_, fuel_};
-                        auto adapted = upon_error(
-                            then(std::move(callee),
-                                 [](block_outcome) noexcept -> machine::cell {
-                                     return machine::cell{0};
-                                 }),
-                            [&](error_type const &e) noexcept
-                                -> machine::cell {
-                                if (!e.numbered) {
-                                    // Defensive only (D7): with this
-                                    // handler now active, every fault
-                                    // reachable inside `callee`'s own
-                                    // dynamic extent (short of a
-                                    // still-more-nested CATCH intercepting
-                                    // it first) resolves through the exact
-                                    // same handler_depth()-active path
-                                    // vm.hpp's own run_from uses, which
-                                    // always yields a numbered code. A raw
-                                    // diagnosis reaching here would mean
-                                    // that invariant broke; surface it as
-                                    // an unmapped, unusual THROW code
-                                    // rather than losing the diagnosis.
-                                    return machine::cell{-256};
-                                }
-                                // CATCH as the error-to-value adapter, D24:
-                                // restore the Forth stacks to exactly what
-                                // this handler saved, discarding whatever
-                                // the caught execution left above them,
-                                // then hand back its own thrown code.
-                                state.data().truncate(saved_data_depth);
-                                state.returns().truncate(saved_return_depth);
-                                return e.n;
-                            });
-
-                        auto landing =
-                            drive<machine::cell, std::monostate>(
-                                std::move(adapted));
-                        if (landing.stopped) {
-                            set_stopped(std::move(rec2));
-                            return;
-                        }
-                        state.set_handler_depth(prev_handler);
-                        auto pushed =
-                            state.data().push(landing.value.value());
-                        if (!pushed.has_value()) {
-                            set_error(std::move(rec2),
-                                      error_type{.numbered = false,
-                                                 .diag = pushed.error(),
-                                                 .state = &state});
-                            return;
-                        }
-                        set_value(std::move(rec2),
-                                  block_outcome{transfer_kind::jump,
-                                               resume_ip});
+            for (int i = blk->start; i < straight_end; ++i) {
+                instr const &in = program.code[i];
+                switch (in.code) {
+                case op::push:
+                case op::push_xt: {
+                    auto r = state.data().push(in.operand);
+                    if (!r.has_value()) {
+                        set_error(std::move(rec2), error_type{.numbered = false,
+                                                              .diag = r.error(),
+                                                              .state = &state});
                         return;
                     }
-                    case op::throw_op: {
-                        // `THROW` (D24, D11): the error channel, always
-                        // carrying a numbered code -- even with no handler
-                        // active, since @ref to_status renders an
-                        // unintercepted numbered code identically to
-                        // vm.hpp's own uncaught-THROW diagnosis either way,
-                        // so there is no separate "raw" case to construct
-                        // here (contrast a primitive fault above, which
-                        // only ever numbers when a handler is active).
-                        auto n = state.data().pop();
-                        if (!n.has_value()) {
-                            set_error(std::move(rec2),
-                                      error_type{.numbered = false,
-                                                 .diag = n.error(),
-                                                 .state = &state});
-                            return;
-                        }
-                        if (n.value() == 0) {
-                            break;
-                        }
-                        set_error(std::move(rec2),
-                                  error_type{.numbered = true,
-                                             .n = n.value(),
-                                             .state = &state});
-                        return;
-                    }
-                    default:
-                        // Defensive only (D7): every non-terminator,
-                        // non-branch opcode is listed above; only a
-                        // terminator (handled below) or a genuine branch
-                        // (never placed mid-block by interpreter::
-                        // recover_basic_blocks's own leader computation)
-                        // can reach here otherwise.
+                    break;
+                }
+                case op::prim: {
+                    if (static_cast<machine::primitive>(in.operand) ==
+                        machine::primitive::catch_ok) {
+                        // Defensive only (D7): the block-recovery fix
+                        // above (DIV-0025) always isolates catch_ok
+                        // immediately after catch_mark into that same
+                        // compound block, handled before this sender is
+                        // even built -- a generic prim dispatch should
+                        // never reach it.
                         set_error(
                             std::move(rec2),
                             error_type{
                                 .numbered = false,
-                                .diag = foundation::parse_error{
-                                    foundation::source_pos{},
-                                    "sender lowering: unexpected opcode "
-                                    "inside a straight-line block"},
+                                .diag =
+                                    foundation::parse_error{
+                                        foundation::source_pos{},
+                                        "sender lowering: catch_ok reached "
+                                        "outside CATCH's own compound step"},
                                 .state = &state});
                         return;
                     }
+                    auto r = machine::apply_primitive(
+                        static_cast<machine::primitive>(in.operand), state);
+                    if (!r.has_value()) {
+                        if (machine::is_abort_quote_condition(r.error())) {
+                            set_error(std::move(rec2),
+                                      error_type{.numbered = true,
+                                                 .n = machine::cell{-2},
+                                                 .state = &state});
+                            return;
+                        }
+                        if (state.handler_depth() >= 0) {
+                            auto mapped =
+                                machine::machine_fault_throw_code(r.error());
+                            if (mapped.has_value()) {
+                                set_error(std::move(rec2),
+                                          error_type{.numbered = true,
+                                                     .n = mapped.value(),
+                                                     .state = &state});
+                                return;
+                            }
+                        }
+                        set_error(std::move(rec2), error_type{.numbered = false,
+                                                              .diag = r.error(),
+                                                              .state = &state});
+                        return;
+                    }
+                    break;
                 }
-
-                if (!last_is_terminator) {
-                    set_value(std::move(rec2),
-                              block_outcome{transfer_kind::fallthrough,
-                                           blk->end});
-                    return;
+                case op::call:
+                case op::execute: {
+                    int target = 0;
+                    if (in.code == op::call) {
+                        target = static_cast<int>(in.operand);
+                    } else {
+                        auto t = state.data().pop();
+                        if (!t.has_value()) {
+                            set_error(std::move(rec2),
+                                      error_type{.numbered = false,
+                                                 .diag = t.error(),
+                                                 .state = &state});
+                            return;
+                        }
+                        target = static_cast<int>(t.value());
+                    }
+                    // Refunctionalized `call`/`EXECUTE` (this header's
+                    // own top comment): an ordinary recursive C++ call
+                    // into a fresh word_sender, not a return-stack
+                    // push. Its own value/error/stopped channel is
+                    // propagated immediately -- @ref halt in
+                    // particular must stop *this* run too, not just
+                    // resume the caller (vm.hpp's own run_from would
+                    // stop unconditionally at halt regardless of call
+                    // depth; D14 requires the same final behavior
+                    // here).
+                    word_sender callee{program_, state_, target, dict_, fuel_};
+                    auto out =
+                        drive<block_outcome, error_type>(std::move(callee));
+                    if (out.stopped) {
+                        set_stopped(std::move(rec2));
+                        return;
+                    }
+                    if (out.error.has_value()) {
+                        set_error(std::move(rec2), *out.error);
+                        return;
+                    }
+                    if (out.value->kind == transfer_kind::halt) {
+                        set_value(std::move(rec2),
+                                  block_outcome{transfer_kind::halt, -1});
+                        return;
+                    }
+                    break;
                 }
-
-                instr const &last = program.code[blk->end - 1];
-                switch (last.code) {
-                case op::ret:
-                    set_value(std::move(rec2),
-                              block_outcome{transfer_kind::ret, -1});
-                    return;
-                case op::does_enter: {
+                case op::create_word: {
                     if (dict_ == nullptr) {
                         set_error(
                             std::move(rec2),
                             error_type{
                                 .numbered = false,
-                                .diag = foundation::parse_error{
-                                    foundation::source_pos{},
-                                    "DOES>: no dictionary available to this "
-                                    "run"},
+                                .diag =
+                                    foundation::parse_error{
+                                        foundation::source_pos{},
+                                        "CREATE: no dictionary available to "
+                                        "this run"},
                                 .state = &state});
                         return;
                     }
-                    auto r = dict_->attach_does(blk->end);
+                    auto r = machine::create_here(*dict_, state,
+                                                  static_cast<int>(in.operand));
                     if (!r.has_value()) {
-                        set_error(std::move(rec2),
-                                  error_type{.numbered = false,
-                                             .diag = r.error(),
-                                             .state = &state});
+                        set_error(std::move(rec2), error_type{.numbered = false,
+                                                              .diag = r.error(),
+                                                              .state = &state});
                         return;
                     }
-                    set_value(std::move(rec2),
-                              block_outcome{transfer_kind::ret, -1});
-                    return;
+                    break;
                 }
-                case op::halt:
-                    set_value(std::move(rec2),
-                              block_outcome{transfer_kind::halt, -1});
-                    return;
-                case op::branch:
-                    set_value(std::move(rec2),
-                              block_outcome{transfer_kind::jump,
-                                           static_cast<int>(last.operand)});
-                    return;
-                case op::branch0: {
-                    auto flag = state.data().pop();
-                    if (!flag.has_value()) {
+                case op::do_setup: {
+                    auto start = state.data().pop();
+                    if (!start.has_value()) {
                         set_error(std::move(rec2),
                                   error_type{.numbered = false,
-                                             .diag = flag.error(),
+                                             .diag = start.error(),
                                              .state = &state});
                         return;
                     }
-                    int const target = flag.value() == 0
-                                            ? static_cast<int>(last.operand)
-                                            : blk->end;
-                    set_value(std::move(rec2),
-                              block_outcome{transfer_kind::jump, target});
-                    return;
-                }
-                case op::loop_step: {
-                    auto index = state.returns().pop();
-                    if (!index.has_value()) {
-                        set_error(std::move(rec2),
-                                  error_type{.numbered = false,
-                                             .diag = index.error(),
-                                             .state = &state});
-                        return;
-                    }
-                    auto limit = state.returns().peek(0);
+                    auto limit = state.data().pop();
                     if (!limit.has_value()) {
                         set_error(std::move(rec2),
                                   error_type{.numbered = false,
@@ -1097,117 +808,376 @@ auto word_sender<MaxCode, MaxWords, MaxDepth, MaxRDepth, MaxData, MaxOut,
                                              .state = &state});
                         return;
                     }
-                    machine::cell const next = index.value() + 1;
-                    if (next == limit.value()) {
-                        if (auto r = state.returns().pop(); !r.has_value()) {
-                            set_error(std::move(rec2),
-                                      error_type{.numbered = false,
-                                                 .diag = r.error(),
-                                                 .state = &state});
-                            return;
-                        }
-                        set_value(std::move(rec2),
-                                  block_outcome{transfer_kind::jump, blk->end});
+                    if (auto r = state.returns().push(limit.value());
+                        !r.has_value()) {
+                        set_error(std::move(rec2), error_type{.numbered = false,
+                                                              .diag = r.error(),
+                                                              .state = &state});
                         return;
                     }
-                    if (auto r = state.returns().push(next); !r.has_value()) {
-                        set_error(std::move(rec2),
-                                  error_type{.numbered = false,
-                                             .diag = r.error(),
-                                             .state = &state});
+                    if (auto r = state.returns().push(start.value());
+                        !r.has_value()) {
+                        set_error(std::move(rec2), error_type{.numbered = false,
+                                                              .diag = r.error(),
+                                                              .state = &state});
                         return;
                     }
-                    set_value(std::move(rec2),
-                              block_outcome{transfer_kind::jump,
-                                           static_cast<int>(last.operand)});
-                    return;
+                    break;
                 }
-                case op::plus_loop_step: {
-                    auto incr = state.data().pop();
-                    if (!incr.has_value()) {
-                        set_error(std::move(rec2),
-                                  error_type{.numbered = false,
-                                             .diag = incr.error(),
-                                             .state = &state});
+                case op::push_index: {
+                    int const level = static_cast<int>(in.operand);
+                    auto v = state.returns().peek(2 * level);
+                    if (!v.has_value()) {
+                        set_error(std::move(rec2), error_type{.numbered = false,
+                                                              .diag = v.error(),
+                                                              .state = &state});
                         return;
                     }
-                    auto index = state.returns().pop();
-                    if (!index.has_value()) {
-                        set_error(std::move(rec2),
-                                  error_type{.numbered = false,
-                                             .diag = index.error(),
-                                             .state = &state});
+                    auto r = state.data().push(v.value());
+                    if (!r.has_value()) {
+                        set_error(std::move(rec2), error_type{.numbered = false,
+                                                              .diag = r.error(),
+                                                              .state = &state});
                         return;
                     }
-                    auto limit = state.returns().peek(0);
-                    if (!limit.has_value()) {
-                        set_error(std::move(rec2),
-                                  error_type{.numbered = false,
-                                             .diag = limit.error(),
-                                             .state = &state});
-                        return;
-                    }
-                    machine::cell const before = index.value() - limit.value();
-                    machine::cell const next = index.value() + incr.value();
-                    machine::cell const after = next - limit.value();
-                    if ((before ^ after) < 0) {
-                        if (auto r = state.returns().pop(); !r.has_value()) {
-                            set_error(std::move(rec2),
-                                      error_type{.numbered = false,
-                                                 .diag = r.error(),
-                                                 .state = &state});
-                            return;
-                        }
-                        set_value(std::move(rec2),
-                                  block_outcome{transfer_kind::jump, blk->end});
-                        return;
-                    }
-                    if (auto r = state.returns().push(next); !r.has_value()) {
-                        set_error(std::move(rec2),
-                                  error_type{.numbered = false,
-                                             .diag = r.error(),
-                                             .state = &state});
-                        return;
-                    }
-                    set_value(std::move(rec2),
-                              block_outcome{transfer_kind::jump,
-                                           static_cast<int>(last.operand)});
-                    return;
+                    break;
                 }
-                case op::leave: {
+                case op::unloop: {
                     if (auto r = state.returns().pop(); !r.has_value()) {
-                        set_error(std::move(rec2),
-                                  error_type{.numbered = false,
-                                             .diag = r.error(),
-                                             .state = &state});
+                        set_error(std::move(rec2), error_type{.numbered = false,
+                                                              .diag = r.error(),
+                                                              .state = &state});
                         return;
                     }
                     if (auto r = state.returns().pop(); !r.has_value()) {
+                        set_error(std::move(rec2), error_type{.numbered = false,
+                                                              .diag = r.error(),
+                                                              .state = &state});
+                        return;
+                    }
+                    break;
+                }
+                case op::catch_mark: {
+                    // `CATCH` (D24, D11): a compound step handled
+                    // inline, wherever it appears within a block --
+                    // *not* only at a block's own start. `catch_mark`
+                    // is a genuine branch for interpreter::
+                    // recover_basic_blocks's own leader computation (it
+                    // contributes both its own fallthrough and its own
+                    // resume-ip as leaders, DIV-0025's own edge fix),
+                    // but that only guarantees `catch_ok`'s own
+                    // position and the resume ip are block
+                    // boundaries -- not that `catch_mark` itself is
+                    // one, since whatever compiles the xt onto the data
+                    // stack (`['] BOOM` here, `push_xt`) still precedes
+                    // it in the very same block. So this case both pops
+                    // the xt *and* consumes `catch_ok` (the very next
+                    // instruction, always emitted immediately after by
+                    // both of interp.hpp's own `CATCH` cases) itself,
+                    // then completes this whole block right here with
+                    // `jump(resume_ip)` -- resume_ip is `catch_mark`'s
+                    // own paired leader, generally in a *different*
+                    // recovered block than whatever precedes `CATCH`
+                    // here, so continuing this block's own scan past it
+                    // would be wrong regardless.
+                    int const resume_ip = static_cast<int>(in.operand);
+                    auto xt = state.data().pop();
+                    if (!xt.has_value()) {
                         set_error(std::move(rec2),
                                   error_type{.numbered = false,
-                                             .diag = r.error(),
+                                             .diag = xt.error(),
+                                             .state = &state});
+                        return;
+                    }
+                    int const saved_data_depth = state.data().depth();
+                    int const saved_return_depth = state.returns().depth();
+                    int const prev_handler = state.handler_depth();
+                    // Any non-negative sentinel marks a handler active;
+                    // this lowering never materializes a return-stack
+                    // frame for CATCH (this header's own top comment),
+                    // so unlike vm.hpp's own frame_base this value
+                    // names no real stack cell -- it only has to be
+                    // restorable and distinct enough to nest correctly,
+                    // which the return-stack depth already is.
+                    state.set_handler_depth(saved_return_depth);
+
+                    word_sender callee{program_, state_,
+                                       static_cast<int>(xt.value()), dict_,
+                                       fuel_};
+                    auto adapted = upon_error(
+                        then(std::move(callee),
+                             [](block_outcome) noexcept -> machine::cell {
+                                 return machine::cell{0};
+                             }),
+                        [&](error_type const &e) noexcept -> machine::cell {
+                            if (!e.numbered) {
+                                // Defensive only (D7): with this
+                                // handler now active, every fault
+                                // reachable inside `callee`'s own
+                                // dynamic extent (short of a
+                                // still-more-nested CATCH intercepting
+                                // it first) resolves through the exact
+                                // same handler_depth()-active path
+                                // vm.hpp's own run_from uses, which
+                                // always yields a numbered code. A raw
+                                // diagnosis reaching here would mean
+                                // that invariant broke; surface it as
+                                // an unmapped, unusual THROW code
+                                // rather than losing the diagnosis.
+                                return machine::cell{-256};
+                            }
+                            // CATCH as the error-to-value adapter, D24:
+                            // restore the Forth stacks to exactly what
+                            // this handler saved, discarding whatever
+                            // the caught execution left above them,
+                            // then hand back its own thrown code.
+                            state.data().truncate(saved_data_depth);
+                            state.returns().truncate(saved_return_depth);
+                            return e.n;
+                        });
+
+                    auto landing = drive<machine::cell, std::monostate>(
+                        std::move(adapted));
+                    if (landing.stopped) {
+                        set_stopped(std::move(rec2));
+                        return;
+                    }
+                    state.set_handler_depth(prev_handler);
+                    auto pushed = state.data().push(landing.value.value());
+                    if (!pushed.has_value()) {
+                        set_error(std::move(rec2),
+                                  error_type{.numbered = false,
+                                             .diag = pushed.error(),
                                              .state = &state});
                         return;
                     }
                     set_value(std::move(rec2),
-                              block_outcome{transfer_kind::jump,
-                                           static_cast<int>(last.operand)});
+                              block_outcome{transfer_kind::jump, resume_ip});
+                    return;
+                }
+                case op::throw_op: {
+                    // `THROW` (D24, D11): the error channel, always
+                    // carrying a numbered code -- even with no handler
+                    // active, since @ref to_status renders an
+                    // unintercepted numbered code identically to
+                    // vm.hpp's own uncaught-THROW diagnosis either way,
+                    // so there is no separate "raw" case to construct
+                    // here (contrast a primitive fault above, which
+                    // only ever numbers when a handler is active).
+                    auto n = state.data().pop();
+                    if (!n.has_value()) {
+                        set_error(std::move(rec2), error_type{.numbered = false,
+                                                              .diag = n.error(),
+                                                              .state = &state});
+                        return;
+                    }
+                    if (n.value() == 0) {
+                        break;
+                    }
+                    set_error(std::move(rec2), error_type{.numbered = true,
+                                                          .n = n.value(),
+                                                          .state = &state});
                     return;
                 }
                 default:
-                    // Unreachable (D7, defensive): last_is_terminator's own
-                    // switch above lists exactly these opcodes.
+                    // Defensive only (D7): every non-terminator,
+                    // non-branch opcode is listed above; only a
+                    // terminator (handled below) or a genuine branch
+                    // (never placed mid-block by interpreter::
+                    // recover_basic_blocks's own leader computation)
+                    // can reach here otherwise.
+                    set_error(
+                        std::move(rec2),
+                        error_type{.numbered = false,
+                                   .diag =
+                                       foundation::parse_error{
+                                           foundation::source_pos{},
+                                           "sender lowering: unexpected opcode "
+                                           "inside a straight-line block"},
+                                   .state = &state});
+                    return;
+                }
+            }
+
+            if (!last_is_terminator) {
+                set_value(std::move(rec2),
+                          block_outcome{transfer_kind::fallthrough, blk->end});
+                return;
+            }
+
+            instr const &last = program.code[blk->end - 1];
+            switch (last.code) {
+            case op::ret:
+                set_value(std::move(rec2),
+                          block_outcome{transfer_kind::ret, -1});
+                return;
+            case op::does_enter: {
+                if (dict_ == nullptr) {
                     set_error(
                         std::move(rec2),
                         error_type{
                             .numbered = false,
-                            .diag = foundation::parse_error{
-                                foundation::source_pos{},
-                                "sender lowering: unreachable terminator"},
+                            .diag =
+                                foundation::parse_error{
+                                    foundation::source_pos{},
+                                    "DOES>: no dictionary available to this "
+                                    "run"},
                             .state = &state});
                     return;
                 }
-            });
+                auto r = dict_->attach_does(blk->end);
+                if (!r.has_value()) {
+                    set_error(std::move(rec2), error_type{.numbered = false,
+                                                          .diag = r.error(),
+                                                          .state = &state});
+                    return;
+                }
+                set_value(std::move(rec2),
+                          block_outcome{transfer_kind::ret, -1});
+                return;
+            }
+            case op::halt:
+                set_value(std::move(rec2),
+                          block_outcome{transfer_kind::halt, -1});
+                return;
+            case op::branch:
+                set_value(std::move(rec2),
+                          block_outcome{transfer_kind::jump,
+                                        static_cast<int>(last.operand)});
+                return;
+            case op::branch0: {
+                auto flag = state.data().pop();
+                if (!flag.has_value()) {
+                    set_error(std::move(rec2), error_type{.numbered = false,
+                                                          .diag = flag.error(),
+                                                          .state = &state});
+                    return;
+                }
+                int const target = flag.value() == 0
+                                       ? static_cast<int>(last.operand)
+                                       : blk->end;
+                set_value(std::move(rec2),
+                          block_outcome{transfer_kind::jump, target});
+                return;
+            }
+            case op::loop_step: {
+                auto index = state.returns().pop();
+                if (!index.has_value()) {
+                    set_error(std::move(rec2), error_type{.numbered = false,
+                                                          .diag = index.error(),
+                                                          .state = &state});
+                    return;
+                }
+                auto limit = state.returns().peek(0);
+                if (!limit.has_value()) {
+                    set_error(std::move(rec2), error_type{.numbered = false,
+                                                          .diag = limit.error(),
+                                                          .state = &state});
+                    return;
+                }
+                machine::cell const next = index.value() + 1;
+                if (next == limit.value()) {
+                    if (auto r = state.returns().pop(); !r.has_value()) {
+                        set_error(std::move(rec2), error_type{.numbered = false,
+                                                              .diag = r.error(),
+                                                              .state = &state});
+                        return;
+                    }
+                    set_value(std::move(rec2),
+                              block_outcome{transfer_kind::jump, blk->end});
+                    return;
+                }
+                if (auto r = state.returns().push(next); !r.has_value()) {
+                    set_error(std::move(rec2), error_type{.numbered = false,
+                                                          .diag = r.error(),
+                                                          .state = &state});
+                    return;
+                }
+                set_value(std::move(rec2),
+                          block_outcome{transfer_kind::jump,
+                                        static_cast<int>(last.operand)});
+                return;
+            }
+            case op::plus_loop_step: {
+                auto incr = state.data().pop();
+                if (!incr.has_value()) {
+                    set_error(std::move(rec2), error_type{.numbered = false,
+                                                          .diag = incr.error(),
+                                                          .state = &state});
+                    return;
+                }
+                auto index = state.returns().pop();
+                if (!index.has_value()) {
+                    set_error(std::move(rec2), error_type{.numbered = false,
+                                                          .diag = index.error(),
+                                                          .state = &state});
+                    return;
+                }
+                auto limit = state.returns().peek(0);
+                if (!limit.has_value()) {
+                    set_error(std::move(rec2), error_type{.numbered = false,
+                                                          .diag = limit.error(),
+                                                          .state = &state});
+                    return;
+                }
+                machine::cell const before = index.value() - limit.value();
+                machine::cell const next = index.value() + incr.value();
+                machine::cell const after = next - limit.value();
+                if ((before ^ after) < 0) {
+                    if (auto r = state.returns().pop(); !r.has_value()) {
+                        set_error(std::move(rec2), error_type{.numbered = false,
+                                                              .diag = r.error(),
+                                                              .state = &state});
+                        return;
+                    }
+                    set_value(std::move(rec2),
+                              block_outcome{transfer_kind::jump, blk->end});
+                    return;
+                }
+                if (auto r = state.returns().push(next); !r.has_value()) {
+                    set_error(std::move(rec2), error_type{.numbered = false,
+                                                          .diag = r.error(),
+                                                          .state = &state});
+                    return;
+                }
+                set_value(std::move(rec2),
+                          block_outcome{transfer_kind::jump,
+                                        static_cast<int>(last.operand)});
+                return;
+            }
+            case op::leave: {
+                if (auto r = state.returns().pop(); !r.has_value()) {
+                    set_error(std::move(rec2), error_type{.numbered = false,
+                                                          .diag = r.error(),
+                                                          .state = &state});
+                    return;
+                }
+                if (auto r = state.returns().pop(); !r.has_value()) {
+                    set_error(std::move(rec2), error_type{.numbered = false,
+                                                          .diag = r.error(),
+                                                          .state = &state});
+                    return;
+                }
+                set_value(std::move(rec2),
+                          block_outcome{transfer_kind::jump,
+                                        static_cast<int>(last.operand)});
+                return;
+            }
+            default:
+                // Unreachable (D7, defensive): last_is_terminator's own
+                // switch above lists exactly these opcodes.
+                set_error(
+                    std::move(rec2),
+                    error_type{
+                        .numbered = false,
+                        .diag =
+                            foundation::parse_error{
+                                foundation::source_pos{},
+                                "sender lowering: unreachable terminator"},
+                        .state = &state});
+                return;
+            }
+        });
 
         auto outcome = drive<block_outcome, error_type>(std::move(step));
         if (outcome.stopped) {
@@ -1215,7 +1185,7 @@ auto word_sender<MaxCode, MaxWords, MaxDepth, MaxRDepth, MaxData, MaxOut,
             return;
         }
         if (outcome.error.has_value()) {
-            rec.error( *outcome.error);
+            rec.error(*outcome.error);
             return;
         }
         auto const &bo = outcome.value.value();
@@ -1251,14 +1221,14 @@ template <int MaxBlocks = 128, int DictWords = 256, int DictName = 32,
     -> machine::status {
     using word_sender_type =
         word_sender<MaxCode, MaxWords, MaxDepth, MaxRDepth, MaxData, MaxOut,
-                   MaxBlocks, DictWords, DictName>;
+                    MaxBlocks, DictWords, DictName>;
     using error_type = typename word_sender_type::error_type;
 
     word_sender_type top{&program, &state, entry, dict, &fuel};
-    auto value_adapted = then(std::move(top),
-                              [](block_outcome) noexcept -> machine::status {
-                                  return std::monostate{};
-                              });
+    auto value_adapted =
+        then(std::move(top), [](block_outcome) noexcept -> machine::status {
+            return std::monostate{};
+        });
     auto error_adapted =
         upon_error(std::move(value_adapted),
                    [](error_type const &e) noexcept -> machine::status {
@@ -1266,9 +1236,8 @@ template <int MaxBlocks = 128, int DictWords = 256, int DictName = 32,
                    });
     auto stop_adapted = upon_stopped(
         std::move(error_adapted), []() noexcept -> machine::status {
-            return foundation::parse_error{
-                foundation::source_pos{},
-                "vm execution budget exhausted"};
+            return foundation::parse_error{foundation::source_pos{},
+                                           "vm execution budget exhausted"};
         });
 
     auto result = sync_wait(std::move(stop_adapted));
@@ -1291,11 +1260,10 @@ template <int MaxBlocks = 128, int DictWords = 256, int DictName = 32,
 template <int MaxBlocks = 128, int DictWords = 256, int DictName = 32,
           int MaxCode, int MaxWords, int MaxDepth, int MaxRDepth, int MaxData,
           int MaxOut>
-[[nodiscard]] auto
-run_via_senders(machine::compiled_program<MaxCode, MaxWords> const &program,
-                machine::forth_state<MaxDepth, MaxRDepth, MaxData, MaxOut>
-                    &state,
-                int fuel = 100000) -> machine::status {
+[[nodiscard]] auto run_via_senders(
+    machine::compiled_program<MaxCode, MaxWords> const &program,
+    machine::forth_state<MaxDepth, MaxRDepth, MaxData, MaxOut> &state,
+    int fuel = 100000) -> machine::status {
     auto data_init = state.data_space().allot(program.data_space_size);
     if (!data_init.has_value()) {
         return data_init.error();

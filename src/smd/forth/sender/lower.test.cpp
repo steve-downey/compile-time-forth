@@ -28,8 +28,7 @@ static_assert([] {
     program.code.push_back(
         smd::forth::machine::instr{.code = smd::forth::machine::op::ret});
     program.entry_points.push_back(1);
-    return smd::forth::sender::word_body_end(program, 1) ==
-           program.code.size();
+    return smd::forth::sender::word_body_end(program, 1) == program.code.size();
 }());
 
 static_assert([] {
@@ -51,9 +50,9 @@ static_assert([] {
     using smd::forth::machine::op;
     using smd::forth::machine::primitive;
     smd::forth::machine::compiled_program<32, 8> program{};
-    program.code.push_back(instr{.code = op::prim,
-                                 .operand = static_cast<smd::forth::machine::cell>(
-                                     primitive::dup)});
+    program.code.push_back(instr{
+        .code = op::prim,
+        .operand = static_cast<smd::forth::machine::cell>(primitive::dup)});
     program.code.push_back(instr{.code = op::ret});
     return !smd::forth::sender::word_uses_return_stack_data(program, 0, 2);
 }());
@@ -63,9 +62,9 @@ static_assert([] {
     using smd::forth::machine::op;
     using smd::forth::machine::primitive;
     smd::forth::machine::compiled_program<32, 8> program{};
-    program.code.push_back(instr{.code = op::prim,
-                                 .operand = static_cast<smd::forth::machine::cell>(
-                                     primitive::to_r)});
+    program.code.push_back(instr{
+        .code = op::prim,
+        .operand = static_cast<smd::forth::machine::cell>(primitive::to_r)});
     program.code.push_back(instr{.code = op::ret});
     return smd::forth::sender::word_uses_return_stack_data(program, 0, 2);
 }());
@@ -75,9 +74,9 @@ static_assert([] {
     using smd::forth::machine::op;
     using smd::forth::machine::primitive;
     smd::forth::machine::compiled_program<32, 8> program{};
-    program.code.push_back(instr{.code = op::prim,
-                                 .operand = static_cast<smd::forth::machine::cell>(
-                                     primitive::r_fetch)});
+    program.code.push_back(instr{
+        .code = op::prim,
+        .operand = static_cast<smd::forth::machine::cell>(primitive::r_fetch)});
     program.code.push_back(instr{.code = op::ret});
     return smd::forth::sender::word_uses_return_stack_data(program, 0, 2);
 }());
@@ -88,8 +87,7 @@ static_assert([] {
     using error_type = smd::forth::sender::control_error<8, 8, 8, 32>;
     auto const status = smd::forth::sender::to_status(
         error_type{.numbered = true, .n = smd::forth::machine::cell{-2}});
-    return !status.has_value() &&
-           status.error().where.offset == -2 &&
+    return !status.has_value() && status.error().where.offset == -2 &&
            std::string_view{status.error().message} ==
                "uncaught THROW (code in foundation::parse_error::"
                "where.offset)";

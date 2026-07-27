@@ -570,14 +570,14 @@ Any use is treated as potentially unstructured, uniformly.
 - Native side: =: BOOM 42 THROW ; : TRY ['] BOOM CATCH ;= — neither word touches the return stack as data, so both lower natively; =BOOM='s own =42 THROW= completes its own block's sender via the error channel, adapted back to a value by =TRY='s own =catch_mark= case.
 - Fallback side: =: DEEP 42 >R 10 0 DO 5 THROW LOOP R> DROP ; : GUARD ['] DEEP CATCH ;= (=interp.test.cpp='s own existing =CATCH= corpus) — =DEEP='s own body uses =>R=/=R>=, so it falls back for its whole body; =GUARD='s own =CATCH= around it does *not* fall back (=GUARD= itself touches neither), a genuine mixed case: a natively-lowered =CATCH= whose own protected xt runs via the fallback.
 
-Getting the fallback side correct needed two fixes beyond =run_from= called bare (DIV-0027, found by running this exact program, not by inspection):
+Getting the fallback side correct needed two fixes beyond =run_from= called bare (DIV-0028, found by running this exact program, not by inspection):
 
 1. A manufactured return address (=interpreter::compile_buffer::call_word='s own halt-pad convention, replayed verbatim), since entering via this path is not an =op::call=/=op::execute= and nothing else supplies one.
 2. Hiding =state.handler_depth()= (save, set =-1=, restore) for the call's own duration. =vm.hpp='s own =perform_throw= treats =handler_depth()= as the base of a *real*, VM-materialized 3-cell frame on =returns()=; this lowering's own native =CATCH= never materializes one (kept as C++ locals instead, DIV-0026's sibling decision).
    Left visible, an enclosing sender-level =CATCH='s own =handler_depth()= would make =perform_throw= set =ip= to a resume point meaningful only to the *sender* trampoline and let =run_from='s own dispatch loop keep fetching from it — corrupting execution by interpreting the caller's own code as more of the fallback word's own body.
    Hiding it turns an escaping =THROW= into =run_from='s own standard "uncaught" diagnosis instead; =word_sender::run='s own caller recognizes that exact message and re-numbers it into a proper =control_error{numbered = true, ...}=, so the enclosing sender-level =CATCH= still catches it correctly.
 
-See DIV-0027 (=docs/divergences/DIV-0027-f33-fallback-handler-depth-isolation.md=) for the complete record, including why the more direct fix (also pushing a real 3-cell frame from the native =CATCH= case) does not work.
+See DIV-0028 (=docs/divergences/DIV-0028-f33-fallback-handler-depth-isolation.md=) for the complete record, including why the more direct fix (also pushing a real 3-cell frame from the native =CATCH= case) does not work.
 
 ** The constexpr capability split: a positive D24 outcome, not a gap
 
@@ -642,10 +642,10 @@ Recorded here as the regression baseline a future change to this component would
 
 ** Merge criteria
 
-The F27/F28/F31 program battery passes through the sender backend with identical final states to =machine::run_from=/=interpreter::call_word= (=sender::testing::states_agree=, compared directly in every =lower_*.test.cpp= shard: data-stack depth and contents, and captured output — not return-stack shape, which the two executors deliberately do not agree on, DIV-0026/DIV-0027's own record).
+The F27/F28/F31 program battery passes through the sender backend with identical final states to =machine::run_from=/=interpreter::call_word= (=sender::testing::states_agree=, compared directly in every =lower_*.test.cpp= shard: data-stack depth and contents, and captured output — not return-stack shape, which the two executors deliberately do not agree on, DIV-0026/DIV-0028's own record).
 =CATCH=/=THROW= demonstrably routes through =set_error= (=lower_catch_native.test.cpp=).
 Native (non-fallback) lowering is shown for =IF=, both =BEGIN= forms, =DO= with =LEAVE=, =EXIT=, and =CATCH=/=THROW= (the shard table above, each verified against the VM directly).
 One program on each side of the fallback boundary is named ("The fallback boundary" above): =TRY=/=BOOM= (native), =GUARD=/=DEEP= (fallback).
 The constexpr-capability split is recorded ("The constexpr capability split" above): =sync_wait= is not constexpr-capable, so this component is a runtime-only executor; compile-time coverage remains exclusively the VM's.
 
-See DIV-0025 through DIV-0027 (=docs/divergences/=) for the complete record of this step's own findings.
+See DIV-0025 through DIV-0028 (=docs/divergences/=) for the complete record of this step's own findings.

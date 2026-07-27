@@ -29,8 +29,7 @@ TEST_CASE("LowerFuelTest - SpinExhaustsFuelViaTheStopChannel") {
     // at all, rather than the sender-level fuel exhaustion this test means
     // to demonstrate. Only SPIN's own definition needs to compile here;
     // running it is this test's own job, against the small fuel below.
-    machine::forth_state<64, 64, 1024, 256> defst{
-        ": SPIN BEGIN FALSE UNTIL ;"};
+    machine::forth_state<64, 64, 1024, 256> defst{": SPIN BEGIN FALSE UNTIL ;"};
     auto dict = machine::default_dictionary<>();
     interpreter::compile_buffer<> buf;
     auto compiled = interpreter::interpret(defst, dict, buf);
@@ -45,5 +44,5 @@ TEST_CASE("LowerFuelTest - SpinExhaustsFuelViaTheStopChannel") {
                                            /*fuel=*/25, &dict);
     REQUIRE_FALSE(sr.has_value());
     CHECK(std::string_view{sr.error().message} ==
-         "vm execution budget exhausted");
+          "vm execution budget exhausted");
 }

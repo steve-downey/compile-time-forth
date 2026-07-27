@@ -1,4 +1,4 @@
-# DIV-0027: the VM-fallback path must hide an enclosing sender-level `CATCH`
+# DIV-0028: the VM-fallback path must hide an enclosing sender-level `CATCH`
 
 - **Status:** accepted-permanent
 - **Date:** 2026-07-26

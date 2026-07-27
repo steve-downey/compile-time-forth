@@ -43,13 +43,13 @@ struct dual_run_result {
 /// depth and contents (bottom to top), and captured output. Deliberately
 /// does *not* compare return-stack contents (this lowering's own native
 /// `CATCH`/`call` never materialize the same return-stack shape the VM
-/// does -- DIV-0026/DIV-0027's own record -- so equal return-stack *shape*
+/// does -- DIV-0026/DIV-0028's own record -- so equal return-stack *shape*
 /// was never part of what the two executors promise to agree on; only the
 /// externally observable state a Forth program can itself read is).
 template <int MaxDepth, int MaxRDepth, int MaxData, int MaxOut>
-[[nodiscard]] constexpr auto
-states_agree(machine::forth_state<MaxDepth, MaxRDepth, MaxData, MaxOut> const &a,
-            machine::forth_state<MaxDepth, MaxRDepth, MaxData, MaxOut> const &b)
+[[nodiscard]] constexpr auto states_agree(
+    machine::forth_state<MaxDepth, MaxRDepth, MaxData, MaxOut> const &a,
+    machine::forth_state<MaxDepth, MaxRDepth, MaxData, MaxOut> const &b)
     -> bool {
     if (a.data().depth() != b.data().depth()) {
         return false;
@@ -107,8 +107,7 @@ compile_and_run_both(std::string_view definitions, std::string_view word_name,
         return dual_run_result<MaxDepth, MaxRDepth, MaxData, MaxOut>{
             .vm_status = missing, .sender_status = missing};
     }
-    auto const *cw =
-        std::get_if<machine::compiled_colon_word>(&entry->binding);
+    auto const *cw = std::get_if<machine::compiled_colon_word>(&entry->binding);
     if (cw == nullptr) {
         auto const not_colon = foundation::parse_error{
             foundation::source_pos{}, "run_and_compare: not a colon word"};
@@ -125,8 +124,8 @@ compile_and_run_both(std::string_view definitions, std::string_view word_name,
         (void)pushed;
     }
     int vm_fuel = fuel;
-    result.vm_status = interpreter::call_word(buf, result.vm_state,
-                                              entry_point, vm_fuel, &dict);
+    result.vm_status = interpreter::call_word(buf, result.vm_state, entry_point,
+                                              vm_fuel, &dict);
     result.sender_status = run_from_via_senders(
         buf.program(), result.sender_state, entry_point, fuel, &dict);
     return result;

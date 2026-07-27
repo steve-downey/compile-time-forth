@@ -36,12 +36,13 @@ TEST_CASE("LowerCatchNativeTest - UncaughtThrowMatchesTheVmsOwnDiagnosis") {
     REQUIRE_FALSE(result.vm_status.has_value());
     REQUIRE_FALSE(result.sender_status.has_value());
     CHECK(std::string_view{result.vm_status.error().message} ==
-         std::string_view{result.sender_status.error().message});
+          std::string_view{result.sender_status.error().message});
     CHECK(result.vm_status.error().where.offset ==
-         result.sender_status.error().where.offset);
+          result.sender_status.error().where.offset);
 }
 
-TEST_CASE("LowerCatchNativeTest - DivisionByZeroMappedAndCaughtAgreesWithTheVm") {
+TEST_CASE(
+    "LowerCatchNativeTest - DivisionByZeroMappedAndCaughtAgreesWithTheVm") {
     using namespace smd::forth;
     auto result = sender::testing::compile_and_run_both<64, 64, 1024, 256>(
         ": DIVZERO 10 0 / ; : GUARDDIV ['] DIVZERO CATCH ;", "GUARDDIV");

@@ -12,7 +12,8 @@
 // LEAVE as value completions"). `EXIT` compiles to a bare `op::ret`
 // (`vm.hpp`'s own top comment), so this is the same value-channel
 // completion @ref smd::forth::sender::word_sender::run gives a plain `;`,
-// just reached early -- @ref smd::forth::interpreter::corpus::exit_boundary_program
+// just reached early -- @ref
+// smd::forth::interpreter::corpus::exit_boundary_program
 // (`INNER`/`OUTER`) is F30's own regression case for "EXIT unwinds only to
 // its own call boundary," replayed here through the sender backend.
 // FIRST additionally exercises `UNLOOP EXIT` reached from inside a `DO`

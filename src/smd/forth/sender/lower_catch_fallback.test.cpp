@@ -16,7 +16,7 @@
 // program (docs/compiler_architecture.org's own Phase 16 section pairs it
 // with `TRY`/`BOOM`, the native-side one, `lower_catch_native.test.cpp`).
 // Getting this case right needed two fixes beyond the first working draft
-// of `run_word_via_vm` -- see DIV-0027 for the full record (a manufactured
+// of `run_word_via_vm` -- see DIV-0028 for the full record (a manufactured
 // return address, and hiding the enclosing sender-level `handler_depth()`
 // for the duration of the fallback call, both confirmed necessary by this
 // exact program failing without them).
