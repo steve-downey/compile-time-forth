@@ -108,7 +108,7 @@ covers this in full, with transcluded code anchors. Read it before opening
   pattern; every public constexpr API gets one — but see the constexpr-
   capability note above before assuming a *sender*-composed API can.
 - Do not pick your own DIV number; the orchestrator allocates it at
-  dispatch. F33 used DIV-0025 through DIV-0028 (DIV-0028 is next).
+  dispatch. F33 used DIV-0025, DIV-0026 and DIV-0028; DIV-0027 belongs to F35 (bootstrap prelude). Next free is DIV-0029. Parallel waves get disjoint blocks, not a start plus "onward" -- that is what caused the collision this step had to renumber out of.
 
 ## Before handoff
 
