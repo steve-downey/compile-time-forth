@@ -1,4 +1,4 @@
-<div class="abstract" id="orgb29ee33">
+<div class="abstract" id="org863ba5f">
 <p>
 Part 7 built a tree-walking evaluator whose only job was to agree with the
 compiled machine on every program. Part 15 deleted it and admitted, in the
@@ -198,7 +198,7 @@ None of this was free to run. The largest shard, arithmetic, takes about sevente
 
 <nav style="margin-top: 3em; border-top: 1px solid #ccc; padding-top: 1em">
 
-[↑ Series Index](index.md) | [← Part 20 - Just Edges](post-20-just-edges.md)
+[↑ Series Index](index.md) | [← Part 20 - Just Edges](post-20-just-edges.md) | [Part 22 - The Call Stack Was the Continuation →](post-22-the-call-stack-was-the-continuation.md)
 
 </nav>
 

@@ -166,6 +166,17 @@ captured output; and a harness that runs the same programs through real
 at all --- Forth-2012 leaves it ambiguous on purpose --- but two others
 are, and neither gets fixed tonight.
 
+** [[file:post-22-the-call-stack-was-the-continuation.org][Part 22 — The Call Stack Was the Continuation]]
+
+A second executor lowers the same compiled instruction stream the machine
+has run since Part 5 down to Execution26 senders, and agrees with it, block
+by block, on every control construct that matters --- a call and a return
+stop pushing an address and become an ordinary recursive C++ call, exactly
+the refunctionalization Part 12 predicted. Two real bugs turned up along the
+way, one of them sitting quietly in already-shipped code for two entries,
+and the one place the theory doesn't reach --- the constant evaluator ---
+stays open.
+
 * Table of Contents
 
 #+toc: headlines 1

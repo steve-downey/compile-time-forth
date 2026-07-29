@@ -1,0 +1,247 @@
+<div class="abstract" id="org8f0f7f8">
+<p>
+Ten entries back I called this the bet: threaded code is continuation-passing
+style with its continuation defunctionalized onto the return stack, and
+lowering the same compiled instructions to senders runs that transform
+backward, to an explicit one. That was an assertion sitting on top of a
+design, unverified until tonight. A second executor over the exact
+instructions the machine already runs agrees with it, instruction for
+instruction, on every construct that matters: <code>IF</code>, both <code>BEGIN</code> loops,
+<code>DO~/~LOOP</code> with <code>LEAVE</code>, <code>EXIT</code>, <code>EXECUTE</code>, <code>CREATE~/~DOES&gt;</code>, <code>CATCH</code> and
+<code>THROW</code>. Call and return stop pushing an address; they become an ordinary
+recursive C++ call. Two real bugs found me before I found them, one of them
+sitting quietly in code that had already shipped. And the one place the
+theory doesn't reach stays exactly that &#x2014; unreached, not fixed.
+</p>
+
+</div>
+
+{{TEASER\_END}}
+
+<nav style="margin-bottom: 2em; border-bottom: 1px solid #ccc; padding-bottom: 1em">
+
+[↑ Series Index](index.md) | [Part 21 - The Oracle Is Not an Authority ←](post-21-the-oracle-is-not-an-authority.md)
+
+</nav>
+
+
+# The bet, called
+
+Part 12 put the claim on the table: a call, a return address pushed onto the return stack, and a jump to the next word's own code, is nothing but continuation-passing style with the continuation defunctionalized into that stack, and a fetch-execute loop as the thing that knows how to resume from it. Lowering the same compiled instructions to senders was supposed to run that correspondence the other way, taking the stack-plus-loop back to an explicit continuation (a sender's own completion channel standing in for "what runs next"). I wrote that down before I had lowered a single instruction.
+
+Tonight I lowered all of the instructions that matter, and ran the result against the machine that has been the ground truth in this project since Part 5, one recovered block at a time. It agreed. `IF~/~ELSE~/~THEN`, both `BEGIN` loops, `DO~/~LOOP~/~+LOOP~/~LEAVE` with nested `I` and `J`, `EXIT`, `EXECUTE`, `CREATE~/~DOES>`, and `CATCH~/~THROW` including a nested `CATCH` and a caught machine fault: every one of these compiles down to the same instruction stream the machine already runs, and the second executor produces the identical final stack and output the first one does, block by block. That's not a small thing to get to say honestly, and it isn't the whole claim; there's more below on where it stops holding.
+
+A recovered block finishes one of four ways, and the type that names them is the entire value channel this second executor completes on:
+
+```cpp
+/// How one recovered @ref interpreter::basic_block's own execution ended, or
+/// (from @ref word_sender's own value channel) how a whole word's execution
+/// ended -- the value @ref word_sender completes with when it does not
+/// error or stop.
+enum class transfer_kind : std::uint8_t {
+    fallthrough, ///< The block simply ran out with no explicit terminator;
+                 ///< continue at @ref block_outcome::target (the next
+                 ///< block's own start).
+    jump,        ///< An unconditional or resolved conditional branch;
+                 ///< continue at @ref block_outcome::target.
+    ret,         ///< `op::ret`/`op::does_enter` reached: this word's own
+                 ///< execution is complete (EXIT compiles to a bare `ret`,
+                 ///< so this covers both).
+    halt,        ///< `op::halt` reached: the whole run is complete, not just
+                 ///< this word -- every recursive caller must also stop
+                 ///< rather than resume (see @ref word_sender::run's own
+                 ///< propagation of this case).
+};
+
+/// See @ref transfer_kind. @ref target is meaningful only for
+/// @ref transfer_kind::fallthrough and @ref transfer_kind::jump.
+struct block_outcome {
+    transfer_kind kind = transfer_kind::ret;
+    int target = -1;
+};
+```
+
+`fallthrough` and `jump` are what a trampoline loop needs to keep going: plain iteration over the blocks a definition compiled into, no recursion required for a loop's own back edge. `ret` is the interesting one: `EXIT` compiles to a bare `ret`, and nothing else does, so an early `EXIT` and the closing `;` complete this channel identically, with no special case required to make it so. `halt` propagates through every level of recursion this executor is currently sitting inside, instead of being resolved wherever it's first seen, matching the one thing the machine has always done with it: stop the entire run, no matter how deep the call chain currently is.
+
+
+# No return address, ever pushed
+
+Call and `EXECUTE` are where the refunctionalization stops being an argument and starts being visible in the code. Neither pushes anything onto the return stack any more. Entering a callee is an ordinary recursive C++ call (this executor building and driving a fresh instance of itself for the callee's own instruction range), so the C++ call stack is the continuation the return-stack cell used to stand in for. `ret` and `does_enter` complete the value channel above instead of popping an address to jump to; the recursive caller's own C++ frame simply resumes where it left off, needing nothing handed back to it. `EXECUTE` reuses this identical path, its target read off the data stack at runtime instead of an instruction's own operand, and recurses into a fresh instance the same way a compiled call does.
+
+I don't think I appreciated, writing Part 12, how literal "the call stack is the continuation" would turn out to be. It isn't a metaphor once you write it. It's just what recursion already does, and threaded code had been building its own version of it, by hand, one return-address cell at a time, the whole way here.
+
+
+# `THROW` completes a channel; `CATCH` composes one back
+
+Execution26 senders complete on one of three channels: a value, an error, or a stopped signal (Dominiak, Micha{\\l} and others, 2024). `THROW`, and any primitive fault this project already maps to a numbered throw code, complete the error channel directly:
+
+```cpp
+/// The error-channel payload D24 calls for verbatim ("THROW -> error
+/// channel with (n, state)"): either a genuine Forth `THROW` code bound for
+/// the nearest active `CATCH` (@ref numbered, @ref n), or a raw, terminal
+/// diagnosis that no `CATCH` anywhere in the current dynamic extent will
+/// ever intercept (`!numbered`, @ref diag) -- mirroring `vm.hpp`'s own
+/// `run_from` `op::prim` case exactly: a primitive fault only ever becomes a
+/// numbered code when @ref machine::forth_state::handler_depth is active
+/// *and* `vm.hpp`'s own `machine_fault_throw_code` maps it (`ABORT"`'s own
+/// condition is the one unconditional exception, always numbered `-2`); any
+/// other fault, or a numbered code that reaches the true top of the run with
+/// no `CATCH` ever having intercepted it, is what @ref to_status renders.
+///
+/// @ref state does not own or copy anything -- it names the one live
+/// `forth_state` the whole run shares (never a snapshot, which would already
+/// be stale by the time an adapter inspects it), exactly as
+/// `foundation::parse_error::message` already documents for its own pointee
+/// (this project's standing non-owning-pointer convention).
+template <int MaxDepth, int MaxRDepth, int MaxData, int MaxOut>
+struct control_error {
+    bool numbered = false;
+    machine::cell n{};
+    foundation::parse_error diag{};
+    machine::forth_state<MaxDepth, MaxRDepth, MaxData, MaxOut> *state = nullptr;
+};
+```
+
+The split between a numbered code (bound for some active `CATCH`) and a raw diagnosis (nothing anywhere is going to intercept it) mirrors the machine's own primitive-fault handling condition for condition, so a program that ends up uncaught reports the identical message whichever executor ran it.
+
+`CATCH` is the more interesting completion, because it isn't a hand-rolled if/else translating one channel into the other. It composes the protected word's own nested execution through real `then~/~upon_error` combinators into "zero on normal completion, the thrown code with the Forth stack restored on a caught throw": an actual sender adapter, and not an imitation of one written in ordinary control flow. It's handled inline, wherever the paired catch-mark instructions turn up in a block's own scan, even when they aren't a block's own first instruction; an earlier draft assumed they always would be, and was wrong the first time something (pushing an execution token for `[']`, say) came before the pair in its own recovered block.
+
+
+# Where refunctionalization stops
+
+`>R`, `R>`, and `R@` read and write the exact cell this lowering elides. Under the machine, a call's own return address is a real, indexable slot on the return stack, and a word using one of these three primitives could in principle inspect or overwrite that slot directly, steering its own control flow through data instead of through `call~/~ret`. Nothing is ever pushed for a call here, so a word relying on reading its own return address this way would see whatever this lowering's loop bookkeeping happened to have left sitting nearby instead: wrong, quietly, with nothing around to say so.
+
+So any use of the three, anywhere in a word's own compiled body, routes that word's entire execution through a VM-in-a-sender fallback instead of native lowering:
+
+```cpp
+[[nodiscard]] constexpr auto touches_return_stack_data(machine::instr const &in)
+    -> bool {
+    if (in.code != machine::op::prim) {
+        return false;
+    }
+    auto const p = static_cast<machine::primitive>(in.operand);
+    return p == machine::primitive::to_r || p == machine::primitive::r_from ||
+           p == machine::primitive::r_fetch;
+}
+
+/// True iff any instruction in `[entry, end_exclusive)` touches the return
+/// stack as data (@ref touches_return_stack_data) -- the whole-word,
+/// conservative trigger for @ref run_word_via_vm.
+template <int MaxCode, int MaxWords>
+[[nodiscard]] constexpr auto word_uses_return_stack_data(
+    machine::compiled_program<MaxCode, MaxWords> const &program, int entry,
+    int end_exclusive) -> bool {
+    for (int i = entry; i < end_exclusive; ++i) {
+        if (touches_return_stack_data(program.code[i])) {
+            return true;
+        }
+    }
+    return false;
+}
+```
+
+This is a sound boundary and a loose one. `: DEEP 42 >R 10 0 DO 5 THROW LOOP R> DROP ;` never actually crosses a call boundary with its own `>R~/~R>`, and it would produce identical results lowered natively, but telling that apart from a genuinely unsafe use would need a real shape analysis over the return stack I haven't written, so every use is treated as unsafe, uniformly. The fallback is per word, and not viral: `: GUARD ['] DEEP CATCH ;` wraps `DEEP` in a `CATCH` that still lowers natively, even though the word it protects falls back for its entire body.
+
+Getting that pair to agree with the machine took two real fixes, and I found both by running the program instead of by reading the code first. The first was survivable: entering a word this way isn't a compiled `call` or `EXECUTE`, so nothing supplies the return address the fallback word's own trailing `ret` expects, and the very first attempt underflowed the return stack outright before I replayed the same manufactured-return-address convention the ordinary compiler already uses for a top-level call.
+
+The second was not obvious at all. Once the underflow was fixed, `GUARD` came back with `-256` instead of `5` (this project's own defensive sentinel for "a raw diagnosis reached an active handler that had no business listening"), rather than the thrown code `GUARD`'s own `CATCH` is supposed to see. The cause is that the two executors keep entirely different books for the same shared register. The machine treats a non-negative `handler_depth()` as the base of a real, three-cell frame materialized on the return stack; this lowering's own native `CATCH` never builds that frame at all, keeping the same bookkeeping as ordinary C++ locals instead. Leave the enclosing `CATCH`'s `handler_depth()` visible while the fallback runs, and a `THROW` inside `DEEP` resumes at a point that means something to the sender trampoline and nothing to the fallback's own dispatch loop, which happily keeps fetching instructions from wherever that number pointed, executing the caller's own unrelated code as if it were still inside `DEEP`.
+
+The fix is to hide the outer handler for the fallback call's own duration: save it, set it to a value that means "nothing is listening," run the fallback, restore it afterward. A `THROW` during that window then looks, from the fallback's own point of view, exactly like an uncaught throw at the top of a brand-new run, and the sender side recognizes that specific diagnosis and re-numbers it into the code `GUARD`'s own `CATCH` was waiting for all along. I considered the more obvious-looking fix first, making the native `CATCH` also push a real three-cell frame to match the machine's own layout, and rejected it once I saw why it wouldn't help: the problem was never the frame's own shape, it was which dispatch loop consumes the resulting jump, and a correctly-shaped frame doesn't touch that at all.
+
+
+# The build that would not finish
+
+The first working draft of this executor's own per-word sender followed the textbook Execution26 shape without a second thought: the function doing the actual work was a member template over the connecting receiver's own concrete type, the same way the operation state built to drive it already is. I ran the simplest possible program through it (`ABS`, one `IF`, nothing else) and watched the compiler climb past forty gigabytes of resident memory before the kernel killed it. Capping the process at eleven gigabytes didn't help either: it failed the same way, denied a single request for another six and a half gigabytes, two minutes and twenty-six seconds in. A hard ceiling an order of magnitude below the original failure point wasn't enough to let it finish, which is what told me this was unbounded growth and not merely an expensive compile.
+
+The cause is a language rule I knew in the abstract and had never watched bite before: a local lambda inside a function template gets its own, distinct closure type at every instantiation of the enclosing template, even when the lambda's own text never changes. `CATCH`'s own composition writes ordinary lambdas straight into the work function's body for `then` and `upon_error`. Make that work function itself a template over the connecting receiver, and every instantiation mints its own fresh copies of those lambdas; composing the nested sender with them produces a receiver type nobody has connected to yet, which needs the work function instantiated again, for a receiver that in turn mints its own new lambdas, requiring another instantiation after that. Nothing in the chain converges on a receiver type already seen, because every instantiation's own lambdas are unique to it by definition. There's no fixed point to land on.
+
+The fix is to stop letting the one thing that actually needs to vary (what's connecting to this sender from the outside) flow into the type of the function that does the recursive work. A small interface with three methods, plus a one-time wrapper from whatever real receiver shows up to that interface, and the work function is templated only on the sender's own fixed dimensions, never on whoever is calling it. It gets instantiated exactly once per shape, full stop, no matter how many closures compose around it from outside. Measured after the change: the same `ABS` case compiles in two to six seconds at 330 to 360 megabytes peak; a seven-program comparison battery in one file, about five seconds at 395 megabytes. Down from a forty-two-gigabyte kill for the single simplest case I could construct.
+
+
+# A defect two steps old, invisible until today
+
+Part 20 built a real control-flow graph for a colon definition's own compiled instructions, and one function on top of it, meant to recover straight-line blocks from that graph, called by nothing at the time it landed: reusable groundwork left standing for whatever eventually needed block-level granularity instead of per-instruction edges. Tonight's own lowering is the first thing that actually needed it: one composed sender per recovered block, which only means something if a block's own extent is right, and not merely which edges connect which instructions.
+
+It found a real defect immediately. The leader-computation step that decides where one block ends and the next begins was adding every ordinary instruction's own physical successor as if it were a real jump target, unconditionally, so every recovered block came out exactly one instruction long regardless of whether a branch was anywhere nearby. Part 20's own test never caught it, for an unglamorous reason: its one example already opens on a conditional branch, which forces the same three single-instruction blocks whether the defect is present or not, so the bug and the fix agree on that one input by coincidence. I confirmed the real shape of it directly, with a hand-built four-instruction straight run (push, push, add, return, no branch anywhere in it), which came back as four separate one-instruction blocks before the fix and a single block afterward.
+
+```cpp
+struct instr_edges {
+    int a = -1;
+    int b = -1;
+};
+
+/// Computes @p in's own @ref instr_edges, given its own instruction @p index
+/// (needed only for the fallthrough case, `index + 1`).
+///
+/// Shared verbatim by @ref check_definition_effect's own worklist and by
+/// @ref recover_basic_blocks (D24: "the recovered CFG is shared with F33's
+/// sender lowering -- one analysis, two clients") -- this function *is*
+/// that one shared analysis' own edge relation; the two clients differ only
+/// in what they do with it (a per-instruction abstract interpretation here,
+/// a leader-based block partition there).
+[[nodiscard]] constexpr auto instruction_successors(machine::instr const &in,
+                                                    int index) -> instr_edges {
+    using machine::op;
+    switch (in.code) {
+    case op::ret:
+    case op::does_enter:
+    case op::halt:
+        return {-1, -1};
+    case op::branch:
+        return {static_cast<int>(in.operand), -1};
+    case op::branch0:
+    case op::loop_step:
+    case op::plus_loop_step:
+        return {index + 1, static_cast<int>(in.operand)};
+    case op::leave:
+        return {static_cast<int>(in.operand), -1};
+    case op::catch_mark:
+        // Step F33 (docs/forth-plan-2.md), D24: `catch_mark`'s own operand
+        // is a real second control-flow edge -- the resume instruction a
+        // caught `throw_op` jumps to directly (`vm.hpp`'s own
+        // `perform_throw`), reached without ever falling through the paired
+        // `prim catch_ok` that always sits at `index + 1` (both of
+        // `interp.hpp`'s own `CATCH` cases emit the pair together, D11/D18).
+        // F30's own checker never needed this edge (`catch_mark`'s own local
+        // effect is `unknown_effect` regardless of which edge is taken, see
+        // this header's own top comment), so it went unmodeled until F33's
+        // own sender lowering needed both of `CATCH`'s real completions
+        // (normal vs. caught) as two separately wired continuations -- see
+        // `sender/lower.hpp`'s own top comment for how it consumes this.
+        return {index + 1, static_cast<int>(in.operand)};
+    default:
+        return {index + 1, -1};
+    }
+}
+```
+
+The `catch_mark` case is new tonight, and it isn't a fix: its own operand is a real second edge, the resume instruction a caught throw jumps to directly, which the stack-effect checker never needed (its own local effect is unknown either way the edge is taken) but this lowering does, so `CATCH`'s two completions (ran to the end normally, or got thrown through) land as two separately recoverable blocks instead of being flattened into one.
+
+I'd asked, building that graph two steps ago, whether one shared analysis with two different clients was actually being verified by having two clients, or just by having two call sites that happened to want the same answer. Tonight answered it: the shared analysis had exactly one real client for two steps running, and it took a second client that actually needed something different from it, extent rather than mere adjacency, before a defect sitting in already-shipped code became visible at all.
+
+
+# Where it doesn't hold
+
+Every combinator this component composes with below the top (`just`, `then`, `let_value`, `connect`, `start`) is itself constexpr-marked in this project's own Execution26 implementation. The one call that actually drives a sender to completion is not. It builds a run loop internally, and its own error path converts an unhandled error into a C++ exception and throws it, and none of a run loop, an exception, or a throw is something the constant evaluator can execute. So this backend is a runtime-only executor by construction. It isn't an oversight I haven't gotten to yet. Compile-time coverage of this project stays exactly where it has always been: the machine's own dispatch loop, the thing this whole executor was built to run alongside, never to replace.
+
+I don't know tonight whether that split is permanent or just unaddressed. I haven't tried to close it, and I'm not going to claim, in the same entry that found two real bugs by running code instead of reading it, that a gap this size is fine because the rest of the design predicted it. It's open.
+
+
+# What tonight doesn't prove
+
+The fallback boundary is sound and it is not tight, and I want that stated plainly instead of folded into a caveat. `>R~/~R>~/~R@` anywhere in a word routes the whole word through the machine, even for the large share of uses (`DEEP` among them) that never actually touch a call's own return address and would come out identical either way. That's a real, measurable amount of native lowering this step leaves on the table, in exchange for a trigger simple enough to be sure it never lowers something unsafely. Tightening it is a different piece of work than tonight's, one I haven't started.
+
+The tests for all of this are sharded one or two programs to a file, which looks like tidiness and is actually a budget. Peak compiler memory, not wall clock, is what this component costs the most of, even after the fix above: several hundred megabytes per distinct combination of word and state capacity, every time, not something that shrinks to nothing once the fix lands. I'd rather know that number per shard than assume it stays small because the worst version of it is already behind me.
+
+Threaded code was what Part 12 said it was, and lowering it to senders was the transform back that the same argument predicted. Both of the real defects this evening found were found by running a program and watching it disagree with itself. Neither turned up from staring at either side long enough. I'd rather have an evening like that than one where everything simply compiled and I had no particular reason to trust it.
+
+<nav style="margin-top: 3em; border-top: 1px solid #ccc; padding-top: 1em">
+
+[↑ Series Index](index.md) | [← Part 21 - The Oracle Is Not an Authority](post-21-the-oracle-is-not-an-authority.md)
+
+</nav>
+
+
+# References
+
+Dominiak, Micha{\\l} and others (2024). *P2300: std::execution*.
