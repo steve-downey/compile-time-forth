@@ -306,7 +306,7 @@ simply compiled and I had no particular reason to trust it.
 
 
 #+html: <nav style="margin-top: 3em; border-top: 1px solid #ccc; padding-top: 1em">
-[[file:index.org][↑ Series Index]] | [[file:post-21-the-oracle-is-not-an-authority.org][← Part 21 - The Oracle Is Not an Authority]]
+[[file:index.org][↑ Series Index]] | [[file:post-21-the-oracle-is-not-an-authority.org][← Part 21 - The Oracle Is Not an Authority]] | [[file:post-23-renamed-not-reimplemented.org][Part 23 - Renamed, Not Reimplemented →]]
 #+html: </nav>
 
 * References

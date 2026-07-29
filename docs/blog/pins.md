@@ -36,6 +36,7 @@ worktree and are supposed to roll forward.
 | Part 20 | Just Edges | F30 | `6039eb4` | `blog/part-20` | 4 |
 | Part 21 | The Oracle Is Not an Authority | F32 | `5759114` | `blog/part-21` | 4 |
 | Part 22 | The Call Stack Was the Continuation | F33 | `182f2e8` | `blog/part-22` | 4 |
+| Part 23 | Renamed, Not Reimplemented | F35 | `203d2ee` | `blog/part-23` | 3 |
 
 Pin SHAs are the commits that introduced each post. They are **not** the phase
 merges, for the reason in DISC-1.

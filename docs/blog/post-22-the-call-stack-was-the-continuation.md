@@ -1,4 +1,4 @@
-<div class="abstract" id="org8f0f7f8">
+<div class="abstract" id="orgb1b3407">
 <p>
 Ten entries back I called this the bet: threaded code is continuation-passing
 style with its continuation defunctionalized onto the return stack, and
@@ -237,7 +237,7 @@ Threaded code was what Part 12 said it was, and lowering it to senders was the t
 
 <nav style="margin-top: 3em; border-top: 1px solid #ccc; padding-top: 1em">
 
-[↑ Series Index](index.md) | [← Part 21 - The Oracle Is Not an Authority](post-21-the-oracle-is-not-an-authority.md)
+[↑ Series Index](index.md) | [← Part 21 - The Oracle Is Not an Authority](post-21-the-oracle-is-not-an-authority.md) | [Part 23 - Renamed, Not Reimplemented →](post-23-renamed-not-reimplemented.md)
 
 </nav>
 

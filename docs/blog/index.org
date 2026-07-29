@@ -177,6 +177,16 @@ way, one of them sitting quietly in already-shipped code for two entries,
 and the one place the theory doesn't reach --- the constant evaluator ---
 stays open.
 
+** [[file:post-23-renamed-not-reimplemented.org][Part 23 — Renamed, Not Reimplemented]]
+
+A prelude of Forth, compiled before every program from now on, defines three
+ordinary words and three aliases of ~IF~/~ELSE~/~THEN~ under new names. I
+first wrote this up as a full replacement of those three in Forth and had to
+walk it back: the C++ underneath is untouched, and the aliases dispatch into
+the same cases the originals always did. What holds is narrower and still
+real --- the whole-body alias trick Part 16 found isn't specific to ~THEN~;
+it reaches every structural control word, one at a time.
+
 * Table of Contents
 
 #+toc: headlines 1

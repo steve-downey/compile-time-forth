@@ -1,0 +1,217 @@
+#+options: ':nil *:t -:t ::t <:t H:3 \n:nil ^:nil arch:headline author:t
+#+options: broken-links:nil c:nil creator:nil d:(not "LOGBOOK") date:t e:t
+#+options: email:nil f:t inline:t num:t p:nil pri:nil prop:nil stat:t tags:t
+#+options: tasks:t tex:t timestamp:t title:t toc:nil todo:t |:t
+#+options: html5-fancy:t
+#+bibliography: references.bib
+#+TITLE: Building a Compile-Time Forth in C++26: Part 23 - Renamed, Not Reimplemented
+#+AUTHOR: Steve Downey
+#+DATE: 2026-07-27
+
+#+begin_abstract
+Every session now opens on thirty-five tokens of Forth I never typed: a short
+prelude, compiled before whatever program I actually asked for, defining three
+ordinary words and three aliases of ~IF~, ~ELSE~, and ~THEN~. I wrote the
+commit for the second half as though a piece of the compiler had moved out of
+C++ and into Forth. It hadn't. ~WHEN~, ~OTHERWISE~, and ~ENDIF~ still call
+straight into the same three cases ~IF~, ~ELSE~, and ~THEN~ always called; the
+vocabulary got wider and nothing underneath it got smaller. What's true, and
+narrower, is still worth having: the trick that let one word borrow another's
+entire compiled behavior isn't a ~THEN~-shaped accident. It reaches every
+structural word in the control vocabulary, one at a time, which means a Forth
+program can rename all of it. Not rebuild it. Rename it.
+#+end_abstract
+
+#+MACRO: TEASER_END
+{{TEASER_END}}
+#+html: <nav style="margin-bottom: 2em; border-bottom: 1px solid #ccc; padding-bottom: 1em">
+[[file:index.org][↑ Series Index]] | [[file:post-22-the-call-stack-was-the-continuation.org][Part 22 - The Call Stack Was the Continuation ←]]
+#+html: </nav>
+
+
+* A prelude, before anything you typed
+
+I gave the session builder a second job tonight: before it looks at a single
+character of the program I actually handed it, it compiles a short piece of
+Forth I wrote myself and shipped inside the compiler. Same interpreter, same
+dictionary, same code space: the prelude's own words end up sitting in both
+before the caller's text gets its turn. It's the same discipline the
+conformance suite already leaned on two entries back, when the standard's own
+test corpus turned out to be more honestly represented as Forth text my
+interpreter compiles than as C++ pretending to know what it means: if I want to
+claim a definition works, the definition should be real source, not a
+description of one.
+
+#+transclude: [[orgit-file:~/src/compile-time-forth/compile-time-forth::blog/part-23::src/smd/forth/interpreter/prelude.hpp::c46f1cb1-63a2-4d0e-9e2c-6a45f2c9d5b1]] :lines 2- :src forth :end "c46f1cb1-63a2-4d0e-9e2c-6a45f2c9d5b1 end"
+
+Six words, thirty-five tokens. ~NIP~, ~TUCK~, and ~?DUP~ are ordinary colon
+definitions, nothing about them needs saying twice: ~?DUP~'s own body reaches
+for ~IF~ and ~THEN~ exactly the way any other word's body would, as dictionary
+entries it looks up and either runs or compiles, immediate or not. Nothing had
+to be taught to let a user-defined word call an immediate one from inside
+itself; that rule has been sitting there since the text interpreter went in,
+doing its job on words I happened to write myself instead of ones I'd
+predicted somebody else would.
+
+~WHEN~, ~OTHERWISE~, and ~ENDIF~ are a different shape entirely: each one's
+entire body is a single ~POSTPONE~ of ~IF~, ~ELSE~, or ~THEN~. That's the part
+of tonight that needs the rest of this entry.
+
+* Three words move out, and leave a shadow behind
+
+~NIP~, ~TUCK~, and ~?DUP~ used to be C++, installed straight into the
+dictionary as primitives the way ~DUP~ and ~SWAP~ still are. Tonight they moved
+into the prelude as compiled colon words instead, and the dictionary's own
+entry count dropped from ninety-eight to ninety-five. What didn't move: the
+three primitives' own enum tags and their cases in the VM's dispatch are still
+sitting exactly where they were, compiled into the binary, reachable by
+nothing at all now that no dictionary entry names them. I didn't delete them.
+Deleting them would have meant touching a switch and a primitive-effect table
+for a benefit nobody asked this step for, and Forth itself doesn't care: a
+colon word and a primitive are indistinguishable from the outside, so a caller
+building a session the ordinary way can't tell ~NIP~ apart from what it used to
+be. The C++ underneath just became an orphan nothing points at any more,
+instead of something erased.
+
+I could have moved ~1+~ and ~1-~ the same way; they're just as derivable
+(~: 1+ 1 + ;~) as the three that did move. I left them alone. An older battery
+of accepted programs (the running acceptance test this project has carried
+since the early control-flow work) reaches ~1+~ straight through the raw
+dictionary, with no prelude anywhere in the path, and moving the word would
+have meant deciding whether "the battery still passes" is allowed to mean
+"passes once you also change what's running it." That's a real question and I
+didn't want to answer it by accident on the way to a smaller primitive count,
+so ~1+~ and ~1-~ stayed right where they've always been.
+
+* The alias reaches all three
+
+Two entries back I wrote down a trick and its own limit in the same sitting.
+The trick: a control word like ~THEN~ has no address, nothing a ~call~ could
+ever mean, because its whole output is a mutation of the code being built,
+finished by the time it returns. So ~POSTPONE~ of one doesn't compile
+anything: it just records the target and lets the closing ~;~ install the new
+word as a plain alias, indistinguishable from the word it names, provided the
+postponed control word is the *entire* body of the definition doing the
+postponing, nothing before it and nothing after. ~: ENDIF POSTPONE THEN ;
+IMMEDIATE~ was the proof, and it worked the first time I tried it.
+
+One entry later, ~EXECUTE~, ~CREATE~, and ~DOES>~ picked up real compiled
+forms of their own and escaped that limit, composing with ordinary code in
+the same definition instead of only standing alone as the whole body. I wrote
+at the time that the rest of the control words (~IF~, ~THEN~, ~DO~, and
+everything like them) couldn't do that and wouldn't, because there is no
+later moment in their execution to represent as bytecode in the first place.
+I still believe that. It hasn't moved.
+
+What I hadn't actually checked was narrower, and turned out to be a
+different question from that limit: does the whole-body alias trick that worked for
+~THEN~ work for every structural word the same way, or did I just get lucky
+that ~THEN~ happens to be the one control word simple enough for it? The
+honest answer meant looking at what ~IF~ and ~ELSE~ each actually do.
+~IF~ pushes one marker onto the discipline the standard calls orig/dest and
+leaves a branch to be patched later. ~ELSE~ pops that marker, emits its own
+branch, and pushes a new one. ~THEN~ pops and patches. None of the three reads
+anything the other two left behind beyond what that shared bookkeeping already
+carries by design [cite:@forth2012]; each one is as self-contained an action
+as ~THEN~ turned out to be. Nothing in the mechanism that makes ~POSTPONE~
+install a whole-body alias singles ~THEN~ out either; it applies to whichever
+control word shows up the same way.
+
+So: ~WHEN~ is ~POSTPONE IF~, ~OTHERWISE~ is ~POSTPONE ELSE~, ~ENDIF~ is
+~POSTPONE THEN~, each one immediate, each one the entire body of its own
+definition. Used together they reproduce ~IF ... ELSE ... THEN~ end to end,
+under new names:
+
+#+begin_src forth
+\ (shape, not verbatim)
+: SIGN DUP 0< WHEN DROP -1 OTHERWISE DROP 1 ENDIF ;
+-7 SIGN
+#+end_src
+
+That leaves ~-1~ on the stack, by way of a definition that never once says
+~IF~, ~ELSE~, or ~THEN~.
+
+* What I got wrong writing that down
+
+I called this a full ~IF~/~ELSE~/~THEN~ replacement, and left the word
+"replacement" to carry more than it should have. Read uncharitably, the way
+I'd read it if somebody else had written it, that sentence says ~IF~ got
+reimplemented in Forth. It didn't, and it couldn't have: nothing about
+tonight gave any of the three words a second way to reach the branch-patching
+logic underneath them. ~IF~, ~ELSE~, and ~THEN~ are still installed exactly
+as they were, their three cases untouched. ~WHEN~, ~OTHERWISE~, and ~ENDIF~
+are three additional dictionary entries, each one dispatching into one of
+those same three cases. The C++-installed control vocabulary is the same
+size it was before tonight. The session's own dictionary is three names
+bigger, not the compiler underneath it three cases smaller.
+
+Once I'd written that plainly, the part that's actually mine to claim got
+easier to see instead of harder. It isn't that ~IF~ moved. It's that the door
+I found two entries back, the one that let ~ENDIF~ borrow ~THEN~'s whole
+identity, turns out to open the same way for every structural word standing
+behind it: ~BEGIN~, ~UNTIL~, ~WHILE~, ~REPEAT~, ~DO~, ~LOOP~, ~+LOOP~,
+~LEAVE~, ~UNLOOP~, ~I~, ~J~, ~LITERAL~, right alongside ~IF~, ~ELSE~, and
+~THEN~. A Forth program running on top of this compiler could rename every one
+of them and still be running the identical C++ underneath, by the same route
+it always used. That's a wider result than "one word can be renamed," and
+it's the actual finding tonight has, once the overclaim is cut back down to
+size.
+
+What it still isn't: composition. ~: BAD POSTPONE THEN DROP ;~ is diagnosed
+today for the same reason it was diagnosed two entries ago. A control word's
+alias has nowhere to put "and also run this other thing," because it was
+never given a compiled form to begin with. The boundary I named back then
+hasn't moved an inch. Tonight only maps how far its better side reaches,
+which turns out to cover every structural word standing on it, one at a time,
+instead of only the one I happened to try first.
+
+* The bill, and a seam I haven't closed
+
+None of this is free. The fuel budget I built to keep a runaway program from
+hanging the compiler charges one step for every token the interpreter's own
+loop scans, prelude included, so those thirty-five tokens are a real, constant
+tax now on every session built the ordinary way, paid whether or not the
+program that follows ever calls ~NIP~ or writes ~WHEN~ in its own life.
+Measured, not estimated: I counted the tokens myself instead of guessing at
+them.
+
+"The ordinary way" is doing real work in that sentence, and it's the part I
+haven't resolved tonight. The prelude only runs through the public entry
+point, the one call most programs actually go through to get a session at
+all. Every lower-level session I still build directly, at capacities sized for
+one narrow question and nothing else, skips it entirely: no thirty-five-token
+tax, and no ~NIP~, ~TUCK~, ~?DUP~, ~WHEN~, ~OTHERWISE~, or ~ENDIF~ either. I
+now have two separate ways into this project that don't agree on vocabulary,
+and I went into tonight not planning to create that seam. I don't know yet
+whether that's a real problem or just an asymmetry that never comes up in
+practice, because nothing has asked the two of them to agree with each other
+so far. I'm leaving it open instead of arguing myself into either answer
+early.
+
+#+transclude: [[orgit-file:~/src/compile-time-forth/compile-time-forth::blog/part-23::src/smd/forth/forth.hpp::9affe4fc-3d72-4f41-8fd0-d2338f9ab603]] :lines 2- :src cpp :end "9affe4fc-3d72-4f41-8fd0-d2338f9ab603 end"
+
+That's the one call site that changed. Everything the prelude actually does
+lives underneath a function I wrote once and pointed the public entry point
+at:
+
+#+transclude: [[orgit-file:~/src/compile-time-forth/compile-time-forth::blog/part-23::src/smd/forth/interpreter/prelude.hpp::7d3e9a5c-2b4f-4e1a-8c6d-9f1b3a7e5c2d]] :lines 2- :src cpp :end "7d3e9a5c-2b4f-4e1a-8c6d-9f1b3a7e5c2d end"
+
+One concatenated ~SOURCE~, prelude first, caller's text after it, handed to the
+same session builder that's been doing this work since before there was
+anything to prepend to it. Nothing about that function is new in kind. What's
+new is that, for the first time, part of what a session knows didn't come from
+the program that asked for it.
+
+Six words moved or got renamed tonight, and every one of them still runs the
+same C++ it always did. I'd rather have that be the whole finding, stated
+flatly, than let "a full replacement" stand unexamined until somebody else has
+to come back and correct it for me.
+
+
+#+html: <nav style="margin-top: 3em; border-top: 1px solid #ccc; padding-top: 1em">
+[[file:index.org][↑ Series Index]] | [[file:post-22-the-call-stack-was-the-continuation.org][← Part 22 - The Call Stack Was the Continuation]]
+#+html: </nav>
+
+* References
+
+#+print_bibliography:
