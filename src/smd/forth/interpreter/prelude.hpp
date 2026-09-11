@@ -7,6 +7,7 @@
 #include <smd/forth/foundation/result.hpp>
 #include <smd/forth/foundation/source_pos.hpp>
 #include <smd/forth/interpreter/session.hpp>
+#include <smd/forth/machine/foreign.hpp>
 
 #include <array>
 #include <cstddef>
@@ -94,11 +95,25 @@ inline constexpr std::string_view prelude_source =
 ///
 /// @tparam MaxSourceLen Capacity, in bytes, for @ref prelude_source and
 ///                      @p text combined (plus one separating newline).
+/// @tparam MaxForeign   @p vocabulary's own registry capacity (F34).
+///
+/// @param vocabulary Step F34's own addition, forwarded to @ref build_session
+///                   unchanged: a @ref machine::foreign_dictionary whose word
+///                   list and foreign registry the session is built over, or
+///                   `nullptr` for the ordinary prelude-only session. Either
+///                   way the prelude is compiled into whichever dictionary is
+///                   in play, so `NIP`/`TUCK`/`?DUP` and the
+///                   `WHEN`/`OTHERWISE`/`ENDIF` aliases are available to an
+///                   FFI session exactly as they are to any other.
 template <int MaxCode = 4096, int MaxWords = 256, int MaxData = 1024,
           int MaxOut = 4096, int MaxName = 32, int MaxDepth = 64,
-          int MaxRDepth = 64, int MaxStack = 64, int MaxSourceLen = 8192>
-[[nodiscard]] constexpr auto build_session_with_prelude(std::string_view text,
-                                                        int fuel = 100000)
+          int MaxRDepth = 64, int MaxStack = 64, int MaxSourceLen = 8192,
+          int MaxForeign = 16>
+[[nodiscard]] constexpr auto build_session_with_prelude(
+    std::string_view text, int fuel = 100000,
+    machine::foreign_dictionary<MaxWords, MaxName, MaxForeign, MaxDepth,
+                                MaxRDepth, MaxData, MaxOut> const *vocabulary =
+        nullptr)
     -> foundation::result<
         session<MaxCode, MaxWords, MaxData, MaxOut, MaxName, MaxStack>> {
     std::size_t const combined_len = prelude_source.size() + 1 + text.size();
@@ -118,7 +133,8 @@ template <int MaxCode = 4096, int MaxWords = 256, int MaxData = 1024,
     }
     std::string_view combined_view{combined.data(), pos};
     return build_session<MaxCode, MaxWords, MaxData, MaxOut, MaxName, MaxDepth,
-                         MaxRDepth, MaxStack>(combined_view, fuel);
+                         MaxRDepth, MaxStack, MaxForeign>(combined_view, fuel,
+                                                          vocabulary);
 }
 // 7d3e9a5c-2b4f-4e1a-8c6d-9f1b3a7e5c2d end
 

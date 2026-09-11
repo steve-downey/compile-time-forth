@@ -11,6 +11,7 @@ target_sources(
                 data_space.hpp
                 dictionary.hpp
                 emit.hpp
+                foreign.hpp
                 forth_state.hpp
                 input_source.hpp
                 instruction.hpp
@@ -28,6 +29,7 @@ if(FORTH_ENABLE_TESTING)
             data_space.test.cpp
             dictionary.test.cpp
             emit.test.cpp
+            foreign.test.cpp
             forth_state.test.cpp
             input_source.test.cpp
             instruction.test.cpp

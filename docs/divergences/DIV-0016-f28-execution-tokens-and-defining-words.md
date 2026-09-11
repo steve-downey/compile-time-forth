@@ -176,3 +176,25 @@ pattern already used for primitives/variables/constants, just resolving
 through the deferred word's own current target at the moment `'` runs. No
 merge criterion in this step or the ones immediately after it needs this;
 revisit if a later step's own merge criterion does.
+
+## F34 addendum: the `foreign_word` half of that scope cut is closed
+
+Step F34 (foreign function interface, DIV-0029) gives a foreign word a real,
+callable code-space location, exactly as this record anticipated ("foreign
+functions have no callable code-space location *before F34 gives them one*").
+`interpreter::resolve_execution_token` gained a `machine::foreign_word` case
+that emits the identical guarded, `ret`-terminated stub a primitive gets, with
+`machine::op::foreign` as its one body instruction; `interpreter::compile_entry`
+emits that same single opcode inline for a foreign word met while compiling,
+exactly as it emits `op::prim` for a primitive.
+
+Nothing downstream distinguishes a foreign execution token from a primitive's:
+`'`, `[']`, `EXECUTE`, `CATCH`, `POSTPONE`, and `COMPILE,` all work over one
+with no FFI-specific case anywhere, which is F34's own "callable via
+`'`/`EXECUTE` like any other" merge criterion, met by construction rather than
+by a dedicated code path.
+
+The `control_word` half remains permanently open by its own nature (a
+structural control word has no runtime action an XT could name — DIV-0015's F28
+addendum settles that), and the `defer_word` half remains as this record left
+it: possible, unneeded, revisit on demand.

@@ -40,7 +40,7 @@
 - [x] Step F31: CATCH and THROW
 - [x] Step F32: conformance
 - [x] Step F33: sender backend
-- [ ] Step F34: foreign function interface
+- [x] Step F34: foreign function interface
 - [x] Step F35: bootstrap prelude (stretch)
 - [ ] Step F36: consolidation
 

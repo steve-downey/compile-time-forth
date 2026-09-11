@@ -172,11 +172,38 @@ struct constant_word {
     cell value = 0;
 };
 
-/// A foreign-function binding (F19); @c index is an opaque handle into
-/// whatever registry F19 builds. F9 only reserves the slot.
+// 3d7f1b58-2c94-4a6e-8b03-5e9c1a7d4f26
+/// A foreign-function binding (step F34, D18/D20; the slot F9 reserved and
+/// R1's own F19 named): @ref index is a handle into a @ref
+/// machine::foreign_vocabulary "foreign vocabulary"
+/// (`machine/foreign.hpp`), the flat registry that actually carries the
+/// `status (*)(forth_state &)` function pointers.
+///
+/// The pointer itself cannot live here: @ref forth_state is
+/// capacity-parameterized and @ref dictionary is not, so this header has no
+/// way to name the function-pointer type. @ref machine::foreign_dictionary
+/// is what keeps the two structures' own indices in agreement by construction
+/// (one `with_foreign` call appends to both); DIV-0029 records the design,
+/// including the two rejected alternatives.
+///
+/// @ref effect_known / @ref effect_inputs / @ref effect_outputs are D20's own
+/// *optional declared* effect, carried here rather than on the registry entry
+/// because F30's own effect checker (`interpreter::effect_lint.hpp`) only
+/// ever has the dictionary to consult: undeclared (the default) is the
+/// `unknown` lattice value `EXECUTE`/`CATCH` already get; a declared effect
+/// participates in the lint exactly like a @ref compiled_colon_word's own
+/// computed one. Deliberately mirrors @ref compiled_colon_word's own three
+/// effect fields rather than inventing a second spelling.
 struct foreign_word {
     int index = -1;
+    bool effect_known = false;
+    int effect_inputs = 0;
+    int effect_outputs = 0;
+
+    friend constexpr auto operator==(foreign_word const &, foreign_word const &)
+        -> bool = default;
 };
+// 3d7f1b58-2c94-4a6e-8b03-5e9c1a7d4f26 end
 
 // 9b4e6a1c-2f8d-4c3a-8e7b-5d1a9c4f6b3e
 /// A `VALUE`-defined word's binding (step F28): the data-space cell holding
