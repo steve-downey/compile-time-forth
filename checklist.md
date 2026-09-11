@@ -64,5 +64,5 @@
 - [x] Blog: F32 conformance (Part 21)
 - [x] Blog: F33 sender backend (Part 22)
 - [x] Blog: F35 bootstrap prelude (Part 23)
-- [ ] Blog: F34 foreign function interface (Part 24)
+- [x] Blog: F34 foreign function interface (Part 24)
 - [ ] Blog: F36 consolidation (Part 25)
