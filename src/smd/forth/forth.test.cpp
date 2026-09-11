@@ -5,6 +5,12 @@
 
 #include <smd/forth/forth.hpp> // test 2nd include OK
 
+#include <smd/forth/interpreter/prelude.hpp>
+#include <smd/forth/interpreter/session.hpp>
+#include <smd/forth/machine/cell.hpp>
+#include <smd/forth/machine/foreign.hpp>
+#include <smd/forth/machine/forth_state.hpp>
+
 #include <catch2/catch_test_macros.hpp>
 
 #include <string_view>
@@ -301,4 +307,110 @@ TEST_CASE("ForthTest - BoomSafeTryMergeCriterion") {
         "' BOOM TRY ' SAFE TRY">.output();
     CHECK(std::string_view{out.begin(), static_cast<std::size_t>(out.size())} ==
           "CAUGHT 42 OK 99 ");
+}
+
+// -- Step F34 (docs/forth-plan-2.md), D18: the foreign function interface,
+//    through the public one-shot API.
+
+namespace {
+
+using ffi_state = smd::forth::machine::forth_state<64, 64, 1024, 4096>;
+
+/// ( a b -- gcd ) -- the plan's own named FFI example.
+constexpr auto gcd_word(ffi_state &state) -> smd::forth::machine::status {
+    auto b = state.data().pop();
+    if (!b.has_value()) {
+        return b.error();
+    }
+    auto a = state.data().pop();
+    if (!a.has_value()) {
+        return a.error();
+    }
+    smd::forth::machine::cell x = a.value() < 0 ? -a.value() : a.value();
+    smd::forth::machine::cell y = b.value() < 0 ? -b.value() : b.value();
+    while (y != 0) {
+        smd::forth::machine::cell const t = x % y;
+        x = y;
+        y = t;
+    }
+    return state.data().push(x);
+}
+
+/// The registered-pre-session vocabulary: `default_dictionary` plus `GCD`.
+constexpr auto ffi_vocabulary =
+    smd::forth::machine::default_foreign_dictionary<256, 32, 4, 64, 64, 1024,
+                                                    4096>()
+        .with_foreign("GCD", &gcd_word,
+                      smd::forth::machine::declared_effect(2, 1))
+        .value();
+
+} // namespace
+
+// The step's own first merge criterion: a `static_assert` computing through
+// a constexpr foreign word, via the VM, driven by the public API. (D24's own
+// final paragraph, confirmed at F33 and recorded in DIV-0030, is why the
+// sender half of that criterion is a *runtime* equivalence check instead --
+// sender/lower_foreign.test.cpp.)
+static_assert([] {
+    auto program = smd::forth::compiled_forth_with(
+                       ": G3 GCD GCD ;  1071 462 210 G3", ffi_vocabulary)
+                       .value();
+    auto s = program.stack();
+    return s.size() == 1 && s[0] == 21;
+}());
+
+TEST_CASE("ForthTest - ForeignWordThroughThePublicApi") {
+    auto program = smd::forth::compiled_forth_with(
+                       ": G3 GCD GCD ;  1071 462 210 G3", ffi_vocabulary)
+                       .value();
+    auto s = program.stack();
+    REQUIRE(s.size() == 1);
+    CHECK(s[0] == 21);
+}
+
+TEST_CASE("ForthTest - ForeignWordComposesWithThePrelude") {
+    // `compiled_forth_with` builds through `build_session_with_prelude`, so
+    // an FFI session gets `?DUP`/`NIP`/`TUCK` and the `WHEN`/`ENDIF` aliases
+    // exactly like any other (step F35, DIV-0027).
+    auto program = smd::forth::compiled_forth_with(
+                       ": SHOW ( a b -- ) GCD DUP 1 = WHEN .\" COPRIME \" "
+                       "ENDIF . ;  9 28 SHOW  12 18 SHOW",
+                       ffi_vocabulary)
+                       .value();
+    auto out = program.output();
+    CHECK(std::string_view{out.begin(), static_cast<std::size_t>(out.size())} ==
+          "COPRIME 1 6 ");
+}
+
+TEST_CASE("ForthTest - ReverseEmbeddingPushesArgumentsFromCppAndReadsResults") {
+    // R1 F19's own "reverse direction" criterion, carried into F34: a built
+    // session is a value; embed one in an ordinary C++ function, push
+    // arguments from C++ variables, run one of its words again, and read the
+    // result back off the exposed stack -- Forth as an embedded constexpr
+    // scripting engine. The foreign vocabulary is supplied to the run the
+    // same way the state is (the session image carries headers, never
+    // function pointers -- session.hpp's own `call_defined_word` doc
+    // comment).
+    auto session =
+        smd::forth::interpreter::build_session_with_prelude<
+            4096, 256, 1024, 4096, 32, 64, 64, 64, 8192, 4>(
+            ": GCD3 ( a b c -- d ) GCD GCD ;", 100000, &ffi_vocabulary)
+            .value();
+
+    int const first = 1071;
+    int const second = 462;
+    int const third = 210;
+
+    ffi_state state{};
+    REQUIRE(
+        smd::forth::interpreter::seed_from_session(session, state).has_value());
+    REQUIRE(state.data().push(first).has_value());
+    REQUIRE(state.data().push(second).has_value());
+    REQUIRE(state.data().push(third).has_value());
+
+    auto ran = smd::forth::interpreter::call_defined_word(
+        session, state, "GCD3", 100000, &ffi_vocabulary.foreigns);
+    REQUIRE(ran.has_value());
+    REQUIRE(state.data().depth() == 1);
+    CHECK(state.data().peek().value() == 21);
 }

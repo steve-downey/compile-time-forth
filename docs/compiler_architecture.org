@@ -20,7 +20,7 @@ Steps F5 through F15 (=docs/forth-plan.md=, the superseded R1 plan) built a clas
 DIV-0011 (=docs/divergences/DIV-0011-true-forth-pivot.md=) retired that design in favor of D13: the Forth-2012 section 3.4 text interpreter, with no reader phase and no elaboration phase, is the architecture.
 Steps F24/F25 built the new front end alongside the old one; step F26 ("the cut", =docs/forth-plan-2.md=) deleted the R1 pipeline outright once the new one could stand on its own.
 Phases 2 through 5 below described the deleted pipeline (grammar, syntax tree, elaboration, and two of its three codegen backends) and have moved to =docs/history/architecture-grammar-era.org=, a frozen one-time snapshot — they are no longer part of this living document's own read path.
-As of this revision the lexical layer (Phase 1), the public one-shot API (Phase 6), the text interpreter (Phase 7), the colon compiler and session image (Phase 8), the cut itself (Phase 9), immediacy and control flow (Phase 10), execution tokens and defining words (Phase 11), parsing words and strings (Phase 12), CATCH and THROW (Phase 13), conformance (Phase 14), the effect lint (Phase 15), the sender backend (Phase 16), and the bootstrap prelude (Phase 17) are current.
+As of this revision the lexical layer (Phase 1), the public one-shot API (Phase 6), the text interpreter (Phase 7), the colon compiler and session image (Phase 8), the cut itself (Phase 9), immediacy and control flow (Phase 10), execution tokens and defining words (Phase 11), parsing words and strings (Phase 12), CATCH and THROW (Phase 13), conformance (Phase 14), the effect lint (Phase 15), the sender backend (Phase 16), the bootstrap prelude (Phase 17), and the foreign function interface (Phase 18) are current.
 
 * Pipeline overview
 
@@ -707,3 +707,102 @@ The derived arithmetic/stack words (`NIP`/`TUCK`/`?DUP`) and a full `IF`/`ELSE`/
 `machine::default_dictionary` drops from 98 to 95 entries; the prelude adds a constant, measured 35-token interpreter-loop step-count tax to every `compiled_forth<Source>` session.
 
 See DIV-0027 (=docs/divergences/DIV-0027-f35-bootstrap-prelude.md=) for the complete design record.
+
+* Phase 18: The Foreign Function Interface (step F34, docs/forth-plan-2.md)
+
+The interface in one sentence: a foreign word is an ordinary C++ function over =machine::forth_state=, given a dictionary header with an execution token like any other word, and dispatched by one new opcode.
+Nothing about it is a special case downstream — =':=/=[']=/=EXECUTE=/=CATCH=/=POSTPONE= all reach one with no FFI-aware code anywhere, and both executors (the VM and the F33 sender backend) run one.
+
+** The signature, and where the function pointers live
+
+#+transclude: [[file:../src/smd/forth/machine/foreign.hpp::bf3c6a19-4e27-4d5a-9c81-7a2f6b0d4e93]] :lines 2- :src cpp :end "bf3c6a19-4e27-4d5a-9c81-7a2f6b0d4e93 end"
+
+The plan's own signature is delivered verbatim: =status (*)(forth_state<...> &)=, with direct access to both stacks, the data space, and the output buffer, and the same =foundation::result= failure channel =apply_primitive= uses.
+What could *not* be delivered verbatim is where the pointer is stored.
+=machine::forth_state= is capacity-parameterized on four template parameters and =machine::dictionary= is parameterized on two, neither of them a state capacity — so a dictionary entry has no way to name the function-pointer type at all.
+The pointers therefore live in =machine::foreign_vocabulary=, a flat fixed-capacity registry, and =machine::foreign_word= (the dictionary binding, the slot F9 reserved and R1's F19 named) carries an index into it.
+
+#+transclude: [[file:../src/smd/forth/machine/dictionary.hpp::3d7f1b58-2c94-4a6e-8b03-5e9c1a7d4f26]] :lines 2- :src cpp :end "3d7f1b58-2c94-4a6e-8b03-5e9c1a7d4f26 end"
+
+Two alternatives were considered and rejected: folding the registry into =forth_state= itself (legal, but it makes the set of foreign words part of *machine state*, which D7/D10/D13 enumerate, and splits registration into two places nothing keeps in agreement), and type-erasing the state behind a virtual interface (which gives up exactly the direct access the plan asks for).
+DIV-0029 (=docs/divergences/DIV-0029-f34-foreign-vocabulary-design.md=) carries the full record.
+
+** Registration: one call, two structures
+
+#+transclude: [[file:../src/smd/forth/machine/foreign.hpp::e5a92c74-3b18-4f6d-8e02-1c4b7d9a3f65]] :lines 2- :src cpp :end "e5a92c74-3b18-4f6d-8e02-1c4b7d9a3f65 end"
+
+=machine::foreign_dictionary= bundles a word list and a registry so one =with_foreign= call appends to both and their indices can never disagree; =machine::default_foreign_dictionary()= is that bundle starting from =machine::default_dictionary()=.
+It returns a =foundation::result= rather than the bundle, so a full dictionary or a full registry is diagnosed (D7) — and at the only site the type is really meant for, a namespace-scope =constexpr= initializer, =.value()= on a failure is not a core constant expression, which makes it a hard compile error, exactly =compiled_forth<Source>='s own contract for a malformed program.
+
+** =op::foreign=: one opcode, dispatched like a primitive
+
+#+transclude: [[file:../src/smd/forth/machine/vm.hpp::6b2e8d34-9a71-4c05-8f6b-3d17c9e04a2f]] :lines 2- :src cpp :end "6b2e8d34-9a71-4c05-8f6b-3d17c9e04a2f end"
+
+The operand is a *registry index*, not a code-space address.
+The failure path is the interesting part: it is =op::prim='s own path, character for character — =ABORT"='s distinguished condition always routed through =THROW -2=, every other diagnosis mapped to its standard Forth-2012 =THROW= code when a handler is active (DIV-0018's rule).
+That is what makes =CATCH= work over a foreign word for free: a foreign word's own C++-side "stack underflow" becomes a caught =-4=, with no FFI-specific code in =CATCH= or anywhere near it.
+
+The vocabulary reaches the VM as a fifth threaded parameter, nullable and defaulted to =nullptr= — the *identical* shape DIV-0016 established for =dict= at F28, for the identical reason (a compiled body has no other channel to something the VM does not otherwise know about).
+=machine::run_from=/=run=, =interpreter::call_word=/=execute_entry=/=apply_control_word=/=interpret=/=build_session=/=build_session_with_prelude=/=call_defined_word=, and =sender::run_word_via_vm=/=word_sender=/=run_from_via_senders=/=run_via_senders= each gained one such parameter and one defaulted =MaxForeign= template parameter; every pre-F34 call site compiles and behaves identically.
+
+** Compiled and interpreted, from the same header
+
+#+transclude: [[file:../src/smd/forth/interpreter/interp.hpp::4a9c2e71-5f38-46bd-9012-8e7a3c5b1d64]] :lines 2- :src cpp :end "4a9c2e71-5f38-46bd-9012-8e7a3c5b1d64 end"
+
+Compiling a foreign word emits exactly one instruction, the same shape a primitive gets, because a foreign word *is* a primitive as far as the VM is concerned.
+Interpreting one calls straight through the registry (=execute_entry='s own case), the exact counterpart of its =apply_primitive= case and for the same reason: neither has code space of its own to call into.
+
+=interpreter::resolve_execution_token= (Phase 11) gained a =foreign_word= case that emits that same single opcode inside the guarded, =ret=-terminated stub primitives already get.
+That closes half of DIV-0016's own remaining =':=/=[']= scope cut (see its F34 addendum) and makes this step's "callable via ='=/=EXECUTE= like any other word" criterion true *by construction* rather than by a dedicated code path.
+
+** The declared effect is D20's, and lives on the header
+
+#+transclude: [[file:../src/smd/forth/interpreter/effect_lint.hpp::5c1f8b96-3d47-42ae-b0d9-6e83a2f5147c]] :lines 2- :src cpp :end "5c1f8b96-3d47-42ae-b0d9-6e83a2f5147c end"
+
+D20: "your undeclared foreign words are =unknown=; a declared effect participates in the lint like any other."
+An undeclared foreign word is the same =unknown= lattice value =EXECUTE= and =CATCH= already carry; a declared =( a b -- c )= is trusted and composes exactly like a colon word's own computed effect.
+The declaration is stored on =machine::foreign_word= rather than on the registry entry precisely so the checker can reach it: =instruction_effect= is given an instruction and a =dictionary=, never the vocabulary, so it resolves a declaration by the same linear dictionary scan =op::call= already uses.
+
+** The sender backend runs foreign words natively
+
+#+transclude: [[file:../src/smd/forth/sender/lower.hpp::c8d3e0a7-1f52-4b96-a4de-70b6f9c25a13]] :lines 2- :src cpp :end "c8d3e0a7-1f52-4b96-a4de-70b6f9c25a13 end"
+
+A foreign call is a call out to C++ against the same state, with no control transfer of its own, so it is an ordinary straight-line step in the lowering — there is nothing here for D24's refunctionalization to get wrong.
+
+*One obligation this places on a foreign word: it must not use the return stack as data.*
+D24's own fallback trigger, =sender::word_uses_return_stack_data= ("The fallback boundary", Phase 16), scans *instructions* for =>R=/=R>=/=R@=; a foreign call is opaque to it, so a foreign word that manipulated =state.returns()= from C++ would be lowered natively and could silently disagree with the VM.
+This is a documented constraint, not a defect in the trigger; a later step needing such a word would add a flag on =foreign_word= for the trigger to consult (DIV-0029).
+
+** The public surface, and the reverse direction
+
+#+transclude: [[file:../src/smd/forth/forth.hpp::2c6f9b41-8d35-4e7a-9b02-5f3d1a86c7e4]] :lines 2- :src cpp :end "2c6f9b41-8d35-4e7a-9b02-5f3d1a86c7e4 end"
+
+=compiled_forth_with= is a function rather than a variable template because the vocabulary is a *value* carrying function pointers, not an NTTP; it builds through =build_session_with_prelude=, so an FFI session gets =NIP=/=TUCK=/=?DUP= and the =WHEN=/=OTHERWISE=/=ENDIF= aliases exactly like any other (Phase 17).
+
+The reverse direction — R1 F19's own "Forth as an embedded constexpr scripting engine" — needs no new machinery at all: a session image is a trivially copyable literal (D15), so ordinary C++ pushes arguments onto a fresh =forth_state=, calls =interpreter::call_defined_word=, and reads results back off the stack.
+The one thing it must supply again is the vocabulary: **a session image carries foreign headers but never function pointers**, so the embedding program hands the registry to each run alongside the state, using a =forth_state= with the same four capacities the registry's function pointers are typed on.
+=src/examples/ffi_gcd.cpp= is all three faces at once — compile-time =GCD=, a runtime-only =TRACE= guarded by =std::is_constant_evaluated()= (silent while the session is built, chatty when the same compiled word runs again), and the reverse call — and doubles as this step's Godbolt extraction, in the same self-contained single-file shape as =godbolt_forth.cpp=.
+
+** A toolchain finding: function addresses are not constant under UBSan
+
+=foreign_vocabulary::add= does *not* diagnose a null function pointer, and cannot; =foreign_vocabulary::call= does instead.
+Under GCC's own UndefinedBehaviorSanitizer (=-fsanitize=undefined=, part of this project's default =Asan= config), the address of a function is not usable in a constant expression *as an operand of a comparison*: =fn == nullptr= alone makes any enclosing =static_assert= fail to evaluate with "is not a constant expression", even though *calling* through the same pointer is perfectly constant-evaluable.
+A registration is exactly where that comparison would be evaluated during constant evaluation (a =constexpr= vocabulary is built by calling =add=), so a check there would make every compile-time FFI session uncompilable in exactly the configuration this project builds in.
+The obstruction only fires when the comparison is actually evaluated during constant evaluation, and it need not be: =call= spells its check =!std::is_constant_evaluated() && fn == nullptr=, so short-circuiting keeps the comparison out of every constant expression while ordinary runtime gets an ordinary null check reported through the same =foundation::result= channel an out-of-range index uses.
+Nothing is lost at compile time, since a null pointer reached during constant evaluation falls through to the call itself and calling through a null function pointer is not a constant expression, which is a hard compile error and a strictly better diagnosis than a returned result; so the durable invariant that all misuse is diagnosed, never UB, holds unqualified.
+Any null check on a function pointer in a =constexpr= path in this project must be written that way.
+This is a toolchain accommodation, not a design position; DIV-0029 records it with its own revisit condition.
+
+** Merge criteria
+
+A =static_assert= computing through a =constexpr= foreign word, via the VM: three of them, at three levels — the raw =op::foreign= opcode (=machine/foreign.test.cpp=), the text interpreter, interpreted and compiled and through ='=/=[']=/=EXECUTE= (=interpreter/interp.test.cpp=), and the public =compiled_forth_with= entry point (=forth.test.cpp=).
+
+The sender half of that same criterion is a *runtime* equivalence check (=sender/lower_foreign.test.cpp=), because =sync_wait= is not constexpr-capable — D24's own final paragraph pre-authorizes exactly this reading and F33 established the fact; DIV-0030 records it, since it restates a written merge criterion.
+The same instruction range, run a second way, reaches the same final state (=sender::testing::states_agree=), for a plain foreign call and for one inside a =CATCH=-protected region — the latter also discharging the DIV-0028-category risk this step's own brief named.
+Measured shard cost, taken alongside an existing shard for comparability: 37.7 s wall / 710 MB peak =cc1plus= RSS, against =lower_if.test.cpp='s 34.6 s / 728 MB.
+
+A runtime printing example whose foreign word prints via an =is_constant_evaluated= guard, and a Godbolt FFI example: both are =src/examples/ffi_gcd.cpp=, exercised by =ctest= (=examples_ffi_gcd=).
+
+A foreign word callable via ='=/=EXECUTE= like any other: by construction, through =resolve_execution_token='s ordinary stub path, with no FFI-specific case anywhere downstream.
+
+See DIV-0029 and DIV-0030 (=docs/divergences/=), and DIV-0016's own F34 addendum, for the complete record of this step's own findings.

@@ -11,6 +11,7 @@
 #include <smd/forth/interpreter/interp.hpp>
 #include <smd/forth/machine/cell.hpp>
 #include <smd/forth/machine/dictionary.hpp>
+#include <smd/forth/machine/foreign.hpp>
 #include <smd/forth/machine/forth_state.hpp>
 
 #include <string_view>
@@ -137,12 +138,24 @@ constexpr auto seed_from_session(
 /// @param name        The word's name (case-insensitive, per @ref
 ///                     machine::dictionary::lookup).
 /// @param fuel        The VM's own execution step budget.
+/// @param foreign     Step F34's own addition: the same @ref
+///                     machine::foreign_vocabulary the session was *built*
+///                     with, needed again here because a session image
+///                     carries @ref machine::foreign_word headers (indices)
+///                     but never the C++ function pointers themselves -- the
+///                     registry is a value the embedding program owns and
+///                     supplies to each run, exactly as it supplies the
+///                     @ref machine::forth_state. `nullptr` (the default) is
+///                     correct for a session with no foreign words.
 template <int MaxCode, int MaxWords, int MaxData, int MaxOut, int MaxName,
-          int MaxStack, int MaxDepth, int MaxRDepth>
+          int MaxStack, int MaxDepth, int MaxRDepth, int MaxForeign = 16>
 constexpr auto call_defined_word(
     session<MaxCode, MaxWords, MaxData, MaxOut, MaxName, MaxStack> &sess,
     machine::forth_state<MaxDepth, MaxRDepth, MaxData, MaxOut> &state,
-    std::string_view name, int fuel = 100000) -> machine::status {
+    std::string_view name, int fuel = 100000,
+    machine::foreign_vocabulary<MaxForeign, MaxDepth, MaxRDepth, MaxData,
+                                MaxOut> const *foreign = nullptr)
+    -> machine::status {
     auto const *entry = sess.dictionary.lookup(name);
     if (entry == nullptr) {
         return foundation::parse_error{foundation::source_pos{},
@@ -154,7 +167,8 @@ constexpr auto call_defined_word(
             foundation::source_pos{},
             "word is not a compiled colon word in this session"};
     }
-    return call_word(sess.code, state, cw->entry_point, fuel, &sess.dictionary);
+    return call_word(sess.code, state, cw->entry_point, fuel, &sess.dictionary,
+                     foreign);
 }
 // b4d8e2a6-7c1f-4e3a-9d5b-2a8f6c1e4d9b end
 
@@ -172,17 +186,39 @@ constexpr auto call_defined_word(
 ///                    behind, same discipline as every other capacity here).
 /// @tparam MaxRDepth Likewise, the build-time return stack capacity.
 /// @tparam MaxStack  @ref session::stack's own capacity (F26).
+/// @tparam MaxForeign @p vocabulary's own registry capacity (F34).
+///
+/// @param vocabulary Step F34's own addition (D18): a @ref
+///                   machine::foreign_dictionary -- @ref
+///                   machine::default_dictionary already extended with one or
+///                   more `with_foreign` registrations -- whose word list
+///                   *replaces* the default one this function would otherwise
+///                   build, and whose registry backs every @ref
+///                   machine::foreign_word in it. `nullptr` (the default)
+///                   builds exactly the prelude-free, foreign-free session
+///                   every caller before that step already got.
+/// @param vm_fuel    The VM's own step budget (D22), forwarded to
+///                   @ref interpret; previously left at @ref interpret's own
+///                   default, which is still this parameter's default.
 template <int MaxCode = 4096, int MaxWords = 256, int MaxData = 1024,
           int MaxOut = 256, int MaxName = 32, int MaxDepth = 64,
-          int MaxRDepth = 64, int MaxStack = 64>
-constexpr auto build_session(std::string_view text, int fuel = 100000)
+          int MaxRDepth = 64, int MaxStack = 64, int MaxForeign = 16>
+constexpr auto build_session(
+    std::string_view text, int fuel = 100000,
+    machine::foreign_dictionary<MaxWords, MaxName, MaxForeign, MaxDepth,
+                                MaxRDepth, MaxData, MaxOut> const *vocabulary =
+        nullptr,
+    int vm_fuel = 100000)
     -> foundation::result<
         session<MaxCode, MaxWords, MaxData, MaxOut, MaxName, MaxStack>> {
     machine::forth_state<MaxDepth, MaxRDepth, MaxData, MaxOut> st{text};
-    auto dict = machine::default_dictionary<MaxWords, MaxName>();
+    auto dict = vocabulary == nullptr
+                    ? machine::default_dictionary<MaxWords, MaxName>()
+                    : vocabulary->words;
     compile_buffer<MaxCode, MaxWords> buf;
 
-    auto r = interpret(st, dict, buf, fuel);
+    auto r = interpret(st, dict, buf, fuel, vm_fuel,
+                       vocabulary == nullptr ? nullptr : &vocabulary->foreigns);
     if (!r.has_value()) {
         return r.error();
     }
