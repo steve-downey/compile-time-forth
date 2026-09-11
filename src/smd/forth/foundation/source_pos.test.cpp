@@ -1,7 +1,12 @@
-// src/smd/forth/foundation/source_pos.test.cpp                     -*-C++-*-
+// src/smd/forth/foundation/source_pos.test.cpp                      -*-C++-*-
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
-// Adapted by copy from compile-time-scheme (smd::smdscheme):
-// src/smd/smdscheme/foundation/source_pos.test.cpp
+// Adapted by copy from compile-time-scheme (smd::kit::foundation):
+// src/smd/kit/foundation/source_pos.test.cpp
+// Moved in step R8 from src/smd/cl/foundation/source_pos.test.cpp, itself
+// the reviewed union of two prior copies of this test:
+// src/smd/smdscheme/foundation/source_pos.test.cpp (compile-time-scheme, at
+// iteration/smdscheme-final) and src/smd/forth/foundation/source_pos.test.cpp
+// (compile-time-forth).
 
 #include <smd/forth/foundation/source_pos.hpp>
 #include <smd/forth/foundation/source_pos.hpp> // test 2nd include OK

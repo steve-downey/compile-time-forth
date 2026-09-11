@@ -1,0 +1,152 @@
+// src/smd/forth/foundation/traversable.test.cpp                     -*-C++-*-
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+// Adapted by copy from compile-time-scheme (smd::kit::foundation):
+// src/smd/kit/foundation/traversable.test.cpp
+// Moved in step R8 (decision 2, corrected) from
+// src/smd/cl/foundation/traversable.test.cpp.
+
+#include <smd/forth/foundation/traversable.hpp>
+#include <smd/forth/foundation/traversable.hpp> // test 2nd include OK
+
+#include <smd/forth/foundation/applicative.hpp>
+#include <smd/forth/foundation/identity.hpp>
+#include <smd/forth/foundation/result_instances.hpp>
+
+#include <catch2/catch_test_macros.hpp>
+
+#include <type_traits>
+#include <utility>
+
+using smd::forth::foundation::applicative;
+using smd::forth::foundation::derive_traversable;
+using smd::forth::foundation::identity;
+using smd::forth::foundation::parse_error;
+using smd::forth::foundation::result;
+using smd::forth::foundation::sequence;
+using smd::forth::foundation::source_pos;
+using smd::forth::foundation::traversable;
+using smd::forth::foundation::traverse;
+
+TEST_CASE("TraversableTest - HeaderIsIdempotent") { REQUIRE(true); }
+
+namespace {
+
+/// A minimal two-element container, local to this test, used to exercise
+/// the @ref traversable CRTP base and CPOs without pulling in a production
+/// instance.
+template <class T>
+struct pair_box {
+    /// The carried type, which @c element_type_t reads to key the deep
+    /// object concepts.
+    using value_type = T;
+
+    T first;
+    T second;
+
+    friend constexpr auto operator==(pair_box const &, pair_box const &)
+        -> bool = default;
+};
+
+/// Traversable @c Impl for @c pair_box.
+/// Traversal order: @c first, then @c second; effects are sequenced in that
+/// order through the effect's registered Applicative instance.
+struct pair_box_traversable_impl {
+    template <class F, class T>
+    constexpr auto traverse(this auto &&, F &&f, pair_box<T> const &pb) {
+        using effect_type =
+            std::remove_cvref_t<std::invoke_result_t<F &, T const &>>;
+        using B = typename effect_type::value_type;
+        auto const &tc = applicative<effect_type>;
+        return tc.invoke(
+            [](B a, B b) { return pair_box<B>{std::move(a), std::move(b)}; },
+            f(pb.first), f(pb.second));
+    }
+};
+
+struct pair_box_traversable_map
+    : derive_traversable<pair_box_traversable_impl> {
+    using pair_box_traversable_impl::traverse;
+};
+
+} // namespace
+
+namespace smd::forth::foundation {
+template <class T>
+inline constexpr auto traversable<pair_box<T>> = pair_box_traversable_map{};
+}
+
+namespace {
+
+constexpr pair_box<int> one_two{1, 2};
+constexpr parse_error boom{source_pos{}, "boom"};
+
+// Shape preservation with the identity effect: traverse rebuilds the same
+// shape with mapped values and performs no effect.
+constexpr auto traverse_identity_effect() -> bool {
+    auto traversed =
+        traverse([](int x) { return identity<int>{x * 2}; }, one_two);
+    return traversed == identity<pair_box<int>>{pair_box<int>{2, 4}};
+}
+
+// Traversing with the result effect succeeds when every element does.
+constexpr auto traverse_result_success() -> bool {
+    auto traversed =
+        traverse([](int x) { return result<int>{x + 10}; }, one_two);
+    return traversed.has_value() && traversed.value() == pair_box<int>{11, 12};
+}
+
+// A failing element fails the whole traversal.
+constexpr auto traverse_result_failure() -> bool {
+    auto traversed = traverse(
+        [](int x) { return x % 2 == 0 ? result<int>{x} : result<int>{boom}; },
+        one_two);
+    return !traversed.has_value() && traversed.error() == boom;
+}
+
+// Derived sequence: a container of effects becomes an effect of a container.
+constexpr auto sequence_collects() -> bool {
+    pair_box<identity<int>> effects{identity<int>{1}, identity<int>{2}};
+    return sequence(effects) == identity<pair_box<int>>{pair_box<int>{1, 2}};
+}
+
+} // namespace
+
+static_assert(traverse_identity_effect());
+static_assert(traverse_result_success());
+static_assert(traverse_result_failure());
+static_assert(sequence_collects());
+
+TEST_CASE("TraversableTest - IdentityEffect") {
+    CHECK(traverse_identity_effect());
+}
+
+TEST_CASE("TraversableTest - ResultSuccess") {
+    CHECK(traverse_result_success());
+}
+
+TEST_CASE("TraversableTest - ResultFailure") {
+    CHECK(traverse_result_failure());
+}
+
+TEST_CASE("TraversableTest - Sequence") { CHECK(sequence_collects()); }
+
+TEST_CASE("TraversableTest - TypeclassLookup") {
+    const auto &tc = traversable<pair_box<int>>;
+    static_assert(
+        !std::is_same_v<std::remove_cvref_t<decltype(tc)>, std::false_type>);
+    auto traversed =
+        tc.traverse([](int x) { return identity<int>{x}; }, one_two);
+    CHECK(traversed == identity<pair_box<int>>{one_two});
+}
+
+// --- The two concepts. ----------------------------------------------------
+//
+// The object concept takes the container of effects separately: nothing here
+// can rebind pair_box<int>'s element type to name pair_box<identity<int>>,
+// so the caller does.
+
+static_assert(smd::forth::foundation::traversable_impl<
+              pair_box_traversable_impl, pair_box<int>, identity<int>>);
+static_assert(smd::forth::foundation::traversable_object<
+              pair_box_traversable_map, pair_box<int>, identity<int>,
+              pair_box<identity<int>>>);

@@ -3,22 +3,24 @@
 // Adapted by copy from compile-time-scheme (smd::smdscheme):
 // src/smd/smdscheme/parser/parser_ops.test.cpp
 // Reworked for DIV-0003: parser<F> registers against
-// smd::forth::foundation's functor_typeclass/applicative_typeclass/
-// alternative_typeclass rather than a locally reimplemented lookup, so this
-// file exercises foundation's CPOs (fmap/invoke/alt) dispatching to
-// parsers, in addition to the parser_v typeclass-object surface, plus the
-// F4 merge criterion: an integer parser rebuilt from primitives.
+// smd::forth::foundation's functor/applicative/alternative lookup
+// variables rather than a locally reimplemented lookup, so this file
+// exercises foundation's operation objects (fmap/invoke/alt) dispatching
+// to parsers, in addition to the parser_v typeclass-object surface, plus
+// the F4 merge criterion: an integer parser rebuilt from primitives.
 
 #include <smd/forth/parser/parser_ops.hpp>
 #include <smd/forth/parser/parser_ops.hpp> // test 2nd include OK
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <type_traits>
+
 using smd::forth::foundation::alt;
-using smd::forth::foundation::alternative_typeclass;
-using smd::forth::foundation::applicative_typeclass;
+using smd::forth::foundation::alternative;
+using smd::forth::foundation::applicative;
 using smd::forth::foundation::fmap;
-using smd::forth::foundation::functor_typeclass;
+using smd::forth::foundation::functor;
 using smd::forth::foundation::invoke;
 using smd::forth::parser::char_p;
 using smd::forth::parser::cursor;
@@ -53,7 +55,7 @@ static_assert([] {
 static_assert([] {
     auto base_parser = char_p('x');
     using P = decltype(base_parser);
-    const auto &tc = functor_typeclass<P>;
+    const auto &tc = functor<P>;
     auto p = tc.fmap([](char) { return 99; }, base_parser);
     auto r = p(cursor{"x"});
     return r.has_value() && r.value().value == 99;
@@ -62,7 +64,7 @@ static_assert([] {
 static_assert([] {
     auto base_parser = char_p('x');
     using P = decltype(base_parser);
-    const auto &tc = applicative_typeclass<P>;
+    const auto &tc = applicative<P>;
     auto r = tc.pure(3)(cursor{"anything"});
     return r.has_value() && r.value().value == 3;
 }());
@@ -70,7 +72,7 @@ static_assert([] {
 static_assert([] {
     auto base_parser = char_p('x');
     using P = decltype(base_parser);
-    const auto &tc = alternative_typeclass<P>;
+    const auto &tc = alternative<P>;
     auto p = tc.alt(char_p('a'), char_p('b'));
     return p(cursor{"a"}).value().value == 'a' &&
            p(cursor{"b"}).value().value == 'b';
@@ -159,14 +161,14 @@ static_assert([] {
     return p(cursor{"  x  "}).value().value == 'x';
 }());
 
-// Alternative identity element: empty<T>() always fails without consuming,
+// Alternative identity element: zero<T>() always fails without consuming,
 // so it never wins an ordered choice against a parser that can succeed.
-// empty<T>() is only reachable via the typeclass instance's own explicit
-// template argument (see parser_alternative_impl::empty's doc comment), not
-// through foundation::empty<T>()'s zero-argument calling convention.
+// zero<T>() is only reachable via the typeclass instance's own explicit
+// template argument (see parser_alternative_impl::zero's doc comment), not
+// through foundation::zero<T>()'s zero-argument calling convention.
 
 static_assert([] {
-    auto none = parser_v.empty<char>();
+    auto none = parser_v.zero<char>();
     auto p = parser_v.alt(char_p('a'), none);
     auto q = parser_v.alt(none, char_p('a'));
     return p(cursor{"a"}).value().value == 'a' &&
@@ -174,10 +176,48 @@ static_assert([] {
            !none(cursor{"a"}).has_value();
 }());
 
+// The kit's two concepts per typeclass, checked against a real client.
+// element_type<parser<F>> is specialized in parser_ops.hpp, so the probes
+// have an element to witness with. Functor and Applicative hold at both
+// depths: the Impl types supply the minimal basis, and parser_ops the whole
+// derived surface. Alternative holds at neither, structurally: both its
+// concepts probe a nullary zero(), and a parser's zero needs its value type
+// named (parser_alternative_impl::zero's doc comment). foundation::alt and
+// foundation::combine still dispatch to parsers; only the concept gate is
+// closed to them, and this records that the closure is deliberate.
+
+using probe_parser = decltype(char_p('x'));
+static_assert(
+    std::is_same_v<smd::forth::foundation::element_type_t<probe_parser>, char>);
+static_assert(smd::forth::foundation::functor_impl<
+              smd::forth::parser::parser_functor_impl, probe_parser>);
+static_assert(smd::forth::foundation::functor_object<
+              smd::forth::parser::parser_ops, probe_parser>);
+static_assert(smd::forth::foundation::applicative_impl<
+              smd::forth::parser::parser_applicative_impl, probe_parser>);
+static_assert(smd::forth::foundation::applicative_object<
+              smd::forth::parser::parser_ops, probe_parser>);
+static_assert(!smd::forth::foundation::alternative_impl<
+              smd::forth::parser::parser_alternative_impl, probe_parser>);
+static_assert(!smd::forth::foundation::alternative_object<
+              smd::forth::parser::parser_ops, probe_parser>);
+
+// The derived replace and combine, reached through the operation objects.
+
+static_assert([] {
+    auto p = smd::forth::foundation::replace(char_p('x'), 7);
+    auto r = p(cursor{"x"});
+    return r.has_value() && r.value().value == 7;
+}());
+
+static_assert([] {
+    auto p = smd::forth::foundation::combine(char_p('a'), char_p('b'));
+    return p(cursor{"b"}).value().value == 'b';
+}());
+
 // NTTP pinning: explicit typeclass override at call site.
 
-template <class P,
-          const auto &TC = smd::forth::foundation::functor_typeclass<P>>
+template <class P, const auto &TC = smd::forth::foundation::functor<P>>
 constexpr auto map_via_typeclass(P p, auto f) {
     return TC.fmap(f, p);
 }
@@ -236,7 +276,7 @@ TEST_CASE("ParserOpsTest - HeaderIsIdempotent") { REQUIRE(true); }
 TEST_CASE("ParserOpsTest - FunctorTypeclassLookup") {
     auto base_parser = char_p('a');
     using P = decltype(base_parser);
-    const auto &tc = functor_typeclass<P>;
+    const auto &tc = functor<P>;
     auto p = tc.fmap([](char c) { return c; }, base_parser);
     auto r = p(cursor{"a"});
     REQUIRE(r.has_value());
@@ -273,8 +313,8 @@ TEST_CASE("ParserOpsTest - NttpPinning") {
     REQUIRE(r.value().value == 77);
 }
 
-TEST_CASE("ParserOpsTest - AlternativeEmptyIsIdentity") {
-    auto none = parser_v.empty<char>();
+TEST_CASE("ParserOpsTest - AlternativeZeroIsIdentity") {
+    auto none = parser_v.zero<char>();
     REQUIRE(!none(cursor{"a"}).has_value());
     auto p = parser_v.alt(none, char_p('a'));
     REQUIRE(p(cursor{"a"}).value().value == 'a');

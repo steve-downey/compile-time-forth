@@ -81,3 +81,11 @@ consumer, not just synthetic test doubles.
 
 None. This is the intended, plan-directed integration shape and is kept
 permanently.
+
+## Log
+
+- 2026-09-10 — `foundation/` re-mirrored from `smd::kit::foundation` at compile-time-scheme `d6ae364` (the transpose typeclass pickup; see `scripts/sync-kit.py`).
+  The shape recorded above is unchanged; three spellings are not.
+  The CRTP bases are now `derive_functor`/`derive_applicative`/`derive_alternative`, the lookup variables the plain `functor`/`applicative`/`alternative`, and Alternative's identity is `zero`, not `empty` (`empty` is Foldable's predicate in the kit).
+  `parser_v.empty<T>()` is therefore `parser_v.zero<T>()`; the structural reason it needs an explicit `T` is unchanged and now also means `parser_alternative_impl` fails the kit's `alternative_impl` concept and `parser_ops` fails `alternative_object`, both of which probe a nullary `zero()`.
+  `parser_ops` satisfies `functor_object` and `applicative_object`, and the Impl types their `*_impl` concepts, via an `element_type<parser<F>>` specialization in `parser_ops.hpp`; `parser_ops.test.cpp` asserts all six outcomes.
