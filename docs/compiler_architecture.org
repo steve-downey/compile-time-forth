@@ -42,6 +42,22 @@ Code space, dictionary, and data space together are D15's "session image" (=inte
 The stack-machine VM and its instruction set (Phase 9) are retained unchanged from the R1 pipeline (D16); only what feeds them changed.
 The sender/receiver backend (Phase 16) is a second, runtime-only executor of that same instruction stream, not a second code path fed by anything upstream of it (D14) -- see Phase 16 for why it cannot also be a compile-time path.
 
+* The foundation substrate: a mirror of =smd::kit=
+
+=src/smd/forth/foundation/= is not this project's own code.
+It is a mirror of =smd::kit::foundation= in compile-time-scheme (=~/src/compile-time-scheme/main/src/smd/kit/foundation/=), the shared substrate that repository extracted at its step R8 from the two independently-drifted copies (its own and this one) and has since grown with beman.transpose's typeclass work: a shared =typeclass_base=, two concepts per typeclass (=functor_impl= for the minimal basis, =functor_object= for the whole derived surface), plain-named lookup variables (=functor<T>=) with =derive_functor<Impl>= for the base, named monoid carriers, Foldable/Traversable/Monad, and instance files for =result= and =static_vector=.
+This project consumes =result=, =parse_error=, =source_pos=/=source_span=, =static_vector=, =arena_box=, and the Functor/Applicative/Alternative bases; the rest of the kit rides along so that the mirror is whole and a sync is mechanical.
+
+The mirror is maintained by =scripts/sync-kit.py=: every header and test in the kit directory lands here under the same leaf name, with exactly the path, namespace, and include-guard rewrites the script names and a provenance line after SPDX, and =CMakeLists.txt= is regenerated from the file list.
+=scripts/sync-kit.py --check= reports drift without writing.
+Nothing in =foundation/= is edited by hand; a change that belongs to the substrate is made in the kit and pulled across, and one that belongs to Forth alone is made in the consumer.
+The kit revision last mirrored is recorded in the commit that did it (=git log -- scripts/sync-kit.py src/smd/forth/foundation=).
+
+The one real client of the typeclass machinery here is the parser combinator layer (DIV-0003, =docs/divergences/DIV-0003-parser-foundation-typeclass.md=): =parser_ops= in =src/smd/forth/parser/parser_ops.hpp= is the map over three Impl types, and =parser<F>= registers against all three lookup variables.
+Its =element_type<parser<F>>= specialization is what lets the kit's concepts see a parser's value type without the datatype carrying a =value_type= of its own.
+Functor and Applicative hold at both concept depths; Alternative holds at neither, because a parser's identity element must name its value type (=parser_v.zero<T>()=) and both Alternative concepts probe a nullary =zero()=.
+That gap is recorded, not papered over: =foundation::alt= and =foundation::combine= still dispatch to parsers, and =parser_ops.test.cpp= asserts the six concept outcomes.
+
 * Phase 1: Source Text and the Lexical Layer
 
 Forth source is plain text: whitespace-delimited words, numeric literals, and =( ... )= stack-effect comments.
