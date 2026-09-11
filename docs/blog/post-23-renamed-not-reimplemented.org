@@ -209,7 +209,7 @@ to come back and correct it for me.
 
 
 #+html: <nav style="margin-top: 3em; border-top: 1px solid #ccc; padding-top: 1em">
-[[file:index.org][↑ Series Index]] | [[file:post-22-the-call-stack-was-the-continuation.org][← Part 22 - The Call Stack Was the Continuation]]
+[[file:index.org][↑ Series Index]] | [[file:post-22-the-call-stack-was-the-continuation.org][← Part 22 - The Call Stack Was the Continuation]] | [[file:post-24-nothing-downstream-notices.org][Part 24 - Nothing Downstream Notices →]]
 #+html: </nav>
 
 * References
