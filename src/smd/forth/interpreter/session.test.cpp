@@ -72,6 +72,18 @@ TEST_CASE("SessionTest - BuildSessionDiagnosesMalformedProgram") {
     REQUIRE_FALSE(built.has_value());
 }
 
+TEST_CASE("SessionTest - BuildSessionDiagnosesFinalDepthExceedingMaxStack") {
+    // F36 error-quality regression: before this check existed, a program
+    // leaving more cells on the data stack than the session's own MaxStack
+    // (here 2) reached foundation::static_vector::push_back past capacity
+    // -- an assertion failure, not a diagnosed foundation::result. "1 2 3"
+    // leaves three cells; MaxStack here is 2.
+    auto built = build_session<64, 160, 256, 128, 32, 64, 64, 2>("1 2 3");
+    REQUIRE_FALSE(built.has_value());
+    CHECK(std::string_view{built.error().message} ==
+          "final data stack depth exceeds session MaxStack capacity");
+}
+
 TEST_CASE("SessionTest - DataSpaceHighWaterMarkTracksAllotment") {
     // ALLOT is an ordinary primitive (F16). This test drives it directly
     // rather than through VARIABLE/CREATE so what it asserts is the

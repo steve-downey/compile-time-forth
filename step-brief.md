@@ -1,136 +1,136 @@
-# step-brief.md — Step F36: Consolidation
+# step-brief.md — after Step F36: Consolidation
 
-Forward-only brief for the next clean agent. Bounded; not a log. Prior-step
-narrative lives in `git log`; architecture lives in
-`docs/compiler_architecture.org` — consult it only where pointed, by anchor.
-Your orchestrator pastes your own step section from `docs/forth-plan-2.md`
-plus the decision records it cites; this brief does not attempt to restate
-that section from memory.
+Forward-only brief. Bounded; not a log. Prior-step narrative lives in
+`git log`; architecture lives in `docs/compiler_architecture.org` —
+consult it only where pointed, by anchor.
 
-F34 (foreign function interface) and F35 (bootstrap prelude) are both
-merged. F36 is the last unchecked step in `checklist.md`; the retired R1
-steps it absorbs are F21 (error-quality and negative-compile pass) and F22
-(documentation consolidation) — but take the goal and merge criteria from
-the §6 section your orchestrator pastes, not from those retired titles.
+## F36 is the last step in checklist.md
 
-## What F34 built, by anchor
+There is no successor step to hand off to. `checklist.md`'s "True Forth
+revision" section is now fully checked (F23 through F36); the only
+remaining unchecked line in the whole file is "Blog: F36 consolidation
+(Part 25)", which is the blog agent's own job, not a worker's — see
+`docs/blog/AGENTS.md`. If you are a worker reading this file expecting a
+next step to implement, there isn't one: read `docs/forth-plan-2.md`'s own
+revision-table framing, and if new work is wanted it needs a new plan
+section (and a checklist line) before anything is dispatched against it,
+not an inference from this file.
 
-`docs/compiler_architecture.org`'s Phase 18 section ("The Foreign Function
-Interface") covers this in full, with transcluded code anchors. Read it
-before opening `machine/foreign.hpp` or the threading diff wholesale.
+## What F36 did, by anchor
 
-- **A foreign word is an ordinary word.** `machine::foreign_fn` is
-  `status (*)(forth_state<...> &)`; `machine::foreign_vocabulary` is the flat
-  registry of those pointers; `machine::foreign_word` (the dictionary
-  binding) carries an index into it plus D20's optional declared effect;
-  `machine::foreign_dictionary` bundles word list and registry so one
-  `with_foreign` call appends to both. One new opcode, `machine::op::foreign`
-  (operand: a registry index, *not* a code-space address). Nothing downstream
-  distinguishes a foreign word: `'`, `[']`, `EXECUTE`, `CATCH`, `POSTPONE`,
-  and the effect lint all reach one with no FFI-aware case anywhere.
-- **A fifth threaded parameter, exactly like F28's `dict`.** `machine::
-  run_from`/`run`, `interpreter::call_word`/`execute_entry`/
-  `apply_control_word`/`interpret`/`build_session`/
-  `build_session_with_prelude`/`call_defined_word`, and `sender::
-  run_word_via_vm`/`word_sender`/`run_from_via_senders`/`run_via_senders` each
-  gained one nullable `foreign_vocabulary const *` (defaulted `nullptr`) and
-  one defaulted `MaxForeign` template parameter. Every pre-F34 call site
-  compiles and behaves identically. `build_session` also gained a `vm_fuel`
-  parameter, defaulted to the value `interpret` already used, so the new
-  `vocabulary` parameter could precede it without behavior change.
-- **Public surface:** `forth::compiled_forth_with(text, vocabulary, fuel)`
-  (`forth.hpp`) — a *function*, not a variable template, because the
-  vocabulary is a value carrying function pointers rather than an NTTP. It
-  returns a `foundation::result`, so `.value()` in a namespace-scope
-  `constexpr` initializer keeps `compiled_forth<Source>`'s own "malformed
-  program is a hard compile error" contract. `compiled_forth<Source>` itself
-  is untouched.
-- **A session image carries foreign headers, never function pointers.** Any
-  runtime re-run must be handed the same vocabulary alongside the
-  `forth_state`, and that state must use the same four capacities the
-  vocabulary's function pointers are typed on. `src/examples/ffi_gcd.cpp`
-  shows the whole shape (compile-time call out, an `is_constant_evaluated`-
-  guarded runtime-printing foreign word, and the reverse embedding).
+`docs/compiler_architecture.org`'s new Phase 19 section ("Consolidation")
+covers this step's own work in full. Its two `**` subsections (the merge
+criteria are the second) name what changed and why; this brief does not
+restate them.
 
-## Gotchas F36 could not get from its own brief
+- **`docs/forth-limitations.md` is new** — the roll-up the plan's own step
+  text asks for: rescoped D12, D21's cell-granularity characteristic, and
+  every DIV-0001 through DIV-0030 (each superseded entry marked as such).
+  DIV-0031 through DIV-0034 were allocated to this step and went unused.
+- **`compile-time-forth.org` (repo root) is rewritten**, transcluding a
+  working subset of `compiler_architecture.org`'s own anchors instead of
+  the retired R1-era placeholder it carried since step F15. If Part 25's
+  blog post wants a code excerpt to pin, the anchors it reuses are:
+  `18245977-b4d2-4011-bac7-a36f7680aeb4`/`9affe4fc-3d72-4f41-8fd0-d2338f9ab603`
+  (`forth.hpp`, the public API), `aa1d6f83-9b3c-4e2a-8d5f-3c7b1e9a4f62`
+  (`interp.hpp`, the interpreter loop), `c6e9f1b3-8a2d-4c7e-9f1a-3b6d8e2c5a7f`
+  (`session.hpp`, the session image), `3fd1b4b2-6cf1-4b6e-9b6b-3f2c0a8f7d21`
+  (`effect_lint.hpp`, the lattice), `e7f4b8a2-1c6d-4e3f-9a5b-2d7c8e1f4a6b`
+  (`sender/lower.hpp`), `c46f1cb1-63a2-4d0e-9e2c-6a45f2c9d5b1`
+  (`prelude.hpp`, the Forth-source prelude itself — the most quotable one,
+  since it is Forth, not C++), and `bf3c6a19-4e27-4d5a-9c81-7a2f6b0d4e93`
+  (`foreign.hpp`). All eight already existed in `compiler_architecture.org`
+  before this step; none is new.
+- **`README.md`'s opening is rewritten** off the R1-era "returns my name"
+  placeholder description, onto what the project actually is, with
+  pointers to the architecture doc, the limitations doc, the plan, and the
+  presentation.
+- **The error-quality pass**: `interpreter/diagnostics.test.cpp` (new) is a
+  7-case table-driven positioned-diagnostic battery — message *and*
+  `source_pos` (offset/line/column) — covering unresolved-name,
+  unterminated-construct, control-word-misuse, stack-fault, and
+  declared-effect-mismatch diagnosis kinds; three cases are also
+  static_assert-checked. `test_neg_effect_mismatch.cpp` and
+  `test_neg_capacity_overflow.cpp` (new) extend
+  `test_neg_syntax_error.cpp`'s own `EXCLUDE_FROM_ALL`+`WILL_FAIL` CTest
+  pattern, unchanged, to a declared-effect mismatch and a data-stack
+  capacity overflow respectively.
 
-- **Function addresses are not constant expressions under UBSan.** Under
-  GCC-16 with `-fsanitize=undefined` (this project's default `Asan` config),
-  `fn == nullptr` for a function pointer makes any enclosing `static_assert`
-  fail with "is not a constant expression" — while *calling* through the same
-  pointer constant-evaluates fine. This is why `foreign_vocabulary::add` does
-  not diagnose a null implementation and `foreign_vocabulary::call` does,
-  spelled `!std::is_constant_evaluated() && fn == nullptr` so the comparison
-  is never evaluated in a constant expression (DIV-0029). If F36's
-  error-quality work reaches for a null-check on any function pointer in a
-  constexpr path, write it that way; a bare comparison hits the same wall,
-  so bisect with `-fsanitize=undefined` alone before assuming a code defect.
-- **A foreign word must not use the return stack as data.** D24's fallback
-  trigger `sender::word_uses_return_stack_data` scans *instructions*, and a
-  foreign call is opaque to it, so such a word would be lowered natively by
-  the sender backend and could silently disagree with the VM. Documented
-  constraint, not a defect; the fix if ever needed is a flag on
-  `foreign_word` the trigger consults (DIV-0029).
-- **`resolve_execution_token` still diagnoses two binding kinds**,
-  `control_word` (permanently — a structural control word has no runtime
-  action an XT could name, DIV-0015's F28 addendum) and `defer_word`
-  (possible, unneeded so far, DIV-0016's revisit condition). If F36's
-  error-quality pass audits diagnostics, "word has no execution token" is the
-  one message covering both, and those two are the only remaining cases.
-- **`run_and_compare.hpp` grew a `vocabulary` parameter** after `fuel`;
-  `compile_and_run_both` now forwards `fuel` as `interpret`'s `vm_fuel` too
-  (identical at every existing call site, all of which use the default).
-- **Advisory effect-lint diagnostics have a collection point nobody reads:**
-  `compile_buffer::program().diagnostics` (DIV-0019). If F36 is the
-  error-quality step, that list is the obvious thing to surface, and it is
-  already populated.
+## A defect found and fixed, not merely documented
 
-## Files F34 touched (so F36 knows what is new)
+`interpreter/session.hpp`'s `build_session` copied the build-time data
+stack into the returned session's `stack` snapshot with no bound check of
+its own: a program leaving more cells behind than the caller's own
+`MaxStack` could hold reached `foundation::static_vector::push_back` past
+capacity — an assertion failure (UB in a release build), not a
+`foundation::result` a caller could observe. This violated the project's
+own durable "misuse is a diagnosed error, never UB" invariant, so it is
+fixed in place (`session.hpp` now diagnoses
+`st.data().depth() > MaxStack` before building the snapshot;
+`session.test.cpp`'s `BuildSessionDiagnosesFinalDepthExceedingMaxStack` is
+the regression). This is an ordinary bug fix within F36's own remit, not a
+plan or Forth-2012 divergence — it carries no DIV.
 
-New: `src/smd/forth/machine/foreign.hpp`, `machine/foreign.test.cpp`,
-`sender/lower_foreign.test.cpp`, `src/examples/ffi_gcd.cpp`,
-`docs/divergences/DIV-0029-*.md`, `DIV-0030-*.md`.
-Changed: `machine/dictionary.hpp`, `machine/instruction.hpp`,
-`machine/vm.hpp`, `interpreter/compilebuf.hpp`, `interpreter/interp.hpp`,
-`interpreter/effect_lint.hpp`, `interpreter/session.hpp`,
-`interpreter/prelude.hpp`, `forth.hpp`, `sender/lower.hpp`,
-`sender/run_and_compare.hpp`, the three CMakeLists that register the new
-files, `interpreter/interp.test.cpp`, `forth.test.cpp`,
-`docs/compiler_architecture.org` (Phase 18),
-`docs/divergences/DIV-0016-*.md` (F34 addendum), `checklist.md`.
+Note for the capacity-overflow negative-compile test specifically:
+`compiled_forth`'s template parameters name two *different* stack
+capacities — `MaxStack` (7th, the returned session's snapshot capacity,
+the one the fix above guards) and `BuildDepth` (8th, the transient
+build-time `forth_state`'s own data-stack capacity, enforced during
+interpretation by `machine::cell_stack::push`'s existing "stack overflow"
+diagnostic). `test_neg_capacity_overflow.cpp` pins `BuildDepth` down,
+deliberately, because that path was already cleanly diagnosed before this
+step and needed no fix to serve as a negative-compile test; the `MaxStack`
+path needed the fix above precisely because it was not clean before it.
 
-## Standing constraints
+## Gotchas this step found, for whoever next touches this ground
+
+- **Plain `make presentation` (no `TOOLCHAIN=`) fails on this machine, for a
+  reason that predates this step and is not this step's to fix.** It builds
+  against whatever `c++` resolves to (here GCC 15.2.0), and
+  `conformance/core_suite_strings.test.cpp`'s own `static_assert(text_of(
+  strings_suite.output()).find("BOOM") != ...)` fails GCC 15's own
+  `constexpr` evaluation of `std::string_view::find` ("is not a constant
+  expression"), reproduced identically on pristine `main` with a bare
+  `c++ -std=gnu++26 -fsyntax-only` on that one file — nothing this step
+  touched. `TOOLCHAIN=gcc-16` (the project's own baseline compiler,
+  AGENTS.md) does not have this problem: `make TOOLCHAIN=gcc-16
+  presentation` builds, tests (429/429), and exports both
+  `compile-time-forth.html` and `compile-time-forth-slides.html` cleanly.
+  If a future step's own gate says "make presentation succeeding" with no
+  qualifier, read it as "under the project's baseline toolchain" and pass
+  `TOOLCHAIN=gcc-16` explicitly rather than trusting the system default.
+- **Compute expected diagnostic offsets by actually running the program,
+  never by hand.** A throwaway `g++-16 -std=c++26 -Isrc` translation unit
+  linking nothing but this project's own headers (no CMake, no test
+  framework) is enough to print `r.error().message`/`.where.offset` for a
+  candidate bad program directly — this is how every expected value in
+  `diagnostics.test.cpp`'s table was obtained. Hand-computing a byte offset
+  from a multi-line source string is exactly the kind of thing that is
+  confidently wrong in a way `make test` alone will catch late.
+- **`build_session_with_prelude`'s and `build_session`'s template parameter
+  orders are not identical to `compiled_forth`'s own naming**, and it is
+  easy to overshrink the wrong one. `compiled_forth<Source, MaxCode,
+  MaxWords, MaxData, MaxOut, MaxName, MaxStack, BuildDepth, BuildRDepth,
+  Fuel>` — position 7 is the *returned session's* stack-snapshot capacity,
+  position 8 is the *transient build-time* stack capacity that
+  interpretation itself pushes/pops against. A capacity-overflow test
+  aimed at "stack overflow" (an interpretation-time diagnostic) needs
+  position 8, not position 7.
+
+## Standing constraints (carried forward, still true)
 
 - `TOOLCHAIN=gcc-16` for `make compile|test`; `make lint` runs clean, all
-  hooks. **Run `make lint` as the very last thing before you commit, and
-  commit whatever it reformats.**
+  hooks. Run `make lint` as the very last thing before committing, and
+  commit whatever it reformats.
 - Watch `pgrep -af cc1plus` and its RSS before launching a new build if any
-  step touches sender/Execution26 composition; memory, not wall clock, is the
-  binding constraint. Never stack a second build against a first that appears
-  stuck; diagnose memory before retrying. Sender-side tests are sharded one
-  or two programs per translation unit, one capacity combination per file;
-  measure each shard (`/usr/bin/time -v`) rather than assuming cost —
-  `lower_foreign.test.cpp` measured 37.7 s / 710 MB peak RSS against
-  `lower_if.test.cpp`'s 34.6 s / 728 MB taken the same way.
+  step touches sender/Execution26 composition; memory, not wall clock, is
+  the binding constraint. Sender-side tests stay sharded one or two
+  programs per translation unit, one capacity combination per file.
 - Every compiled structure stays flat, trivially destructible, and
   capacity-parameterized; heap-backed `fix`/`Box` types are barred (D3).
-- Compile-time tests use the immediately-invoked-lambda `static_assert`
-  pattern; every public constexpr API gets one — but the sender backend is a
-  **runtime-only** executor (`sync_wait` is not constexpr-capable, F33;
-  DIV-0030 records how a merge criterion naming a `static_assert` "via the
-  sender backend" is to be read, and that reading covers the pattern, not
-  just F34's instance).
-- Do not pick your own DIV number; the orchestrator allocates it at dispatch.
-  F34 was allocated DIV-0029 through DIV-0032 and used 0029 and 0030; 0031
-  and 0032 were **not** used and are free. Next free is DIV-0031.
-
-## Before handoff
-
-`make TOOLCHAIN=gcc-16 compile`, `... test` green; `make lint` green;
-`make check-transclusions` green; `smoke.sh gcc-16` and `smoke.sh clang-21`
-both end `SMOKE OK`; `checklist.md` ticked; durable facts recorded in
-`docs/compiler_architecture.org` in place, by anchor; `step-brief.md`
-rewritten for whatever the plan names after F36 (F36 is the last step in
-`checklist.md` — if nothing follows, say so in the brief rather than
-inventing a successor); DIV filed for any deviation, using the number you
-are given.
+  The `session.hpp` fix above is exactly this invariant's own enforcement,
+  extended to a spot that had quietly slipped it.
+- `src/smd/forth/foundation/` is a mirror of `~/src/compile-time-scheme`'s
+  kit and is never hand-edited; `scripts/sync-kit.py --check` needs
+  `--scheme ~/src/compile-time-scheme/kit-clang-fixes` (that branch is not
+  yet on the kit's main).

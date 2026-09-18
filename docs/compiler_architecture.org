@@ -20,7 +20,7 @@ Steps F5 through F15 (=docs/forth-plan.md=, the superseded R1 plan) built a clas
 DIV-0011 (=docs/divergences/DIV-0011-true-forth-pivot.md=) retired that design in favor of D13: the Forth-2012 section 3.4 text interpreter, with no reader phase and no elaboration phase, is the architecture.
 Steps F24/F25 built the new front end alongside the old one; step F26 ("the cut", =docs/forth-plan-2.md=) deleted the R1 pipeline outright once the new one could stand on its own.
 Phases 2 through 5 below described the deleted pipeline (grammar, syntax tree, elaboration, and two of its three codegen backends) and have moved to =docs/history/architecture-grammar-era.org=, a frozen one-time snapshot — they are no longer part of this living document's own read path.
-As of this revision the lexical layer (Phase 1), the public one-shot API (Phase 6), the text interpreter (Phase 7), the colon compiler and session image (Phase 8), the cut itself (Phase 9), immediacy and control flow (Phase 10), execution tokens and defining words (Phase 11), parsing words and strings (Phase 12), CATCH and THROW (Phase 13), conformance (Phase 14), the effect lint (Phase 15), the sender backend (Phase 16), the bootstrap prelude (Phase 17), and the foreign function interface (Phase 18) are current.
+As of this revision the lexical layer (Phase 1), the public one-shot API (Phase 6), the text interpreter (Phase 7), the colon compiler and session image (Phase 8), the cut itself (Phase 9), immediacy and control flow (Phase 10), execution tokens and defining words (Phase 11), parsing words and strings (Phase 12), CATCH and THROW (Phase 13), conformance (Phase 14), the effect lint (Phase 15), the sender backend (Phase 16), the bootstrap prelude (Phase 17), the foreign function interface (Phase 18), and consolidation (Phase 19) are current — this document is itself complete as of Phase 19, which is the plan's own last step (=docs/forth-plan-2.md=, =checklist.md=).
 
 * Pipeline overview
 
@@ -806,3 +806,26 @@ A runtime printing example whose foreign word prints via an =is_constant_evaluat
 A foreign word callable via ='=/=EXECUTE= like any other: by construction, through =resolve_execution_token='s ordinary stub path, with no FFI-specific case anywhere downstream.
 
 See DIV-0029 and DIV-0030 (=docs/divergences/=), and DIV-0016's own F34 addendum, for the complete record of this step's own findings.
+
+* Phase 19: Consolidation (step F36, docs/forth-plan-2.md)
+
+This step rolls the D12/D21 scope record and every filed divergence up into one document, =docs/forth-limitations.md=, rather than adding new architecture: read that file for what this project deliberately does not build and for the complete DIV-0001 through DIV-0030 log (DIV-0031 through DIV-0034 were allocated to this step and went unused — its own work stayed inside the plan's own step section, needing no divergence filing).
+=compile-time-forth.org= (the repository root, presentation) is rewritten onto the real system for the first time since the R1-era placeholder it replaced (=forth::forth()=, deleted at step F15); it transcludes a working subset of this document's own anchors rather than duplicating prose.
+=README.md= is brought up to date with what this project actually is.
+
+** The error-quality pass
+
+=interpreter/diagnostics.test.cpp= is a table-driven positioned-diagnostic battery (this project's own table-driven idiom, a =constexpr std::array<Case, N>= plus a loop, per =conformance/gforth_diff.test.cpp='s own battery): one representative bad program per diagnosis kind =interp.hpp= raises — an unresolved name, an unterminated compile-time construct, a control word used outside the structure it requires, a runtime stack fault, a declared-vs-computed effect mismatch, and =POSTPONE= naming an unresolved word — each checked for both its message and its =source_pos= (offset/line/column), captured by actually running the program rather than hand-computed.
+Three of its seven cases are additionally exercised as immediately-invoked-lambda =static_assert=s, since =interpret= is itself =constexpr=.
+
+=test_neg_effect_mismatch.cpp= and =test_neg_capacity_overflow.cpp= extend =test_neg_syntax_error.cpp='s own =EXCLUDE_FROM_ALL=-executable-plus-=WILL_FAIL=-CTest pattern (unchanged) to two more failure kinds this step's own merge criterion names: a declared stack effect that disagrees with its definition's own computed effect (F30's effect lint, D20), and a data-stack push that exceeds a caller-pinned capacity (=compiled_forth='s own =BuildDepth= template parameter) rather than the returned session's own snapshot capacity — see the next finding for why that second parameter, not =MaxStack=, is the one this step's own negative-compile test pins down.
+
+This step's own pass over =interpreter/session.hpp= found a genuine instance of exactly the failure mode the error-quality pass exists to catch: =build_session='s final-stack snapshot loop called =foundation::static_vector::push_back= up to =MaxStack= times with no bound check of its own, so a program leaving more cells behind than its caller's own =MaxStack= could hold reached an assertion failure — UB in a release build — rather than a =foundation::result= a caller could observe, in violation of this project's durable "misuse is a diagnosed error, never UB" invariant.
+Fixed in place: =build_session= now diagnoses =st.data().depth() > MaxStack= before building the snapshot ("final data stack depth exceeds session MaxStack capacity"), with =session.test.cpp='s own =BuildSessionDiagnosesFinalDepthExceedingMaxStack= as the regression.
+This is an ordinary bug fix within this step's own remit, not a divergence from the plan or from Forth-2012, so it carries no DIV.
+
+** Merge criteria
+
+=docs/forth-limitations.md= references every one of DIV-0001 through DIV-0030 (each superseded entry marked as such, not dropped).
+The positioned-diagnostic battery and both new negative-compile tests are in place, table-driven and extending =test_neg_syntax_error.cpp='s own infrastructure respectively, per the discussion above.
+=compile-time-forth.org= renders where Emacs, =org-transclusion=, and =org-re-reveal= are available (=make presentation=), transcluding the real system rather than the retired placeholder.

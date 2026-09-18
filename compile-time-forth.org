@@ -2,8 +2,8 @@
 #+OPTIONS: ':nil *:t -:t ::t <:t H:4 \n:nil ^:nil arch:headline author:t
 #+OPTIONS: email:nil f:t inline:t num:nil p:nil pri:nil prop:nil stat:t tags:t
 #+OPTIONS: tasks:t tex:t timestamp:t title:t toc:nil todo:t |:t
-#+TITLE: Transclusion Examples
-#+SUBTITLE: A Case Study
+#+TITLE: smd::forth
+#+SUBTITLE: A Compile-Time and Runtime Forth in C++26
 #+date: {{{modification-time(%Y-%m-%d, VC)}}}
 #+AUTHOR: Steve Downey
 #+EMAIL: sdowney@gmail.com
@@ -34,42 +34,117 @@
 #+LATEX_HEADER:
 #+STARTUP: showall
 
-* Examples of Transclusion
+* smd::forth
 
-This file predates the real =smd::forth= compiler (docs/forth-plan.md) and
-originally transcluded a bootstrap placeholder API removed outright in
-Step F15 (see =handoff.md='s "Step F15" section): a =forth::forth()=
-free function returning the literal string "Steve", declared in
-=forth.hpp=, defined in =forth.cpp=, tested in =forth.test.cpp=, and
-printed by the =hello= example.
+This is a presentation-shaped tour of =smd::forth=, a Forth-2012 text
+interpreter written in C++26 that runs identically at compile time and at
+ordinary runtime.
+Every code sample below is transcluded live from the real source tree by a
+UUID anchor -- not hand-copied prose that can drift from what actually
+compiles -- the same discipline =docs/compiler_architecture.org= (the full
+architecture document this presentation summarizes) uses throughout.
+Step F36 (consolidation, =docs/forth-plan-2.md=) is what rewrote this file
+onto the real system; see that architecture document for the complete
+phase-by-phase account, and =docs/forth-limitations.md= for what this
+project deliberately does not implement.
 
-Step F15 replaced that placeholder with the real public one-shot API
-(=smd::forth::compiled_forth<Source>=, =smd::forth::source_literal=,
-=smd::forth::forth_program=), which is header-only -- there is no longer a
-separate =forth.cpp= "definition" file for a second anchor to point at.
-The four anchors this section previously transcluded
-(=44cc988c-7353-43aa-a7d3-8840f92371a6=,
-=a66dec0e-e5cc-44b5-b9f1-bbed787c3d44=,
-=03013d1f-bcc1-4d3e-9701-3ed1a15c6370=,
-=710c39c6-c7e1-403f-a9f0-9f8ecf890dc9=) no longer exist in the source
-tree. Per docs/forth-plan.md Step F15's own instructions ("the org file
-gains a TODO note for F22 -- worker's choice, recorded in handoff"), this
-section is left as an explicit TODO rather than forcing the old four-anchor
-declaration/definition/test/example shape onto a design that no longer has
-a separate implementation file to transclude a "definition" from.
+#+begin_src mermaid
+flowchart LR
+    A[Source text] --> B["Text interpreter (parse a word, find it, act on it)"]
+    B --> C[Code space]
+    B --> D[Dictionary]
+    B --> E[Data space]
+    C --> F["Stack-machine VM (re-run, e.g. from a session image)"]
+    C --> G["Sender/receiver backend -- a second executor of the same code"]
+#+end_src
 
-TODO(F22, documentation consolidation): rewrite this whole presentation to
-transclude the real compiler, per docs/forth-plan.md Step F22's own
-deliverable ("=compile-time-forth.org= (presentation) rewritten to
-transclude the real compiler via UUID anchors").
+** The public API: a Forth program as a template argument
 
-One representative transclusion is kept live below, rather than described
-only in prose, so this file is not left with zero working examples until
-F22 lands.
+A whole Forth program is an NTTP.
+=compiled_forth<Source>= interprets it once, during translation, and the
+result -- a trivially copyable session image -- is a namespace-scope
+=constexpr= value.
+A program that fails to interpret is a hard compile error, the same way a
+program that fails to typecheck is.
 
-** The ~source_literal~ NTTP (step F15)
 #+transclude: [[file:./src/smd/forth/forth.hpp::18245977-b4d2-4011-bac7-a36f7680aeb4]]  :lines 2- :src cpp :end "18245977-b4d2-4011-bac7-a36f7680aeb4 end"
 
+#+transclude: [[file:./src/smd/forth/forth.hpp::9affe4fc-3d72-4f41-8fd0-d2338f9ab603]]  :lines 2- :src cpp :end "9affe4fc-3d72-4f41-8fd0-d2338f9ab603 end"
+
+=compiled_forth<": SQUARED DUP * ;  4 SQUARED">.stack()= static-asserts to
+a one-element stack whose only cell is =16= -- entirely at compile time.
+
+** There is no separate compile phase
+
+Forth-2012's own outer text interpreter is the architecture: one loop scans
+a word, resolves it against the dictionary the instant it is met, and
+either runs it (interpreting) or emits code for it (compiling, inside a
+=:= ... =;= definition).
+There is no syntax tree and no elaboration pass standing between source
+text and the code that runs.
+
+#+transclude: [[file:./src/smd/forth/interpreter/interp.hpp::aa1d6f83-9b3c-4e2a-8d5f-3c7b1e9a4f62]] :lines 2- :src cpp :end "aa1d6f83-9b3c-4e2a-8d5f-3c7b1e9a4f62 end"
+
+** The session image
+
+Code space, dictionary, and data space together are the session: a
+trivially copyable literal that survives the one =constexpr= evaluation
+that built it into ordinary runtime code, where the stack-machine VM can
+run one of its own defined words again.
+
+#+transclude: [[file:./src/smd/forth/interpreter/session.hpp::c6e9f1b3-8a2d-4c7e-9f1a-3b6d8e2c5a7f]] :lines 2- :src cpp :end "c6e9f1b3-8a2d-4c7e-9f1a-3b6d8e2c5a7f end"
+
+** A stack-effect lint, advisory unless a declared effect commits to one
+
+An abstract interpretation over each definition's own emitted code checks
+branch/loop agreement, return-stack balance, and -- when a colon
+definition's own =( ... )= comment declares one -- the declared effect
+against what the definition actually computes.
+
+#+transclude: [[file:./src/smd/forth/interpreter/effect_lint.hpp::3fd1b4b2-6cf1-4b6e-9b6b-3f2c0a8f7d21]] :lines 2- :src cpp :end "3fd1b4b2-6cf1-4b6e-9b6b-3f2c0a8f7d21 end"
+
+A declared effect that disagrees with the computed one is a diagnosed,
+positioned error -- =": BADDECL ( n -- n n ) DUP DROP ;"= fails to compile,
+and =test_neg_effect_mismatch.cpp= (step F36) exercises exactly that
+failure deliberately.
+
+** A second executor of the same code: the sender/receiver backend
+
+Every compiled instruction stream can also run through an Execution26
+sender/receiver graph -- a second, runtime-only executor, not a second code
+path fed by anything upstream of the VM.
+
+#+transclude: [[file:./src/smd/forth/sender/lower.hpp::e7f4b8a2-1c6d-4e3f-9a5b-2d7c8e1f4a6b]] :lines 2- :src cpp :end "e7f4b8a2-1c6d-4e3f-9a5b-2d7c8e1f4a6b end"
+
+** Forth metaprogramming is just programming: the bootstrap prelude
+
+Some of this project's own dictionary is written in Forth, not C++.
+=NIP=/=TUCK=/=?DUP= are ordinary colon-word compositions; =WHEN=/
+=OTHERWISE=/=ENDIF= are each a whole-body =POSTPONE= of =IF=/=ELSE=/=THEN=
+-- a full =IF= replacement holds under new names, built entirely with
+machinery every earlier step already installed.
+
+#+transclude: [[file:./src/smd/forth/interpreter/prelude.hpp::c46f1cb1-63a2-4d0e-9e2c-6a45f2c9d5b1]] :lines 2- :src forth :end "c46f1cb1-63a2-4d0e-9e2c-6a45f2c9d5b1 end"
+
+** A foreign word is an ordinary word
+
+Calling into C++ from Forth, and Forth from C++, uses the same dispatch
+path every other word does -- there is no FFI-aware special case anywhere
+downstream of the dictionary.
+
+#+transclude: [[file:./src/smd/forth/machine/foreign.hpp::bf3c6a19-4e27-4d5a-9c81-7a2f6b0d4e93]] :lines 2- :src cpp :end "bf3c6a19-4e27-4d5a-9c81-7a2f6b0d4e93 end"
+
+** Where to go from here
+
+=docs/compiler_architecture.org= is the full phase-by-phase account, each
+phase transcluded the same way this presentation's own excerpts are.
+=docs/forth-limitations.md= (step F36) rolls up what this project
+deliberately does not build, one system characteristic (cell-granular
+data-space addressing, D21), and the complete divergence log.
+=docs/conformance-exclusions.md= is the word-by-word Forth-2012 core-set
+ledger.
+=docs/forth-plan-2.md= is the governing step plan this whole system was
+built against, one step at a time.
 
 # Local Variables:
 # org-html-htmlize-output-type: css

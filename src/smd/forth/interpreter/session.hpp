@@ -226,6 +226,21 @@ constexpr auto build_session(
     // Snapshot the build-time data stack bottom-to-top (F26): same order
     // machine::primitive::dot_s prints in, and the same convention
     // forth.hpp's own (now-superseded) R1-era forth_program::stack used.
+    //
+    // F36 error-quality pass: the final depth is diagnosed against @p
+    // MaxStack here, rather than left to @ref foundation::static_vector's
+    // own capacity assertion below. Before this check, a @p text that left
+    // more cells behind than @p MaxStack could hold reached
+    // `stack_snapshot.push_back` past capacity -- an assertion failure (UB
+    // in a release build), not a `foundation::result` a caller could
+    // observe, in violation of this project's own "misuse is a diagnosed
+    // error, never UB" invariant. `session.test.cpp`'s own
+    // `BuildSessionDiagnosesFinalDepthExceedingMaxStack` is the regression.
+    if (st.data().depth() > MaxStack) {
+        return foundation::parse_error{
+            foundation::source_pos{},
+            "final data stack depth exceeds session MaxStack capacity"};
+    }
     foundation::static_vector<machine::cell, MaxStack> stack_snapshot{};
     for (int offset = st.data().depth() - 1; offset >= 0; --offset) {
         stack_snapshot.push_back(st.data().peek(offset).value());
