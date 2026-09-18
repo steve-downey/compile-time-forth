@@ -131,6 +131,5 @@ path needed the fix above precisely because it was not clean before it.
   The `session.hpp` fix above is exactly this invariant's own enforcement,
   extended to a spot that had quietly slipped it.
 - `src/smd/forth/foundation/` is a mirror of `~/src/compile-time-scheme`'s
-  kit and is never hand-edited; `scripts/sync-kit.py --check` needs
-  `--scheme ~/src/compile-time-scheme/kit-clang-fixes` (that branch is not
-  yet on the kit's main).
+  kit and is never hand-edited; `scripts/sync-kit.py --check` against the
+  kit's main (the default `--scheme`) is the drift check.
