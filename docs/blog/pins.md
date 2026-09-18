@@ -38,6 +38,7 @@ worktree and are supposed to roll forward.
 | Part 22 | The Call Stack Was the Continuation | F33 | `182f2e8` | `blog/part-22` | 4 |
 | Part 23 | Renamed, Not Reimplemented | F35 | `203d2ee` | `blog/part-23` | 3 |
 | Part 24 | Nothing Downstream Notices | F34 | `c461b8c` | `blog/part-24` | 4 |
+| Part 25 | Everything I Didn't Build | F36 | `cc7ed4b` | `blog/part-25` | 3 |
 
 Pin SHAs are the commits that introduced each post. They are **not** the phase
 merges, for the reason in DISC-1.
