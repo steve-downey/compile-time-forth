@@ -1,4 +1,4 @@
-<div class="abstract" id="org5cd52c3">
+<div class="abstract" id="org967637d">
 <p>
 Tonight's step gives Forth a way to call out to something that isn't Forth: a
 foreign word is an ordinary C++ function taking the same machine state a
@@ -410,7 +410,7 @@ What I did get, and didn't expect walking in: a whole interface between this com
 
 <nav style="margin-top: 3em; border-top: 1px solid #ccc; padding-top: 1em">
 
-[↑ Series Index](index.md) | [← Part 23 - Renamed, Not Reimplemented](post-23-renamed-not-reimplemented.md)
+[↑ Series Index](index.md) | [← Part 23 - Renamed, Not Reimplemented](post-23-renamed-not-reimplemented.md) | [Part 25 - Everything I Didn't Build →](post-25-everything-i-didnt-build.md)
 
 </nav>
 

@@ -245,7 +245,7 @@ the last several entries kept the design general enough that a kind of word
 nobody had written yet still had somewhere to fit.
 
 #+html: <nav style="margin-top: 3em; border-top: 1px solid #ccc; padding-top: 1em">
-[[file:index.org][↑ Series Index]] | [[file:post-23-renamed-not-reimplemented.org][← Part 23 - Renamed, Not Reimplemented]]
+[[file:index.org][↑ Series Index]] | [[file:post-23-renamed-not-reimplemented.org][← Part 23 - Renamed, Not Reimplemented]] | [[file:post-25-everything-i-didnt-build.org][Part 25 - Everything I Didn't Build →]]
 #+html: </nav>
 
 * References
