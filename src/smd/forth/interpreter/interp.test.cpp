@@ -4,14 +4,19 @@
 #include <smd/forth/interpreter/interp.hpp>
 #include <smd/forth/interpreter/interp.hpp> // test 2nd include OK
 
+#include <smd/forth/foundation/parse_error.hpp>
+#include <smd/forth/foundation/source_pos.hpp>
 #include <smd/forth/interpreter/compilebuf.hpp>
 #include <smd/forth/interpreter/control_flow_corpus.hpp>
+#include <smd/forth/machine/cell.hpp>
 #include <smd/forth/machine/dictionary.hpp>
+#include <smd/forth/machine/foreign.hpp>
 #include <smd/forth/machine/forth_state.hpp>
 
 #include <catch2/catch_test_macros.hpp>
 
 #include <string_view>
+#include <variant>
 
 using smd::forth::interpreter::compile_buffer;
 using smd::forth::interpreter::interpret;
@@ -1954,4 +1959,167 @@ TEST_CASE("EffectLintTest - CatchMakesEffectUnknown") {
         std::get_if<smd::forth::machine::compiled_colon_word>(&entry->binding);
     REQUIRE(cw != nullptr);
     CHECK_FALSE(cw->effect_known);
+}
+
+// -- Step F34 (docs/forth-plan-2.md), D18/D20: the foreign function ---------
+//    interface. A foreign word is an ordinary dictionary header with an XT,
+//    so every one of these exercises a path that already existed for some
+//    other binding kind, with no FFI-specific dispatch anywhere.
+
+namespace {
+
+using ffi_state = forth_state<64, 64, 1024, 256>;
+
+/// ( a b -- gcd ) The plan's own named FFI example, written `constexpr` so
+/// it runs during a compile-time session exactly like a primitive.
+constexpr auto ffi_gcd(ffi_state &state) -> smd::forth::machine::status {
+    auto b = state.data().pop();
+    if (!b.has_value()) {
+        return b.error();
+    }
+    auto a = state.data().pop();
+    if (!a.has_value()) {
+        return a.error();
+    }
+    smd::forth::machine::cell x = a.value() < 0 ? -a.value() : a.value();
+    smd::forth::machine::cell y = b.value() < 0 ? -b.value() : b.value();
+    while (y != 0) {
+        smd::forth::machine::cell const t = x % y;
+        x = y;
+        y = t;
+    }
+    return state.data().push(x);
+}
+
+/// ( -- ) Always fails, with a message vm.hpp's own machine_fault_throw_code
+/// maps to Forth-2012's `-4` (stack underflow) when a handler is active.
+constexpr auto ffi_boom(ffi_state &state) -> smd::forth::machine::status {
+    (void)state;
+    return smd::forth::foundation::parse_error{
+        smd::forth::foundation::source_pos{}, "stack underflow"};
+}
+
+using ffi_bundle =
+    smd::forth::machine::foreign_dictionary<256, 32, 4, 64, 64, 1024, 256>;
+
+/// `default_dictionary` plus `GCD` (declared `( a b -- c )`) and `BOOM`
+/// (undeclared).
+constexpr auto ffi_vocabulary() -> ffi_bundle {
+    return smd::forth::machine::default_foreign_dictionary<256, 32, 4, 64, 64,
+                                                           1024, 256>()
+        .with_foreign("GCD", &ffi_gcd,
+                      smd::forth::machine::declared_effect(2, 1))
+        .value()
+        .with_foreign("BOOM", &ffi_boom)
+        .value();
+}
+
+} // namespace
+
+// Interpreting a foreign word by name, at compile time (the step's own
+// "static_assert computing through a constexpr foreign word via the VM"
+// merge criterion, at the interpreter level).
+static_assert([] {
+    auto vocab = ffi_vocabulary();
+    forth_state<64, 64, 1024, 256> st{"12 18 GCD"};
+    compile_buffer<> buf;
+    auto r = interpret(st, vocab.words, buf, 100000, 100000, &vocab.foreigns);
+    return r.has_value() && st.data().depth() == 1 &&
+           st.data().peek().value() == 6;
+}());
+
+// The same foreign word *compiled* into a colon definition, then called --
+// `compile_entry` emits one `op::foreign`, and the VM runs it from inside a
+// compiled body.
+static_assert([] {
+    auto vocab = ffi_vocabulary();
+    forth_state<64, 64, 1024, 256> st{": G ( a b -- c ) GCD ;  84 36 G"};
+    compile_buffer<> buf;
+    auto r = interpret(st, vocab.words, buf, 100000, 100000, &vocab.foreigns);
+    return r.has_value() && st.data().depth() == 1 &&
+           st.data().peek().value() == 12;
+}());
+
+// `'` and `EXECUTE` over a foreign word: the merge criterion "foreign word
+// callable via '/EXECUTE like any other".
+static_assert([] {
+    auto vocab = ffi_vocabulary();
+    forth_state<64, 64, 1024, 256> st{"12 18 ' GCD EXECUTE"};
+    compile_buffer<> buf;
+    auto r = interpret(st, vocab.words, buf, 100000, 100000, &vocab.foreigns);
+    return r.has_value() && st.data().depth() == 1 &&
+           st.data().peek().value() == 6;
+}());
+
+// `[']` inside a definition, likewise -- the compile-time half of the same
+// criterion.
+static_assert([] {
+    auto vocab = ffi_vocabulary();
+    forth_state<64, 64, 1024, 256> st{": VIA ['] GCD EXECUTE ;  12 18 VIA"};
+    compile_buffer<> buf;
+    auto r = interpret(st, vocab.words, buf, 100000, 100000, &vocab.foreigns);
+    return r.has_value() && st.data().depth() == 1 &&
+           st.data().peek().value() == 6;
+}());
+
+TEST_CASE("InterpTest - ForeignWordRunsInterpretedAndCompiled") {
+    auto vocab = ffi_vocabulary();
+    forth_state<64, 64, 1024, 256> st{
+        ": G GCD ;  270 192 G  .  1071 462 GCD ."};
+    compile_buffer<> buf;
+    auto r = interpret(st, vocab.words, buf, 100000, 100000, &vocab.foreigns);
+    REQUIRE(r.has_value());
+    CHECK(output_of(st) == "6 21 ");
+}
+
+TEST_CASE("InterpTest - ForeignWordNeedsItsVocabulary") {
+    // D7: the dictionary header alone is not enough -- running one without
+    // the registry it indexes into is diagnosed, never UB.
+    auto vocab = ffi_vocabulary();
+    forth_state<64, 64, 1024, 256> st{"12 18 GCD"};
+    compile_buffer<> buf;
+    auto r = interpret(st, vocab.words, buf);
+    REQUIRE_FALSE(r.has_value());
+}
+
+TEST_CASE("InterpTest - CatchCatchesAForeignWordsOwnDiagnosis") {
+    // The step-brief's own named risk (DIV-0028's category): a foreign word
+    // invoked through an xt from inside a CATCH-protected region. vm.hpp's
+    // `op::foreign` case reuses `op::prim`'s machine-fault mapping verbatim,
+    // so "stack underflow" from C++ becomes a caught THROW -4.
+    auto vocab = ffi_vocabulary();
+    forth_state<64, 64, 1024, 256> st{": SAFE ['] BOOM CATCH ;  SAFE"};
+    compile_buffer<> buf;
+    auto r = interpret(st, vocab.words, buf, 100000, 100000, &vocab.foreigns);
+    REQUIRE(r.has_value());
+    REQUIRE(st.data().depth() == 1);
+    CHECK(st.data().peek().value() == -4);
+}
+
+TEST_CASE("InterpTest - ForeignWordEffectsParticipateInTheLint") {
+    // D20: a declared foreign effect is used like any other word's; an
+    // undeclared one is the `unknown` lattice value, so a definition that
+    // reaches it has no known effect either.
+    auto vocab = ffi_vocabulary();
+    forth_state<64, 64, 1024, 256> st{": DECLARED ( a b -- c ) GCD ; "
+                                      ": UNDECLARED BOOM ;"};
+    compile_buffer<> buf;
+    auto r = interpret(st, vocab.words, buf, 100000, 100000, &vocab.foreigns);
+    REQUIRE(r.has_value());
+
+    auto const *declared = vocab.words.lookup("DECLARED");
+    REQUIRE(declared != nullptr);
+    auto const *dcw = std::get_if<smd::forth::machine::compiled_colon_word>(
+        &declared->binding);
+    REQUIRE(dcw != nullptr);
+    CHECK(dcw->effect_known);
+    CHECK(dcw->effect_inputs == 2);
+    CHECK(dcw->effect_outputs == 1);
+
+    auto const *undeclared = vocab.words.lookup("UNDECLARED");
+    REQUIRE(undeclared != nullptr);
+    auto const *ucw = std::get_if<smd::forth::machine::compiled_colon_word>(
+        &undeclared->binding);
+    REQUIRE(ucw != nullptr);
+    CHECK_FALSE(ucw->effect_known);
 }

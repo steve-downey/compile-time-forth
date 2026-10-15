@@ -1,10 +1,10 @@
-// src/smd/forth/foundation/alternative.test.cpp                   -*-C++-*-
+// src/smd/forth/foundation/alternative.test.cpp                     -*-C++-*-
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
-// New test for smd::forth::foundation::alternative; no upstream test existed
-// in compile-time-scheme (smd::smdscheme::foundation::alternative.hpp had
-// none of its own; it was only exercised indirectly through
-// smd::smdscheme::sender::string_writer, which this project does not
-// import).
+// Adapted by copy from compile-time-scheme (smd::kit::foundation):
+// src/smd/kit/foundation/alternative.test.cpp
+// Moved in step R8 from src/smd/cl/foundation/alternative.test.cpp, which
+// was itself adapted by copy from compile-time-forth
+// (src/smd/forth/foundation/alternative.test.cpp).
 
 #include <smd/forth/foundation/alternative.hpp>
 #include <smd/forth/foundation/alternative.hpp> // test 2nd include OK
@@ -17,7 +17,7 @@
 
 using smd::forth::foundation::alt;
 using smd::forth::foundation::alternative;
-using smd::forth::foundation::alternative_typeclass;
+using smd::forth::foundation::derive_alternative;
 
 TEST_CASE("AlternativeTest - HeaderIsIdempotent") { REQUIRE(true); }
 
@@ -28,16 +28,20 @@ namespace {
 /// base's derived `combine` without pulling in a production type.
 template <class T>
 struct logged {
+    /// The carried type, which @c element_type_t reads to key the deep
+    /// object concepts.
+    using value_type = T;
+
     std::string log;
     T value;
 };
 
 /// Alternative @c Impl for @c logged<T>. Templated on @c T (rather than
-/// providing per-call member templates) because @c empty() must name
+/// providing per-call member templates) because @c zero() must name
 /// @c logged<T> in its return type with no argument to deduce it from.
 template <class T>
 struct logged_alternative_impl_t {
-    constexpr auto empty(this auto &&) -> logged<T> {
+    constexpr auto zero(this auto &&) -> logged<T> {
         return logged<T>{"", T{}};
     }
 
@@ -48,22 +52,22 @@ struct logged_alternative_impl_t {
 };
 
 template <class T>
-struct logged_alternative_map : alternative<logged_alternative_impl_t<T>> {
+struct logged_alternative_map
+    : derive_alternative<logged_alternative_impl_t<T>> {
     using logged_alternative_impl_t<T>::alt;
-    using logged_alternative_impl_t<T>::empty;
+    using logged_alternative_impl_t<T>::zero;
 };
 
 } // namespace
 
 namespace smd::forth::foundation {
 template <class T>
-inline constexpr auto alternative_typeclass<logged<T>> =
-    logged_alternative_map<T>{};
+inline constexpr auto alternative<logged<T>> = logged_alternative_map<T>{};
 }
 
 TEST_CASE("AlternativeTest - CrtpEmpty") {
     logged_alternative_map<int> m;
-    auto w = m.empty();
+    auto w = m.zero();
     CHECK(w.log.empty());
     CHECK(w.value == 0);
 }
@@ -87,11 +91,11 @@ TEST_CASE("AlternativeTest - CrtpCombine") {
 }
 
 TEST_CASE("AlternativeTest - TypeclassLookup") {
-    const auto &tc = alternative_typeclass<logged<int>>;
+    const auto &tc = alternative<logged<int>>;
     static_assert(
         !std::is_same_v<std::remove_cvref_t<decltype(tc)>, std::false_type>);
 
-    auto w = tc.empty();
+    auto w = tc.zero();
     CHECK(w.log.empty());
     CHECK(w.value == 0);
 }
@@ -103,3 +107,14 @@ TEST_CASE("AlternativeTest - AltCpo") {
     CHECK(result.log == "a:b:");
     CHECK(result.value == 2);
 }
+
+// --- The two concepts. ----------------------------------------------------
+
+static_assert(smd::forth::foundation::alternative_impl<
+              logged_alternative_impl_t<int>, logged<int>>);
+static_assert(smd::forth::foundation::alternative_object<
+              logged_alternative_map<int>, logged<int>>);
+
+// The Impl has zero and alt and no derived combine.
+static_assert(!smd::forth::foundation::alternative_object<
+              logged_alternative_impl_t<int>, logged<int>>);

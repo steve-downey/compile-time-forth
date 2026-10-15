@@ -32,6 +32,7 @@ if(FORTH_ENABLE_TESTING)
             lower_catch_native.test.cpp
             lower_defining.test.cpp
             lower_exit.test.cpp
+            lower_foreign.test.cpp
             lower_fuel.test.cpp
             lower_if.test.cpp
             lower_leave.test.cpp

@@ -9,11 +9,11 @@
 // parser_typeclass<T> lookup variable, entirely separate from
 // smd::smdscheme::foundation's functor/applicative/alternative machinery.
 // This project instead derives the parser typeclass-object directly from
-// smd::forth::foundation::{functor,applicative,alternative}, and registers
-// parser<F> against foundation's own functor_typeclass/
-// applicative_typeclass/alternative_typeclass variables, so
+// smd::forth::foundation::{derive_functor,derive_applicative,
+// derive_alternative}, and registers parser<F> against foundation's own
+// functor/applicative/alternative lookup variables, so
 // foundation::fmap/foundation::invoke/foundation::alt dispatch to parsers
-// through the same customization points every other registered type uses.
+// through the same operation objects every other registered type uses.
 #ifndef SRC_SMD_FORTH_PARSER_PARSER_OPS_HPP
 #define SRC_SMD_FORTH_PARSER_PARSER_OPS_HPP
 
@@ -21,8 +21,12 @@
 #include <smd/forth/foundation/applicative.hpp>
 #include <smd/forth/foundation/functor.hpp>
 #include <smd/forth/foundation/parse_error.hpp>
+#include <smd/forth/foundation/typeclass_base.hpp>
 #include <smd/forth/parser/alt.hpp>
 #include <smd/forth/parser/parser.hpp>
+
+#include <type_traits>
+#include <utility>
 
 namespace smd::forth::parser {
 
@@ -44,10 +48,10 @@ struct parser_functor_impl {
 /// -derived).
 ///
 /// This is Layer 1 of the typeclass-object pattern for parsers, feeding
-/// @ref smd::forth::foundation::applicative "foundation::applicative<Impl>"
-/// (Layer 2), which derives @c invoke/@c lift_a2/@c ap/@c discard_first/
-/// @c discard_second from these two primitives via the
-/// terminating-partial-application technique.
+/// @ref smd::forth::foundation::derive_applicative
+/// "foundation::derive_applicative<Impl>" (Layer 2), which derives
+/// @c invoke/@c lift_a2/@c ap/@c discard_first/@c discard_second from these
+/// two primitives via the terminating-partial-application technique.
 struct parser_applicative_impl {
     /// Succeeds unconditionally, yielding @p value and consuming no input.
     template <class T>
@@ -65,11 +69,13 @@ struct parser_applicative_impl {
 };
 
 /// Alternative primitive for parsers: @c alt, plus a per-value-type
-/// @c empty.
+/// @c zero.
 ///
-/// @c foundation::alternative<Impl> requires both @c alt and @c empty (the
-/// Scheme reference's local parser typeclass provided only @c alt; see
-/// DIV-0003).
+/// @c foundation::derive_alternative<Impl> names @c zero and @c alt as its
+/// basis (the Scheme reference's local parser typeclass provided only
+/// @c alt; see DIV-0003). The identity is spelled @c zero, not @c empty:
+/// in the kit @c empty is Foldable's predicate, and one namespace holds
+/// the whole typeclass family.
 struct parser_alternative_impl {
     /// Tries @p pa; if it fails without consuming input, tries @p pb.
     template <class PA, class PB>
@@ -82,14 +88,15 @@ struct parser_alternative_impl {
     ///
     /// @c parser<F> is a family of types parameterized by the wrapped
     /// callable, not one concrete container type, so — unlike a concrete
-    /// container's @c empty() — this member cannot be reached through
-    /// @ref smd::forth::foundation::empty "foundation::empty_fn" with zero
-    /// explicit template arguments: that customization point's calling
-    /// convention (@c tc_type{}.empty(), no arguments) has nothing to
-    /// deduce @p T from. Call
-    /// @code parser_v.template empty<T>() @endcode directly instead.
+    /// container's nullary @c zero() — this member cannot be reached
+    /// through @ref smd::forth::foundation::zero "foundation::zero_fn":
+    /// that operation object's calling convention (@c TC.zero(), no
+    /// arguments) has nothing to deduce @p T from, and for the same reason
+    /// this Impl does not satisfy @c foundation::alternative_impl, whose
+    /// basis probe is the nullary @c impl.zero(). Call
+    /// @code parser_v.template zero<T>() @endcode directly instead.
     template <class T>
-    [[nodiscard]] constexpr auto empty(this auto &&) {
+    [[nodiscard]] constexpr auto zero(this auto &&) {
         return parser{[](cursor cur) -> parse_result<T> {
             return foundation::parse_error{cur.position(), "empty alternative"};
         }};
@@ -97,20 +104,29 @@ struct parser_alternative_impl {
 };
 
 /// Combined parser operations object: Layer 2, derived from
-/// @c foundation::functor, @c foundation::applicative, and
-/// @c foundation::alternative over the Layer 1 @c Impl types above.
+/// @c foundation::derive_functor, @c foundation::derive_applicative, and
+/// @c foundation::derive_alternative over the Layer 1 @c Impl types above.
 ///
 /// This is the "Map" in the typeclass-object pattern. Public inheritance
 /// from all three foundation CRTP bases exposes their full derived
 /// surfaces directly: @c fmap/@c replace, @c pure/@c apply/@c invoke/
 /// @c lift_a2/@c ap/@c discard_first/@c discard_second, and
-/// @c alt/@c combine/@c empty. The repetition and whitespace combinators
-/// (@c many, @c some, @c optional, @c lexeme) have no foundation
-/// counterpart and are added directly, mirroring @c alt.hpp's free
-/// functions.
-struct parser_ops : foundation::functor<parser_functor_impl>,
-                    foundation::applicative<parser_applicative_impl>,
-                    foundation::alternative<parser_alternative_impl> {
+/// @c alt/@c combine/@c zero. The using-declarations re-expose each
+/// Impl's own primitives at this level, the way the kit's own instance
+/// maps do (@c result_functor_map and friends); the own-member rule
+/// forbids them in a base, not in the map that closes the chain. The
+/// repetition and whitespace combinators (@c many, @c some, @c optional,
+/// @c lexeme) have no foundation counterpart and are added directly,
+/// mirroring @c alt.hpp's free functions.
+struct parser_ops : foundation::derive_functor<parser_functor_impl>,
+                    foundation::derive_applicative<parser_applicative_impl>,
+                    foundation::derive_alternative<parser_alternative_impl> {
+    using parser_alternative_impl::alt;
+    using parser_alternative_impl::zero;
+    using parser_applicative_impl::apply;
+    using parser_applicative_impl::pure;
+    using parser_functor_impl::fmap;
+
     /// Applies @p p zero or more times, collecting up to @c Capacity
     /// results.
     template <int Capacity, class P>
@@ -146,22 +162,35 @@ inline constexpr parser_ops parser_v{};
 
 namespace smd::forth::foundation {
 
+/// The element type of a @c parser<F> — the @c T of the @c parse_result<T>
+/// its callable returns — for the kit's @c element_type trait, which the
+/// @c *_impl and @c *_object concepts key on. @c parser<F> carries no
+/// @c value_type of its own: the datatype does not know it is a Functor,
+/// and the adaptation is where that knowledge lives.
+template <class F>
+struct element_type<::smd::forth::parser::parser<F>> {
+    using type =
+        decltype(std::declval<typename std::invoke_result_t<
+                     F const &, ::smd::forth::parser::cursor>::value_type>()
+                     .value);
+};
+
 /// Registers every @c parser<F> as having @ref smd::forth::parser::parser_ops
 /// Functor behavior.
 template <class F>
-inline constexpr auto functor_typeclass<::smd::forth::parser::parser<F>> =
+inline constexpr auto functor<::smd::forth::parser::parser<F>> =
     ::smd::forth::parser::parser_ops{};
 
 /// Registers every @c parser<F> as having @ref smd::forth::parser::parser_ops
 /// Applicative behavior.
 template <class F>
-inline constexpr auto applicative_typeclass<::smd::forth::parser::parser<F>> =
+inline constexpr auto applicative<::smd::forth::parser::parser<F>> =
     ::smd::forth::parser::parser_ops{};
 
 /// Registers every @c parser<F> as having @ref smd::forth::parser::parser_ops
 /// Alternative behavior.
 template <class F>
-inline constexpr auto alternative_typeclass<::smd::forth::parser::parser<F>> =
+inline constexpr auto alternative<::smd::forth::parser::parser<F>> =
     ::smd::forth::parser::parser_ops{};
 
 } // namespace smd::forth::foundation

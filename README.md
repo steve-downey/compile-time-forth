@@ -2,11 +2,11 @@
 
 [![OpenSSF Baseline](https://www.bestpractices.dev/projects/12577/baseline)](https://www.bestpractices.dev/projects/12577)
 
-This repo is my current set of best practices for C++ projects. It does evolve somewhat over time.
+`smd::forth` is a Forth-2012 text interpreter, implemented in C++26, that runs the same way at compile time (as a `constexpr` evaluation) and at ordinary runtime. `smd::forth::compiled_forth<"...">` takes a Forth program as a template argument, interprets it once during translation, and hands back a session image — code space, dictionary, and data space — as a trivially copyable literal a caller can re-run at runtime, inspect, or extend. A malformed program is a hard compile error, the same way a malformed C++ program is.
 
-This is a snapshot as of today, Sat Apr 11 05:26:37 PM BST 2026.
+This began, per the repo's history, as a trivial "best practices" example project — a library that returned a name, a test, and a hello-world example — and that scaffolding is still what the build tooling below was proven out on. It has since grown into the actual thing: a working Forth implementation with its own colon compiler, execution tokens, `CATCH`/`THROW`, a stack-effect lint, a sender/receiver (Execution26) backend as a second executor of the same compiled code, a foreign-function interface, and a Forth-2012 core-word conformance battery differentially tested against `gforth`.
 
-The code is trivial so that I can repurpose the framework quickly. A library that returns my name, a test that confirms that works, and an example hello `forth` that uses the library.
+Start with [`docs/compiler_architecture.org`](docs/compiler_architecture.org) for the living architecture document (every code sample transcluded from the real source tree by UUID anchor), [`docs/forth-limitations.md`](docs/forth-limitations.md) for what this project deliberately does not implement and every recorded divergence from Forth-2012, [`docs/forth-plan-2.md`](docs/forth-plan-2.md) for the governing step-by-step plan, and [`compile-time-forth.org`](compile-time-forth.org) (`make presentation`) for a slide-shaped tour of the same system. `docs/blog/` carries a build-log series, one post per step.
 
 The C++ src is all in the ./src directory, including the headers and tests. Take a look at [The Pitchfork Layout Spec](https://www.w3.org/publications/spec-generator/?type=bikeshed-spec&output=html&die-on=fatal&md-date=&url=https%3A%2F%2Fraw.githubusercontent.com%2Fvector-of-bool%2Fpitchfork%2Fdevelop%2Fdata%2Fspec.bs&file=) for some discussion about merged layouts. Short answer is that include directories are an install location, not a source location, but that the directory layouts must still be coherent. Tests are co-located because tests are important and the further away they are, the more they will be dropped.
 

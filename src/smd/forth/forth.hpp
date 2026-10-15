@@ -3,10 +3,12 @@
 #ifndef SRC_SMD_FORTH_FORTH_HPP
 #define SRC_SMD_FORTH_FORTH_HPP
 
+#include <smd/forth/foundation/result.hpp>
 #include <smd/forth/foundation/static_vector.hpp>
 #include <smd/forth/interpreter/prelude.hpp>
 #include <smd/forth/interpreter/session.hpp>
 #include <smd/forth/machine/cell.hpp>
+#include <smd/forth/machine/foreign.hpp>
 
 #include <algorithm>
 #include <cstddef>
@@ -229,6 +231,59 @@ inline constexpr auto compiled_forth =
             .value()};
 // 9affe4fc-3d72-4f41-8fd0-d2338f9ab603 end
 // 61611656-475a-405f-a35b-179c4d88f71e end
+
+// 2c6f9b41-8d35-4e7a-9b02-5f3d1a86c7e4
+/// Step F34 (docs/forth-plan-2.md), D18: the foreign-function counterpart of
+/// @ref compiled_forth.
+///
+/// Builds the same prelude-plus-`text` session @ref compiled_forth does, but
+/// over @p vocabulary -- a @ref machine::foreign_dictionary carrying both the
+/// word list and the C++ function pointers behind whatever
+/// @ref machine::foreign_word headers it holds -- so @p text may call foreign
+/// words by name, compile them into its own `:` definitions, and take their
+/// execution tokens with `'`/`[']` exactly as it may any built-in word.
+///
+/// This is a function rather than a variable template because @p vocabulary is
+/// a *value*, not a non-type template parameter: it holds function pointers,
+/// and this project has no reason to require them to be structural. The
+/// intended use is a namespace-scope `constexpr` initializer, which keeps
+/// @ref compiled_forth's own "a malformed program is a hard compile error"
+/// contract exactly: this returns a @ref foundation::result, and `.value()`
+/// on a failed one is not a core constant expression.
+///
+/// ```cpp
+/// namespace fm = forth::machine;
+/// constexpr auto vocab = fm::default_foreign_dictionary<>()
+///                            .with_foreign("GCD", &gcd_word,
+///                                          fm::declared_effect(2, 1))
+///                            .value();
+/// constexpr auto program =
+///     forth::compiled_forth_with("12 18 30 GCD GCD", vocab).value();
+/// ```
+///
+/// @tparam MaxForeign Deduced from @p vocabulary; every other capacity
+///                    matches @ref compiled_forth's own defaults.
+template <int MaxCode = 4096, int MaxWords = 256, int MaxData = 1024,
+          int MaxOut = 4096, int MaxName = 32, int MaxStack = 64,
+          int BuildDepth = 64, int BuildRDepth = 64, int MaxSourceLen = 8192,
+          int MaxForeign>
+[[nodiscard]] constexpr auto compiled_forth_with(
+    std::string_view text,
+    machine::foreign_dictionary<MaxWords, MaxName, MaxForeign, BuildDepth,
+                                BuildRDepth, MaxData, MaxOut> const &vocabulary,
+    int fuel = 100000)
+    -> foundation::result<
+        forth_program<MaxCode, MaxWords, MaxData, MaxOut, MaxName, MaxStack>> {
+    auto built = interpreter::build_session_with_prelude<
+        MaxCode, MaxWords, MaxData, MaxOut, MaxName, BuildDepth, BuildRDepth,
+        MaxStack, MaxSourceLen, MaxForeign>(text, fuel, &vocabulary);
+    if (!built.has_value()) {
+        return built.error();
+    }
+    return forth_program<MaxCode, MaxWords, MaxData, MaxOut, MaxName, MaxStack>{
+        built.value()};
+}
+// 2c6f9b41-8d35-4e7a-9b02-5f3d1a86c7e4 end
 
 } // namespace smd::forth
 

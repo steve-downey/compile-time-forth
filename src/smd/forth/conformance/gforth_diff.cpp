@@ -28,7 +28,10 @@ auto shell_single_quote_escape(std::string_view text) -> std::string {
 }
 
 /// Runs @p command via `popen` and returns everything it wrote to stdout,
-/// or @c std::nullopt if the process could not be started at all.
+/// or @c std::nullopt if the process could not be started or did not exit
+/// with status 0. The exit status matters: with gforth absent, `sh` itself
+/// still runs and prints "gforth: command not found", which `2>&1` would
+/// otherwise hand back as if it were gforth's own output.
 auto capture_stdout(std::string const &command) -> std::optional<std::string> {
     FILE *pipe = popen(command.c_str(), "r");
     if (pipe == nullptr) {
@@ -40,7 +43,9 @@ auto capture_stdout(std::string const &command) -> std::optional<std::string> {
     while ((read = std::fread(chunk.data(), 1, chunk.size(), pipe)) > 0) {
         output.append(chunk.data(), read);
     }
-    pclose(pipe);
+    if (pclose(pipe) != 0) {
+        return std::nullopt;
+    }
     return output;
 }
 

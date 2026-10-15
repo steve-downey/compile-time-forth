@@ -7,6 +7,7 @@
 #include <smd/forth/interpreter/interp.hpp>
 #include <smd/forth/machine/cell.hpp>
 #include <smd/forth/machine/dictionary.hpp>
+#include <smd/forth/machine/foreign.hpp>
 #include <smd/forth/machine/forth_state.hpp>
 #include <smd/forth/sender/lower.hpp>
 
@@ -83,19 +84,33 @@ template <int MaxDepth, int MaxRDepth, int MaxData, int MaxOut>
 /// source string) rather than participating in the returned comparison,
 /// since a compile-time failure is not itself part of what D14's own
 /// merge criterion is about.
+///
+/// Step F34 (docs/forth-plan-2.md) adds @p vocabulary: a @ref
+/// machine::foreign_dictionary whose word list replaces the default one and
+/// whose registry backs every foreign word in it, threaded identically into
+/// both executors -- which is exactly how this component's own FFI shard
+/// asserts D14 over a program that calls out to C++ (`nullptr`, the default,
+/// leaves every pre-F34 caller building the same foreign-free comparison it
+/// always did).
 template <int MaxDepth = 64, int MaxRDepth = 64, int MaxData = 1024,
           int MaxOut = 512, int MaxCode = 4096, int MaxWords = 256,
-          int MaxName = 32>
-[[nodiscard]] auto
-compile_and_run_both(std::string_view definitions, std::string_view word_name,
-                     std::initializer_list<machine::cell> args = {},
-                     int fuel = 100000)
-    -> dual_run_result<MaxDepth, MaxRDepth, MaxData, MaxOut> {
+          int MaxName = 32, int MaxForeign = 16>
+[[nodiscard]] auto compile_and_run_both(
+    std::string_view definitions, std::string_view word_name,
+    std::initializer_list<machine::cell> args = {}, int fuel = 100000,
+    machine::foreign_dictionary<MaxWords, MaxName, MaxForeign, MaxDepth,
+                                MaxRDepth, MaxData, MaxOut> const *vocabulary =
+        nullptr) -> dual_run_result<MaxDepth, MaxRDepth, MaxData, MaxOut> {
     machine::forth_state<MaxDepth, MaxRDepth, MaxData, MaxOut> defst{
         definitions};
-    auto dict = machine::default_dictionary<MaxWords, MaxName>();
+    auto dict = vocabulary == nullptr
+                    ? machine::default_dictionary<MaxWords, MaxName>()
+                    : vocabulary->words;
+    auto const *foreigns =
+        vocabulary == nullptr ? nullptr : &vocabulary->foreigns;
     interpreter::compile_buffer<MaxCode, MaxWords> buf;
-    auto compiled = interpreter::interpret(defst, dict, buf);
+    auto compiled =
+        interpreter::interpret(defst, dict, buf, fuel, fuel, foreigns);
     if (!compiled.has_value()) {
         return dual_run_result<MaxDepth, MaxRDepth, MaxData, MaxOut>{
             .vm_status = compiled.error(), .sender_status = compiled.error()};
@@ -125,9 +140,9 @@ compile_and_run_both(std::string_view definitions, std::string_view word_name,
     }
     int vm_fuel = fuel;
     result.vm_status = interpreter::call_word(buf, result.vm_state, entry_point,
-                                              vm_fuel, &dict);
+                                              vm_fuel, &dict, foreigns);
     result.sender_status = run_from_via_senders(
-        buf.program(), result.sender_state, entry_point, fuel, &dict);
+        buf.program(), result.sender_state, entry_point, fuel, &dict, foreigns);
     return result;
 }
 

@@ -187,6 +187,26 @@ the same cases the originals always did. What holds is narrower and still
 real --- the whole-body alias trick Part 16 found isn't specific to ~THEN~;
 it reaches every structural control word, one at a time.
 
+** [[file:post-24-nothing-downstream-notices.org][Part 24 — Nothing Downstream Notices]]
+
+A foreign word --- a plain C++ function taking the same machine state a
+primitive gets --- lands with a dictionary entry and an execution token like
+any other word, and not one existing mechanism needed an FFI-aware case to
+reach it. What did need designing: where the function pointer actually
+lives, since no dictionary entry can name its type; and a toolchain surprise
+where comparing a function's address to null turns out not to be a constant
+expression at all under this project's own sanitizer.
+
+** [[file:post-25-everything-i-didnt-build.org][Part 25 — Everything I Didn't Build]]
+
+The presentation file and the README both still described a project that
+stopped existing entries ago; a table of every kind of diagnostic this
+compiler raises, written to document what already worked, turns up one
+that didn't. What's left over is written down in one place: everything
+this Forth deliberately doesn't build, every place I built something other
+than the plan said, and what's still genuinely open rather than merely
+unfinished.
+
 * Table of Contents
 
 #+toc: headlines 1
