@@ -23,6 +23,7 @@ if(FORTH_ENABLE_TESTING)
         PRIVATE
             compilebuf.test.cpp
             control_flow_corpus.test.cpp
+            diagnostics.test.cpp
             effect_lint.test.cpp
             interp.test.cpp
             prelude.test.cpp

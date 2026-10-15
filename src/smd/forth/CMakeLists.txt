@@ -68,6 +68,58 @@ if(FORTH_ENABLE_TESTING)
         forth.negative_compile_syntax_error
         PROPERTIES WILL_FAIL TRUE
     )
+
+    # Step F36 (docs/forth-plan-2.md, consolidation): the same
+    # EXCLUDE_FROM_ALL-plus-WILL_FAIL-CTest pattern above, extended per this
+    # step's own merge criterion from a syntax failure to a declared-effect
+    # mismatch (F30's effect lint, D20) -- test_neg_effect_mismatch.cpp's
+    # own file comment carries the full record of why this program fails to
+    # compile.
+    add_executable(forth_test_neg_effect_mismatch EXCLUDE_FROM_ALL)
+    target_sources(
+        forth_test_neg_effect_mismatch
+        PRIVATE test_neg_effect_mismatch.cpp
+    )
+    target_link_libraries(
+        forth_test_neg_effect_mismatch
+        PRIVATE compile-time-forth.forth
+    )
+
+    add_test(
+        NAME forth.negative_compile_effect_mismatch
+        COMMAND
+            ${CMAKE_COMMAND} --build ${CMAKE_BINARY_DIR} --target
+            forth_test_neg_effect_mismatch --config $<CONFIG>
+    )
+    set_tests_properties(
+        forth.negative_compile_effect_mismatch
+        PROPERTIES WILL_FAIL TRUE
+    )
+
+    # Step F36, same pattern again, extended to a capacity overflow (a
+    # stack capacity pinned below what the program needs) --
+    # test_neg_capacity_overflow.cpp's own file comment carries the full
+    # record.
+    add_executable(forth_test_neg_capacity_overflow EXCLUDE_FROM_ALL)
+    target_sources(
+        forth_test_neg_capacity_overflow
+        PRIVATE test_neg_capacity_overflow.cpp
+    )
+    target_link_libraries(
+        forth_test_neg_capacity_overflow
+        PRIVATE compile-time-forth.forth
+    )
+
+    add_test(
+        NAME forth.negative_compile_capacity_overflow
+        COMMAND
+            ${CMAKE_COMMAND} --build ${CMAKE_BINARY_DIR} --target
+            forth_test_neg_capacity_overflow --config $<CONFIG>
+    )
+    set_tests_properties(
+        forth.negative_compile_capacity_overflow
+        PROPERTIES WILL_FAIL TRUE
+    )
 endif()
 
 add_subdirectory(conformance)

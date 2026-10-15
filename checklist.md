@@ -40,9 +40,9 @@
 - [x] Step F31: CATCH and THROW
 - [x] Step F32: conformance
 - [x] Step F33: sender backend
-- [ ] Step F34: foreign function interface
+- [x] Step F34: foreign function interface
 - [x] Step F35: bootstrap prelude (stretch)
-- [ ] Step F36: consolidation
+- [x] Step F36: consolidation
 
 ## Blog series (docs/blog/AGENTS.md — distinct Sonnet blog agent, one post per step)
 
@@ -64,5 +64,5 @@
 - [x] Blog: F32 conformance (Part 21)
 - [x] Blog: F33 sender backend (Part 22)
 - [x] Blog: F35 bootstrap prelude (Part 23)
-- [ ] Blog: F34 foreign function interface (Part 24)
-- [ ] Blog: F36 consolidation (Part 25)
+- [x] Blog: F34 foreign function interface (Part 24)
+- [x] Blog: F36 consolidation (Part 25)

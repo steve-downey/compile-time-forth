@@ -8,6 +8,7 @@
 #include <smd/forth/foundation/source_pos.hpp>
 #include <smd/forth/machine/cell.hpp>
 #include <smd/forth/machine/dictionary.hpp>
+#include <smd/forth/machine/foreign.hpp>
 #include <smd/forth/machine/forth_state.hpp>
 #include <smd/forth/machine/instruction.hpp>
 #include <smd/forth/parser/forth_chars.hpp>
@@ -273,6 +274,16 @@ create_here(dictionary<MaxWords, MaxName> &dict,
 /// stored past this call. Passing `nullptr` while running a program that
 /// does reach one of these two opcodes is diagnosed, not UB.
 ///
+/// @p foreign is step F34's own addition (D18), the exact same shape @p dict
+/// already is: a nullable, non-owning pointer to the @ref foreign_vocabulary
+/// (`machine/foreign.hpp`) that carries the actual `status (*)(forth_state &)`
+/// function pointers @ref op::foreign's own operand indexes into. Only @ref
+/// op::foreign consults it; passing `nullptr` while running a program that
+/// does reach that opcode is diagnosed, not UB. It is a second pointer rather
+/// than a field on @p dict because the function-pointer type is parameterized
+/// on @p state's own four capacities, which @ref dictionary does not know
+/// (DIV-0029).
+///
 /// @tparam MaxCode      @p program's instruction-array capacity.
 /// @tparam MaxWords     @p program's word-table capacity.
 /// @tparam StackDepth   @p state's data stack capacity.
@@ -284,6 +295,7 @@ create_here(dictionary<MaxWords, MaxName> &dict,
 /// @tparam MaxOut       @p state's output-buffer capacity.
 /// @tparam DictWords    @p dict's own entry capacity, if given.
 /// @tparam DictName     @p dict's own maximum name length, if given.
+/// @tparam MaxForeign   @p foreign's own registry capacity, if given.
 /// @param  program A successfully compiled program (@ref codegen), or any
 ///                  other @ref compiled_program whose @c code array @p entry
 ///                  indexes into.
@@ -296,13 +308,19 @@ create_here(dictionary<MaxWords, MaxName> &dict,
 /// @param  dict    The dictionary @ref op::create_word/@ref op::does_enter
 ///                  mutate, or `nullptr` if @p program is known not to reach
 ///                  either (every caller before step F28).
+/// @param  foreign The foreign vocabulary @ref op::foreign dispatches
+///                  through, or `nullptr` if @p program is known not to reach
+///                  that opcode (every caller before step F34).
 template <int MaxCode, int MaxWords, int StackDepth, int RStackDepth,
-          int MaxData, int MaxOut, int DictWords = 256, int DictName = 32>
+          int MaxData, int MaxOut, int DictWords = 256, int DictName = 32,
+          int MaxForeign = 16>
 constexpr auto
 run_from(compiled_program<MaxCode, MaxWords> const &program,
          forth_state<StackDepth, RStackDepth, MaxData, MaxOut> &state,
          int entry, int fuel = 100000,
-         dictionary<DictWords, DictName> *dict = nullptr) -> status {
+         dictionary<DictWords, DictName> *dict = nullptr,
+         foreign_vocabulary<MaxForeign, StackDepth, RStackDepth, MaxData,
+                            MaxOut> const *foreign = nullptr) -> status {
     int ip = entry;
 
     for (;;) {
@@ -647,6 +665,48 @@ run_from(compiled_program<MaxCode, MaxWords> const &program,
             break;
         }
             // c4a7e9d2-3f6b-4e1a-9c8d-5b2f7a4e6c1d end
+        // 6b2e8d34-9a71-4c05-8f6b-3d17c9e04a2f
+        case op::foreign: {
+            // The foreign function interface (step F34, D18): call the
+            // registered C++ function whose index this instruction carries,
+            // against the very same @p state every primitive already gets --
+            // no marshalling, no separate calling convention, and the same
+            // @ref status channel, so a foreign word's own failure is
+            // diagnosed and (below) routed through the identical
+            // machine-fault/`ABORT"` mapping `op::prim` uses. That last part
+            // is what makes `CATCH` work over a foreign word for free:
+            // whatever a foreign word diagnoses is caught exactly like a
+            // primitive's own diagnosis would be.
+            if (foreign == nullptr) {
+                return foundation::parse_error{
+                    foundation::source_pos{},
+                    "foreign word: no vocabulary available to this VM run"};
+            }
+            auto r = foreign->call(static_cast<int>(in.operand), state);
+            if (!r.has_value()) {
+                if (is_abort_quote_condition(r.error())) {
+                    auto th = perform_throw(state, cell{-2}, ip);
+                    if (!th.has_value()) {
+                        return th;
+                    }
+                    break;
+                }
+                if (state.handler_depth() >= 0) {
+                    auto mapped = machine_fault_throw_code(r.error());
+                    if (mapped.has_value()) {
+                        auto th = perform_throw(state, mapped.value(), ip);
+                        if (!th.has_value()) {
+                            return th;
+                        }
+                        break;
+                    }
+                }
+                return r;
+            }
+            ++ip;
+            break;
+        }
+            // 6b2e8d34-9a71-4c05-8f6b-3d17c9e04a2f end
         }
     }
 }
@@ -673,11 +733,18 @@ run_from(compiled_program<MaxCode, MaxWords> const &program,
 /// @param  program A successfully compiled program (@ref codegen).
 /// @param  state   The machine state to run against; mutated in place.
 /// @param  fuel    The execution step budget; see @ref run_from.
+/// @param  dict    Forwarded to @ref run_from unchanged.
+/// @param  foreign Forwarded to @ref run_from unchanged (step F34).
 template <int MaxCode, int MaxWords, int StackDepth, int RStackDepth,
-          int MaxData, int MaxOut>
+          int MaxData, int MaxOut, int DictWords = 256, int DictName = 32,
+          int MaxForeign = 16>
 constexpr auto run(compiled_program<MaxCode, MaxWords> const &program,
                    forth_state<StackDepth, RStackDepth, MaxData, MaxOut> &state,
-                   int fuel = 100000) -> status {
+                   int fuel = 100000,
+                   dictionary<DictWords, DictName> *dict = nullptr,
+                   foreign_vocabulary<MaxForeign, StackDepth, RStackDepth,
+                                      MaxData, MaxOut> const *foreign = nullptr)
+    -> status {
     // f1514ad1-894c-4812-9ccc-2bdecd54a986
     // F16: seed state's own data space with program.data_space_size -- the
     // high-water mark the source compiled_unit's data space reached during
@@ -693,7 +760,7 @@ constexpr auto run(compiled_program<MaxCode, MaxWords> const &program,
     }
     // f1514ad1-894c-4812-9ccc-2bdecd54a986 end
 
-    return run_from(program, state, program.program_entry, fuel);
+    return run_from(program, state, program.program_entry, fuel, dict, foreign);
 }
 // 3b356d6c-c4c1-4676-b16a-48e975b5d46b end
 

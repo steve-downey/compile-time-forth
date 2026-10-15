@@ -1,16 +1,21 @@
-// src/smd/forth/foundation/arena_box.hpp                           -*-C++-*-
+// src/smd/forth/foundation/arena_box.hpp                            -*-C++-*-
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
-// Adapted by copy from compile-time-scheme (smd::smdscheme):
-// src/smd/smdscheme/foundation/arena_box.hpp
+// Adapted by copy from compile-time-scheme (smd::kit::foundation):
+// src/smd/kit/foundation/arena_box.hpp
+// Extracted in step R8 from smd::cl::foundation::arena_box, itself the
+// reviewed union of two independently-drifted copies:
+// src/smd/smdscheme/foundation/arena_box.hpp (compile-time-scheme, at
+// iteration/smdscheme-final) and src/smd/forth/foundation/arena_box.hpp
+// (compile-time-forth, which contributed tree_arena's default capacity).
 #ifndef SRC_SMD_FORTH_FOUNDATION_ARENA_BOX_HPP
 #define SRC_SMD_FORTH_FOUNDATION_ARENA_BOX_HPP
 
 #include <smd/forth/foundation/static_vector.hpp>
+
 #include <utility>
 
 namespace smd::forth::foundation {
 
-// 20fac680-d2cc-4139-875d-50b3953e12a4
 /// A typed integer handle into a @ref tree_arena.
 ///
 /// Stores the index of a node rather than a pointer, keeping the tree
@@ -31,9 +36,7 @@ struct arena_box {
     /// Returns false when this is the null handle.
     constexpr explicit operator bool() const { return id_ != -1; }
 };
-// 20fac680-d2cc-4139-875d-50b3953e12a4 end
 
-// 90752db7-62a8-493a-bf54-aa4ee7b30933
 /// A bump-allocator arena of @p T with fixed capacity, usable in constexpr.
 ///
 /// Nodes are appended in order; allocation never moves existing nodes.
@@ -70,7 +73,6 @@ struct tree_arena {
         return data[b.id_];
     }
 };
-// 90752db7-62a8-493a-bf54-aa4ee7b30933 end
 
 /// Constructs a @p T in-place in @p arena and returns a handle to it.
 ///

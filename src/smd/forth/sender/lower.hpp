@@ -9,6 +9,7 @@
 #include <smd/forth/interpreter/effect_lint.hpp>
 #include <smd/forth/machine/cell.hpp>
 #include <smd/forth/machine/dictionary.hpp>
+#include <smd/forth/machine/foreign.hpp>
 #include <smd/forth/machine/forth_state.hpp>
 #include <smd/forth/machine/instruction.hpp>
 #include <smd/forth/machine/vm.hpp>
@@ -402,7 +403,7 @@ class receiver_adapter final : public abstract_receiver<Value, Error> {
 
 template <int MaxCode, int MaxWords, int MaxDepth, int MaxRDepth, int MaxData,
           int MaxOut, int MaxBlocks = 128, int DictWords = 256,
-          int DictName = 32>
+          int DictName = 32, int MaxForeign = 16>
 class word_sender;
 
 /// Runs @p program's own instruction range `[entry, word_body_end(entry))`
@@ -444,12 +445,14 @@ class word_sender;
 ///   including why the more direct fix (also pushing a real 3-cell frame
 ///   from the native `CATCH` case) does not work.
 template <int MaxCode, int MaxWords, int MaxDepth, int MaxRDepth, int MaxData,
-          int MaxOut, int DictWords, int DictName>
+          int MaxOut, int DictWords, int DictName, int MaxForeign>
 [[nodiscard]] auto run_word_via_vm(
     machine::compiled_program<MaxCode, MaxWords> const &program,
     machine::forth_state<MaxDepth, MaxRDepth, MaxData, MaxOut> &state,
-    int entry, machine::dictionary<DictWords, DictName> *dict, int &fuel)
-    -> machine::status {
+    int entry, machine::dictionary<DictWords, DictName> *dict,
+    machine::foreign_vocabulary<MaxForeign, MaxDepth, MaxRDepth, MaxData,
+                                MaxOut> const *foreign,
+    int &fuel) -> machine::status {
     auto push_halt_pad = state.returns().push(machine::cell{0});
     if (!push_halt_pad.has_value()) {
         return push_halt_pad;
@@ -457,7 +460,7 @@ template <int MaxCode, int MaxWords, int MaxDepth, int MaxRDepth, int MaxData,
 
     int const outer_handler = state.handler_depth();
     state.set_handler_depth(-1);
-    auto r = machine::run_from(program, state, entry, fuel, dict);
+    auto r = machine::run_from(program, state, entry, fuel, dict, foreign);
     state.set_handler_depth(outer_handler);
 
     // machine::run_from's own fuel parameter is by value (it has no
@@ -490,7 +493,8 @@ template <int MaxCode, int MaxWords, int MaxDepth, int MaxRDepth, int MaxData,
 /// with (n, state)"); or stopped, when @p fuel is exhausted (D22's own stop-
 /// channel demonstration).
 template <int MaxCode, int MaxWords, int MaxDepth, int MaxRDepth, int MaxData,
-          int MaxOut, int MaxBlocks, int DictWords, int DictName>
+          int MaxOut, int MaxBlocks, int DictWords, int DictName,
+          int MaxForeign>
 class word_sender {
   public:
     using state_type =
@@ -505,12 +509,22 @@ class word_sender {
         return {};
     }
 
+    /// The foreign vocabulary type @p foreign names -- step F34's own
+    /// addition, carried through this lowering exactly as @p dict already is
+    /// (a nullable, non-owning pointer, propagated verbatim into every
+    /// recursive `call`/`EXECUTE`/`CATCH` level and into
+    /// @ref run_word_via_vm's own fallback).
+    using foreign_vocabulary_type =
+        machine::foreign_vocabulary<MaxForeign, MaxDepth, MaxRDepth, MaxData,
+                                    MaxOut>;
+
     constexpr word_sender(
         machine::compiled_program<MaxCode, MaxWords> const *program,
         state_type *state, int entry,
-        machine::dictionary<DictWords, DictName> *dict, int *fuel)
+        machine::dictionary<DictWords, DictName> *dict,
+        foreign_vocabulary_type const *foreign, int *fuel)
         : program_(program), state_(state), entry_(entry), dict_(dict),
-          fuel_(fuel) {}
+          foreign_(foreign), fuel_(fuel) {}
 
     // See @ref abstract_receiver's own doc comment: op_state's only job is
     // to adapt whatever concrete Receiver connected to a type-erased
@@ -545,15 +559,17 @@ class word_sender {
     state_type *state_;
     int entry_;
     machine::dictionary<DictWords, DictName> *dict_;
+    foreign_vocabulary_type const *foreign_;
     int *fuel_;
 };
 
 template <int MaxCode, int MaxWords, int MaxDepth, int MaxRDepth, int MaxData,
-          int MaxOut, int MaxBlocks, int DictWords, int DictName>
-auto word_sender<
-    MaxCode, MaxWords, MaxDepth, MaxRDepth, MaxData, MaxOut, MaxBlocks,
-    DictWords, DictName>::run(abstract_receiver<block_outcome, error_type> &rec)
-    -> void {
+          int MaxOut, int MaxBlocks, int DictWords, int DictName,
+          int MaxForeign>
+auto word_sender<MaxCode, MaxWords, MaxDepth, MaxRDepth, MaxData, MaxOut,
+                 MaxBlocks, DictWords, DictName,
+                 MaxForeign>::run(abstract_receiver<block_outcome, error_type>
+                                      &rec) -> void {
     using machine::instr;
     using machine::op;
     auto const &program = *program_;
@@ -568,7 +584,8 @@ auto word_sender<
     // Falls back to `vm.hpp`'s own run_from for this word's *whole* body --
     // never a partial lowering -- wrapped as one value-only step.
     if (word_uses_return_stack_data(program, entry_, word_end)) {
-        auto status = run_word_via_vm(program, state, entry_, dict_, *fuel_);
+        auto status =
+            run_word_via_vm(program, state, entry_, dict_, foreign_, *fuel_);
         if (!status.has_value()) {
             auto const &diag = status.error();
             // run_word_via_vm's own doc comment: an escaping THROW comes
@@ -749,7 +766,8 @@ auto word_sender<
                     // stop unconditionally at halt regardless of call
                     // depth; D14 requires the same final behavior
                     // here).
-                    word_sender callee{program_, state_, target, dict_, fuel_};
+                    word_sender callee{program_, state_,   target,
+                                       dict_,    foreign_, fuel_};
                     auto out =
                         drive<block_outcome, error_type>(std::move(callee));
                     if (out.stopped) {
@@ -767,6 +785,67 @@ auto word_sender<
                     }
                     break;
                 }
+                // c8d3e0a7-1f52-4b96-a4de-70b6f9c25a13
+                case op::foreign: {
+                    // Step F34 (docs/forth-plan-2.md), D18: a foreign word
+                    // lowers natively, as one ordinary straight-line step --
+                    // it is a call out to C++ against the same state every
+                    // primitive already mutates, with no control transfer of
+                    // its own, so there is nothing here for the
+                    // refunctionalization to get wrong. Its failure channel
+                    // is mapped exactly the way `op::prim`'s is just above,
+                    // so an enclosing `CATCH` -- native or fallback -- treats
+                    // a foreign word's own diagnosis identically to a
+                    // primitive's.
+                    //
+                    // The one obligation this places on a foreign word: it
+                    // must not use the return stack as data (`>R`/`R@`-style
+                    // manipulation of `state.returns()` from C++). D24's own
+                    // boundary trigger, `word_uses_return_stack_data`, scans
+                    // *instructions*, and a foreign call is opaque to it, so
+                    // a word that broke that rule would be lowered natively
+                    // and silently disagree with the VM. See DIV-0029.
+                    if (foreign_ == nullptr) {
+                        set_error(
+                            std::move(rec2),
+                            error_type{.numbered = false,
+                                       .diag =
+                                           foundation::parse_error{
+                                               foundation::source_pos{},
+                                               "foreign word: no vocabulary "
+                                               "available to this run"},
+                                       .state = &state});
+                        return;
+                    }
+                    auto r =
+                        foreign_->call(static_cast<int>(in.operand), state);
+                    if (!r.has_value()) {
+                        if (machine::is_abort_quote_condition(r.error())) {
+                            set_error(std::move(rec2),
+                                      error_type{.numbered = true,
+                                                 .n = machine::cell{-2},
+                                                 .state = &state});
+                            return;
+                        }
+                        if (state.handler_depth() >= 0) {
+                            auto mapped =
+                                machine::machine_fault_throw_code(r.error());
+                            if (mapped.has_value()) {
+                                set_error(std::move(rec2),
+                                          error_type{.numbered = true,
+                                                     .n = mapped.value(),
+                                                     .state = &state});
+                                return;
+                            }
+                        }
+                        set_error(std::move(rec2), error_type{.numbered = false,
+                                                              .diag = r.error(),
+                                                              .state = &state});
+                        return;
+                    }
+                    break;
+                }
+                    // c8d3e0a7-1f52-4b96-a4de-70b6f9c25a13 end
                 case op::create_word: {
                     if (dict_ == nullptr) {
                         set_error(
@@ -901,9 +980,9 @@ auto word_sender<
                     // which the return-stack depth already is.
                     state.set_handler_depth(saved_return_depth);
 
-                    word_sender callee{program_, state_,
-                                       static_cast<int>(xt.value()), dict_,
-                                       fuel_};
+                    word_sender callee{
+                        program_, state_,   static_cast<int>(xt.value()),
+                        dict_,    foreign_, fuel_};
                     auto adapted = upon_error(
                         then(std::move(callee),
                              [](block_outcome) noexcept -> machine::cell {
@@ -1211,20 +1290,22 @@ auto word_sender<
 /// evaluation (the plan's own "never sync_wait inside evaluation"), since
 /// nothing composes further with whatever this function returns.
 template <int MaxBlocks = 128, int DictWords = 256, int DictName = 32,
-          int MaxCode, int MaxWords, int MaxDepth, int MaxRDepth, int MaxData,
-          int MaxOut>
+          int MaxForeign = 16, int MaxCode, int MaxWords, int MaxDepth,
+          int MaxRDepth, int MaxData, int MaxOut>
 [[nodiscard]] auto run_from_via_senders(
     machine::compiled_program<MaxCode, MaxWords> const &program,
     machine::forth_state<MaxDepth, MaxRDepth, MaxData, MaxOut> &state,
     int entry, int fuel = 100000,
-    machine::dictionary<DictWords, DictName> *dict = nullptr)
+    machine::dictionary<DictWords, DictName> *dict = nullptr,
+    machine::foreign_vocabulary<MaxForeign, MaxDepth, MaxRDepth, MaxData,
+                                MaxOut> const *foreign = nullptr)
     -> machine::status {
     using word_sender_type =
         word_sender<MaxCode, MaxWords, MaxDepth, MaxRDepth, MaxData, MaxOut,
-                    MaxBlocks, DictWords, DictName>;
+                    MaxBlocks, DictWords, DictName, MaxForeign>;
     using error_type = typename word_sender_type::error_type;
 
-    word_sender_type top{&program, &state, entry, dict, &fuel};
+    word_sender_type top{&program, &state, entry, dict, foreign, &fuel};
     auto value_adapted =
         then(std::move(top), [](block_outcome) noexcept -> machine::status {
             return std::monostate{};
@@ -1258,18 +1339,21 @@ template <int MaxBlocks = 128, int DictWords = 256, int DictName = 32,
 /// `vm.hpp`'s own `run` does (F16, D10) -- the sender-backend counterpart to
 /// `machine::run`, for symmetry.
 template <int MaxBlocks = 128, int DictWords = 256, int DictName = 32,
-          int MaxCode, int MaxWords, int MaxDepth, int MaxRDepth, int MaxData,
-          int MaxOut>
+          int MaxForeign = 16, int MaxCode, int MaxWords, int MaxDepth,
+          int MaxRDepth, int MaxData, int MaxOut>
 [[nodiscard]] auto run_via_senders(
     machine::compiled_program<MaxCode, MaxWords> const &program,
     machine::forth_state<MaxDepth, MaxRDepth, MaxData, MaxOut> &state,
-    int fuel = 100000) -> machine::status {
+    int fuel = 100000, machine::dictionary<DictWords, DictName> *dict = nullptr,
+    machine::foreign_vocabulary<MaxForeign, MaxDepth, MaxRDepth, MaxData,
+                                MaxOut> const *foreign = nullptr)
+    -> machine::status {
     auto data_init = state.data_space().allot(program.data_space_size);
     if (!data_init.has_value()) {
         return data_init.error();
     }
-    return run_from_via_senders<MaxBlocks, DictWords, DictName>(
-        program, state, program.program_entry, fuel);
+    return run_from_via_senders<MaxBlocks, DictWords, DictName, MaxForeign>(
+        program, state, program.program_entry, fuel, dict, foreign);
 }
 
 } // namespace smd::forth::sender

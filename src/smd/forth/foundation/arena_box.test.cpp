@@ -1,7 +1,10 @@
-// src/smd/forth/foundation/arena_box.test.cpp                      -*-C++-*-
+// src/smd/forth/foundation/arena_box.test.cpp                       -*-C++-*-
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
-// Adapted by copy from compile-time-scheme (smd::smdscheme):
-// src/smd/smdscheme/foundation/arena_box.test.cpp
+// Adapted by copy from compile-time-scheme (smd::kit::foundation):
+// src/smd/kit/foundation/arena_box.test.cpp
+// Moved in step R8 from src/smd/cl/foundation/arena_box.test.cpp, which was
+// itself adapted by copy from compile-time-forth
+// (src/smd/forth/foundation/arena_box.test.cpp).
 
 #include <smd/forth/foundation/arena_box.hpp>
 #include <smd/forth/foundation/arena_box.hpp> // test 2nd include OK

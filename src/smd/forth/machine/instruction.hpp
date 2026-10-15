@@ -28,7 +28,8 @@ namespace smd::forth::machine {
 /// (`I`/`J`), `leave`, `unloop` (step F17's own `DO ... LOOP` machinery);
 /// `execute`, `create_word`, `does_enter` (step F28, D18/D10); and
 /// `catch_mark`/`throw_op` (step F31, D11 -- `CATCH`/`THROW`; see `vm.hpp`'s
-/// own `perform_throw` for the design). `run_from`'s own fetch-execute loop
+/// own `perform_throw` for the design); and `foreign` (step F34, D18 -- the
+/// foreign function interface). `run_from`'s own fetch-execute loop
 /// still diagnoses any opcode it cannot dispatch on, rather than treating
 /// one as undefined behavior (D7), but that path is defensive only:
 /// `interp.hpp`'s own `compile_entry`/`apply_control_word` are the sole
@@ -110,6 +111,21 @@ enum class op : std::uint8_t {
                     ///< uncaught `THROW` carrying @c n if none is active;
                     ///< @c n `== 0` is a no-op (Forth-2012).
     halt,           ///< Stop the VM's fetch-execute loop successfully.
+    foreign,        ///< Call the foreign function whose registry index is
+                    ///< @ref instr::operand (step F34, D18) -- a @ref
+                    ///< foreign_vocabulary handle (`machine/foreign.hpp`),
+                    ///< not a code-space address: `vm.hpp`'s own `run_from`
+                    ///< looks the function pointer up and calls it against
+                    ///< the same @ref forth_state every primitive already
+                    ///< gets, then falls through to the next instruction
+                    ///< exactly like @ref prim does. Diagnoses if `run_from`
+                    ///< was not given a vocabulary, or if the index is out of
+                    ///< range (D7). `interp.hpp`'s own `compile_entry` emits
+                    ///< it for a @ref foreign_word met while compiling, and
+                    ///< its `resolve_execution_token` emits it inside a
+                    ///< `ret`-terminated stub -- which is what gives a
+                    ///< foreign word a real execution token, usable through
+                    ///< `'`/`EXECUTE` like any other word (D18).
 };
 
 /// One flat instruction: an opcode plus a single immediate @ref cell

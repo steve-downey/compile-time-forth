@@ -11,6 +11,7 @@
 #include <smd/forth/interpreter/effect_lint.hpp>
 #include <smd/forth/machine/cell.hpp>
 #include <smd/forth/machine/dictionary.hpp>
+#include <smd/forth/machine/foreign.hpp>
 #include <smd/forth/machine/forth_state.hpp>
 #include <smd/forth/machine/instruction.hpp>
 #include <smd/forth/machine/vm.hpp>
@@ -321,9 +322,14 @@ struct compiling_context {
 /// install it, at *runtime*, once per invocation -- this is what lets a
 /// defining word like `: CONSTANT2 CREATE , DOES> @ ;` reach the dictionary
 /// from inside its own compiled body), and `DOES>` emits @ref machine::op::
-/// does_enter. Every other control word, and @ref machine::foreign_word (not
-/// compilable before step F19 either), both diagnose rather than emit
+/// does_enter. Every other control word diagnoses rather than emitting
 /// anything.
+///
+/// A @ref machine::foreign_word (step F34, D18) emits a single @ref
+/// machine::op::foreign carrying its own registry index -- exactly one
+/// instruction, the same shape a primitive gets, because a foreign word *is*
+/// a primitive as far as the VM is concerned: one call out to C++ against the
+/// live @ref machine::forth_state, then fall through.
 template <int MaxCode, int MaxBufWords, int MaxName>
 [[nodiscard]] constexpr auto
 compile_entry(machine::dictionary_entry<MaxName> const &entry,
@@ -382,6 +388,16 @@ compile_entry(machine::dictionary_entry<MaxName> const &entry,
         }
         return std::monostate{};
     }
+    // 4a9c2e71-5f38-46bd-9012-8e7a3c5b1d64
+    if (auto const *fw = std::get_if<machine::foreign_word>(&entry.binding)) {
+        auto r = buf.emit(machine::op::foreign,
+                          static_cast<machine::cell>(fw->index), pos);
+        if (!r.has_value()) {
+            return r.error();
+        }
+        return std::monostate{};
+    }
+    // 4a9c2e71-5f38-46bd-9012-8e7a3c5b1d64 end
     if (auto const *dw = std::get_if<machine::defer_word>(&entry.binding)) {
         auto r = buf.emit(machine::op::push,
                           static_cast<machine::cell>(dw->address), pos);
@@ -496,13 +512,21 @@ compile_entry(machine::dictionary_entry<MaxName> const &entry,
 /// costs one extra instruction in the (common) case where @p buf actually was
 /// at a safe append point; it is never wrong to pay it.
 ///
-/// Diagnoses if @p entry is a @ref machine::control_word, @ref
-/// machine::foreign_word, or @ref machine::defer_word: none has a stable
-/// code-space location an XT can usefully name yet (a control word's whole
-/// point is that it has no VM-representable form at all; a not-yet-`IS`sed
-/// deferred word's *target* does not exist yet either) -- a documented,
-/// narrower scope than full Forth-2012 `'`/`[']` (DIV-0016 records this and
-/// its own revisit condition).
+/// A @ref machine::foreign_word (step F34, D18) gets exactly the same
+/// treatment: a guarded, `ret`-terminated stub whose one body instruction is
+/// @ref machine::op::foreign. This is what makes the F34 merge criterion
+/// "callable via `'`/`EXECUTE` like any other word" true by construction --
+/// no case anywhere downstream knows a foreign xt from a primitive's own, and
+/// it closes half of DIV-0016's own remaining `'`/`[']` scope cut (see that
+/// record's F34 addendum).
+///
+/// Diagnoses if @p entry is a @ref machine::control_word or a @ref
+/// machine::defer_word: neither has a stable code-space location an XT can
+/// usefully name yet (a control word's whole point is that it has no
+/// VM-representable form at all; a not-yet-`IS`sed deferred word's *target*
+/// does not exist yet either) -- a documented, narrower scope than full
+/// Forth-2012 `'`/`[']` (DIV-0016 records this and its own revisit
+/// condition).
 template <int MaxCode, int MaxBufWords, int MaxName>
 [[nodiscard]] constexpr auto
 resolve_execution_token(machine::dictionary_entry<MaxName> const &entry,
@@ -556,6 +580,12 @@ resolve_execution_token(machine::dictionary_entry<MaxName> const &entry,
                            static_cast<cell>(machine::primitive::fetch), pos);
         if (!r2.has_value()) {
             return r2.error();
+        }
+    } else if (auto const *fw =
+                   std::get_if<machine::foreign_word>(&entry.binding)) {
+        auto r = buf.emit(op::foreign, static_cast<cell>(fw->index), pos);
+        if (!r.has_value()) {
+            return r.error();
         }
     } else {
         return foundation::parse_error{pos, "word has no execution token"};
@@ -682,14 +712,24 @@ resolve_execution_token(machine::dictionary_entry<MaxName> const &entry,
 /// one), so this is a structural fact about what these words *are*, not a
 /// scope cut header unification merely failed to close. See DIV-0015's own
 /// F28 addendum for the full resolution.
+///
+/// @p fvoc is step F34's own addition (D18): the foreign vocabulary every
+/// path here that actually *runs* code (`EXECUTE`, `CATCH`, `THROW`, `ABORT`)
+/// forwards to @ref call_word / @ref machine::run_from, so a foreign word
+/// reached through an execution token, or from inside a `CATCH`-protected
+/// region, dispatches exactly like one reached by name. `nullptr` (the
+/// default) is correct for every caller with no foreign words registered.
 template <int MaxDepth, int MaxRDepth, int MaxData, int MaxOut, int MaxWords,
-          int MaxCode, int MaxBufWords, int MaxName>
+          int MaxCode, int MaxBufWords, int MaxName, int MaxForeign = 16>
 [[nodiscard]] constexpr auto apply_control_word(
     machine::control_builtin which,
     machine::forth_state<MaxDepth, MaxRDepth, MaxData, MaxOut> &st,
     machine::dictionary<MaxWords, MaxName> &dict,
     compile_buffer<MaxCode, MaxBufWords> &buf, compiling_context<MaxName> &cctx,
-    foundation::source_pos pos, int vm_fuel = 100000) -> machine::status {
+    foundation::source_pos pos, int vm_fuel = 100000,
+    machine::foreign_vocabulary<MaxForeign, MaxDepth, MaxRDepth, MaxData,
+                                MaxOut> const *fvoc = nullptr)
+    -> machine::status {
     using machine::cell;
     using machine::control_builtin;
     using machine::op;
@@ -1062,7 +1102,8 @@ template <int MaxDepth, int MaxRDepth, int MaxData, int MaxOut, int MaxWords,
         if (!xt.has_value()) {
             return xt.error();
         }
-        return call_word(buf, st, static_cast<int>(xt.value()), vm_fuel, &dict);
+        return call_word(buf, st, static_cast<int>(xt.value()), vm_fuel, &dict,
+                         fvoc);
     }
     case control_builtin::create_: {
         // `CREATE` (step F28, D10/D18): interpreting-time behavior is
@@ -1473,7 +1514,8 @@ template <int MaxDepth, int MaxRDepth, int MaxData, int MaxOut, int MaxWords,
         if (!p.has_value()) {
             return p;
         }
-        return machine::run_from(buf.program(), st, mark_idx, vm_fuel, &dict);
+        return machine::run_from(buf.program(), st, mark_idx, vm_fuel, &dict,
+                                 fvoc);
     }
     case control_builtin::throw_: {
         // `THROW` (step F31, D11): n is already on @p st's own data stack.
@@ -1504,7 +1546,7 @@ template <int MaxDepth, int MaxRDepth, int MaxData, int MaxOut, int MaxWords,
                 return p;
             }
             return machine::run_from(buf.program(), st, throw_idx, vm_fuel,
-                                     &dict);
+                                     &dict, fvoc);
         };
         return run_throw();
     }
@@ -1540,7 +1582,8 @@ template <int MaxDepth, int MaxRDepth, int MaxData, int MaxOut, int MaxWords,
         if (!p.has_value()) {
             return p;
         }
-        return machine::run_from(buf.program(), st, throw_idx, vm_fuel, &dict);
+        return machine::run_from(buf.program(), st, throw_idx, vm_fuel, &dict,
+                                 fvoc);
     }
         // 8f2d7a4c-6b1e-4c9a-8d3f-2b7e5c9a1f6d end
     }
@@ -1564,24 +1607,30 @@ template <int MaxDepth, int MaxRDepth, int MaxData, int MaxOut, int MaxWords,
 /// `DEFER`) fetches its own current target and calls it, diagnosing the `-1`
 /// "never `IS`sed" sentinel with a specific message rather than the generic
 /// out-of-range instruction pointer a compiled reference to the same word
-/// would get (@ref compile_entry's own case), and a @ref machine::
-/// control_word dispatches to @ref apply_control_word.
+/// would get (@ref compile_entry's own case), a @ref machine::foreign_word
+/// (step F34's own foreign function interface) calls straight out to its
+/// registered C++ function through @p fvoc -- the exact counterpart of the @ref
+/// machine::apply_primitive case above, and for the same reason: neither has
+/// any code space of its own to call into -- and a @ref machine::control_word
+/// dispatches to @ref apply_control_word.
 // c2d6b26d-5166-4b73-aadd-bf66be9d933c
 template <int MaxDepth, int MaxRDepth, int MaxData, int MaxOut, int MaxWords,
-          int MaxCode, int MaxBufWords, int MaxName>
-[[nodiscard]] constexpr auto
-execute_entry(machine::dictionary_entry<MaxName> const &entry,
-              machine::forth_state<MaxDepth, MaxRDepth, MaxData, MaxOut> &st,
-              machine::dictionary<MaxWords, MaxName> &dict,
-              compile_buffer<MaxCode, MaxBufWords> &buf,
-              compiling_context<MaxName> &cctx, foundation::source_pos pos,
-              int vm_fuel) -> machine::status {
+          int MaxCode, int MaxBufWords, int MaxName, int MaxForeign = 16>
+[[nodiscard]] constexpr auto execute_entry(
+    machine::dictionary_entry<MaxName> const &entry,
+    machine::forth_state<MaxDepth, MaxRDepth, MaxData, MaxOut> &st,
+    machine::dictionary<MaxWords, MaxName> &dict,
+    compile_buffer<MaxCode, MaxBufWords> &buf, compiling_context<MaxName> &cctx,
+    foundation::source_pos pos, int vm_fuel,
+    machine::foreign_vocabulary<MaxForeign, MaxDepth, MaxRDepth, MaxData,
+                                MaxOut> const *fvoc = nullptr)
+    -> machine::status {
     if (auto const *op = std::get_if<machine::primitive>(&entry.binding)) {
         return machine::apply_primitive(*op, st);
     }
     if (auto const *cw =
             std::get_if<machine::compiled_colon_word>(&entry.binding)) {
-        return call_word(buf, st, cw->entry_point, vm_fuel, &dict);
+        return call_word(buf, st, cw->entry_point, vm_fuel, &dict, fvoc);
     }
     if (auto const *vw = std::get_if<machine::variable_word>(&entry.binding)) {
         auto r = st.data().push(static_cast<machine::cell>(vw->address));
@@ -1589,7 +1638,7 @@ execute_entry(machine::dictionary_entry<MaxName> const &entry,
             return r;
         }
         if (vw->does_entry >= 0) {
-            return call_word(buf, st, vw->does_entry, vm_fuel, &dict);
+            return call_word(buf, st, vw->does_entry, vm_fuel, &dict, fvoc);
         }
         return std::monostate{};
     }
@@ -1613,11 +1662,20 @@ execute_entry(machine::dictionary_entry<MaxName> const &entry,
                 pos, "deferred word has no action (use IS)"};
         }
         return call_word(buf, st, static_cast<int>(target.value()), vm_fuel,
-                         &dict);
+                         &dict, fvoc);
     }
+    // 9e4d7a02-6b15-4c83-97ef-2a5d8f316c40
+    if (auto const *fw = std::get_if<machine::foreign_word>(&entry.binding)) {
+        if (fvoc == nullptr) {
+            return foundation::parse_error{
+                pos, "foreign word: no vocabulary available to this session"};
+        }
+        return fvoc->call(fw->index, st);
+    }
+    // 9e4d7a02-6b15-4c83-97ef-2a5d8f316c40 end
     if (auto const *ctl = std::get_if<machine::control_word>(&entry.binding)) {
-        return apply_control_word(ctl->which, st, dict, buf, cctx, pos,
-                                  vm_fuel);
+        return apply_control_word(ctl->which, st, dict, buf, cctx, pos, vm_fuel,
+                                  fvoc);
     }
     return foundation::parse_error{
         pos, "word is not executable yet (F25: primitives and colon "
@@ -1732,13 +1790,25 @@ execute_entry(machine::dictionary_entry<MaxName> const &entry,
 /// @param  vm_fuel The VM's own step budget (D22, a distinct budget from
 ///                 @p fuel), passed to @ref call_word each time interpreting
 ///                 a defined word actually runs one.
+/// @param  fvoc    Step F34's own addition (D18): the foreign vocabulary
+///                 backing whatever @ref machine::foreign_word entries
+///                 @p dict carries -- `nullptr` (the default) for a session
+///                 with no foreign words registered, which is every caller
+///                 before that step. Forwarded to @ref execute_entry, and
+///                 from there to @ref call_word / @ref machine::run_from, so
+///                 a foreign word dispatches identically whether it is met
+///                 by name, reached through `EXECUTE`, or run from inside a
+///                 compiled body.
 template <int MaxDepth, int MaxRDepth, int MaxData, int MaxOut, int MaxWords,
-          int MaxCode, int MaxBufWords, int MaxName = 32>
+          int MaxCode, int MaxBufWords, int MaxName = 32, int MaxForeign = 16>
 constexpr auto
 interpret(machine::forth_state<MaxDepth, MaxRDepth, MaxData, MaxOut> &st,
           machine::dictionary<MaxWords, MaxName> &dict,
           compile_buffer<MaxCode, MaxBufWords> &buf, int fuel = 100000,
-          int vm_fuel = 100000) -> machine::status {
+          int vm_fuel = 100000,
+          machine::foreign_vocabulary<MaxForeign, MaxDepth, MaxRDepth, MaxData,
+                                      MaxOut> const *fvoc = nullptr)
+    -> machine::status {
     // Bookkeeping for the definition currently being compiled, if any --
     // local to this call frame, deliberately not part of forth_state itself
     // even after DIV-0012's own fold (this step) folds SOURCE/BASE/STATE
@@ -1885,7 +1955,7 @@ interpret(machine::forth_state<MaxDepth, MaxRDepth, MaxData, MaxOut> &st,
             auto const *entry = dict.lookup(text);
             if (entry != nullptr) {
                 auto r = execute_entry(*entry, st, dict, buf, cctx,
-                                       token_start.position(), vm_fuel);
+                                       token_start.position(), vm_fuel, fvoc);
                 if (!r.has_value()) {
                     return r;
                 }
@@ -2056,7 +2126,7 @@ interpret(machine::forth_state<MaxDepth, MaxRDepth, MaxData, MaxOut> &st,
         if (entry != nullptr) {
             if (entry->immediate) {
                 auto r = execute_entry(*entry, st, dict, buf, cctx,
-                                       token_start.position(), vm_fuel);
+                                       token_start.position(), vm_fuel, fvoc);
                 if (!r.has_value()) {
                     return r;
                 }

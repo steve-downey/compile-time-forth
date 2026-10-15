@@ -470,6 +470,36 @@ template <int MaxCode, int MaxProgWords, int MaxDictWords, int MaxName>
         return {unknown_effect, 0};
     case op::throw_op:
         return {known(1, 0), 0};
+    // 5c1f8b96-3d47-42ae-b0d9-6e83a2f5147c
+    case op::foreign: {
+        // Step F34 (docs/forth-plan-2.md), D20: a foreign word's effect is
+        // whatever it *declared*, or `unknown` if it declared nothing --
+        // "your undeclared foreign words are unknown; a declared effect
+        // participates in the lint like any other." The declaration lives on
+        // the dictionary entry (@ref machine::foreign_word), not in the
+        // foreign vocabulary itself, precisely so this checker can reach it:
+        // resolved by the same linear dictionary scan `op::call` above uses,
+        // matching on the registry index this instruction carries rather than
+        // on an entry point.
+        int const index = static_cast<int>(in.operand);
+        for (int i = 0; i < dict.size(); ++i) {
+            auto const &e = dict.entry_at(i);
+            if (auto const *fw =
+                    std::get_if<machine::foreign_word>(&e.binding)) {
+                if (fw->index == index) {
+                    return {fw->effect_known
+                                ? known(fw->effect_inputs, fw->effect_outputs)
+                                : unknown_effect,
+                            0};
+                }
+            }
+        }
+        // Defensive-only (D7): every op::foreign this checker ever sees was
+        // emitted by compile_entry against a real, already-installed
+        // foreign_word entry.
+        return {unknown_effect, 0};
+    }
+        // 5c1f8b96-3d47-42ae-b0d9-6e83a2f5147c end
     }
     // Defensive-only (D7): every enumerator is listed above.
     return {unknown_effect, 0};

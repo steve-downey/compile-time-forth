@@ -1,4 +1,4 @@
-<div class="abstract" id="orgcb10f27">
+<div class="abstract" id="orgdb15087">
 <p>
 Every session now opens on thirty-five tokens of Forth I never typed: a short
 prelude, compiled before whatever program I actually asked for, defining three
@@ -163,7 +163,7 @@ Six words moved or got renamed tonight, and every one of them still runs the sam
 
 <nav style="margin-top: 3em; border-top: 1px solid #ccc; padding-top: 1em">
 
-[↑ Series Index](index.md) | [← Part 22 - The Call Stack Was the Continuation](post-22-the-call-stack-was-the-continuation.md)
+[↑ Series Index](index.md) | [← Part 22 - The Call Stack Was the Continuation](post-22-the-call-stack-was-the-continuation.md) | [Part 24 - Nothing Downstream Notices →](post-24-nothing-downstream-notices.md)
 
 </nav>
 

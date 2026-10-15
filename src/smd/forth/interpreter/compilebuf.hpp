@@ -8,6 +8,7 @@
 #include <smd/forth/machine/cell.hpp>
 #include <smd/forth/machine/dictionary.hpp>
 #include <smd/forth/machine/emit.hpp>
+#include <smd/forth/machine/foreign.hpp>
 #include <smd/forth/machine/forth_state.hpp>
 #include <smd/forth/machine/instruction.hpp>
 #include <smd/forth/machine/vm.hpp>
@@ -167,20 +168,29 @@ static_assert(std::is_trivially_destructible_v<compile_buffer<64, 32>>);
 ///                     assumed) -- only needed if @p entry_point's own body
 ///                     reaches `CREATE`/`DOES>` (@ref machine::op::
 ///                     create_word/@ref machine::op::does_enter).
+/// @param foreign      Step F34's own addition, the same shape @p dict is:
+///                     forwarded to @ref machine::run_from unchanged
+///                     (`nullptr` by default) -- only needed if
+///                     @p entry_point's own body reaches @ref
+///                     machine::op::foreign.
 template <int MaxCode, int MaxWords, int MaxDepth, int MaxRDepth, int MaxData,
-          int MaxOut, int DictWords = 256, int DictName = 32>
+          int MaxOut, int DictWords = 256, int DictName = 32,
+          int MaxForeign = 16>
 constexpr auto
 call_word(compile_buffer<MaxCode, MaxWords> &buf,
           machine::forth_state<MaxDepth, MaxRDepth, MaxData, MaxOut> &state,
           int entry_point, int fuel,
-          machine::dictionary<DictWords, DictName> *dict = nullptr)
+          machine::dictionary<DictWords, DictName> *dict = nullptr,
+          machine::foreign_vocabulary<MaxForeign, MaxDepth, MaxRDepth, MaxData,
+                                      MaxOut> const *foreign = nullptr)
     -> machine::status {
     auto push_return =
         state.returns().push(static_cast<machine::cell>(buf.halt_pad()));
     if (!push_return.has_value()) {
         return push_return;
     }
-    return machine::run_from(buf.program(), state, entry_point, fuel, dict);
+    return machine::run_from(buf.program(), state, entry_point, fuel, dict,
+                             foreign);
 }
 // f7a3c9e1-6d4b-4a2f-8c1e-9b5d7a3f2e6c end
 
